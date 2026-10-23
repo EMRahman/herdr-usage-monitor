@@ -1,0 +1,22 @@
+id = "usage-monitor"
+name = "Subscription Usage Monitor"
+version = "0.1.0"
+min_herdr_version = "0.9.0"
+description = "Real-time subscription allowance monitor for Herdr: glanceable remaining % in the tab bar and an instant modal breakdown"
+platforms = ["macos", "linux"]
+
+[[actions]]
+id = "status"
+title = "Print subscription allowance status"
+command = ["bun", "usage-bar.ts"]
+
+[[actions]]
+id = "breakdown"
+title = "Show subscription usage breakdown once"
+command = ["bun", "usage-pane.ts", "--once"]
+
+[[panes]]
+id = "usage"
+title = "Subscription Allowance"
+placement = "split"
+command = ["bun", "usage-pane.ts"]
