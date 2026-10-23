@@ -4,17 +4,32 @@
 
 **A space-efficient AI subscription allowance monitor for [Herdr](https://herdr.dev).**
 
-Shows live **% remaining** right in Herdr's tab bar (zero extra panels, zero terminal grid waste), with an instant modal overlay (`prefix+u`) for full limit breakdowns and reset countdowns.
+Shows live **% remaining** right in Herdr's tab bar (zero extra panels, zero terminal grid waste), with an instant modal overlay (`prefix+u`) for full limit breakdowns, reset countdowns, and rate limit credits.
 
-Supports Claude Code, OpenAI Codex, Antigravity CLI, Cursor, Grok, and GitHub Copilot.
+Supports Claude Code, OpenAI Codex, Antigravity CLI (AGY), Cursor, Grok, and GitHub Copilot.
+
+---
+
+### In the Terminal
+
+#### 1. Top Right Tab Bar (Glanceable & Zero Grid Waste)
+![Herdr Tab Bar Status](docs/tab-bar.png)
+
+#### 2. On-Demand Modal Breakdown (`prefix + u` or `Ctrl+b u`)
+![Herdr Modal Breakdown](docs/modal-breakdown.png)
 
 ---
 
 ## Highlights
 
 * **Zero extra panels**: Fits cleanly on the right edge of Herdr's existing desktop tab bar (`tab_bar_right`).
-* **Inverted to % remaining**: Clearly shows how much allowance you have left (e.g. `Claude 97% (Extra 16%) · Codex 90% · AGY 100%`).
-* **Instant on-demand breakdown**: Hit `prefix + u` to open a floating modal popup with progress bars and reset countdowns. Press `q` or `Esc` to close.
+* **Focused 5-Hour view**: Glance at `Claude 97% · Codex 90% · AGY 100%` directly in your tab bar without cluttering your workflow.
+* **Inverted to % remaining**: Clearly shows how much allowance buffer you have left before limits or throttling.
+* **Instant on-demand breakdown**: Hit `prefix + u` to open a centered modal overlay with progress bars, reset countdowns, extra spend balances, and rate limit resets. Press `q` or `Esc` to close immediately.
+* **Deep Provider Details**:
+  * **Claude**: 5h session, 7d weekly, and Extra usage spend balances with remaining amounts.
+  * **Codex**: 5h and weekly limits, plus an itemized list of all available rate limit reset credits with exact expiration dates.
+  * **Antigravity (AGY)**: All quota groups (Gemini Models, Claude & GPT 3p models, and Gemini 4 Argon) with exact local reset times and shared quota policy details.
 * **Fast & lightweight**: Resolves in ~12ms via the local `herdr-web-ui` bridge cache, falling back to direct CLI credential inspection when offline.
 
 ---
@@ -58,7 +73,7 @@ herdr server reload-config
 
 ## Usage
 
-* **Glance**: Look at the top right of your Herdr terminal window to see your current allowance percentages.
+* **Glance**: Look at the top right of your Herdr terminal window to see current 5h allowances (`Claude 97% · Codex 90% · AGY 100%`).
 * **Inspect Details**: Press `Ctrl+b` then `u` (or your custom prefix key) to open the modal breakdown.
 * **Dismiss Details**: Press `q`, `Esc`, or `Enter` to close the popup and return to your terminal panes.
 
