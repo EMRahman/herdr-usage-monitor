@@ -1,8 +1,10 @@
 // Subscription usage in a herdr pane or modal popup.
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { existsSync, writeFileSync } from "node:fs";
 
 const root = process.env.HERDR_WEB_UI_DIR ?? join(homedir(), "Code", "herdr-web-ui");
+const AGY_CACHE_FILE = "/tmp/herdr-agy-usage.json";
 
 interface CodexCreditItem {
   id: string;
@@ -35,17 +37,22 @@ interface DetailedClaude {
   } | null;
 }
 
+interface AgyBucket {
+  label: string;
+  remaining_percent: number;
+  resets_at: string | null;
+  description?: string;
+}
+
 interface DetailedAgy {
   account: string;
+  tier?: string;
+  policy?: string;
   groups: Array<{
     name: string;
-    models: string;
-    buckets: Array<{
-      label: string;
-      remaining_percent: number;
-      resets_at: string | null;
-      description?: string;
-    }>;
+    description?: string;
+    models?: string;
+    buckets: AgyBucket[];
   }>;
 }
 
@@ -232,15 +239,77 @@ async function fetchDetailedReport(): Promise<FullReport> {
     };
   })().catch(() => {});
 
-  // Fetch Antigravity
+  // Fetch Antigravity (checks cached agy output, or agy -p "/usage" --output-format json, or fallback API)
   const agyPromise = (async () => {
     const s = agySignIns[0];
+    const account = s?.account?.label ?? "default";
+
+    // 1. Try reading recent agy cache
+    let agyData: any = null;
+    try {
+      if (existsSync(AGY_CACHE_FILE)) {
+        const stat = await Bun.file(AGY_CACHE_FILE).stat();
+        if (Date.now() - stat.mtimeMs < 120_000) {
+          agyData = JSON.parse(await Bun.file(AGY_CACHE_FILE).text());
+        }
+      }
+    } catch {}
+
+    // 2. If not cached, try executing agy -p "/usage" --output-format json
+    if (!agyData) {
+      try {
+        const child = Bun.spawn(["agy", "-p", "/usage", "--output-format", "json"], { stdout: "pipe", stderr: "ignore" });
+        const timer = setTimeout(() => { try { child.kill(); } catch {} }, 4500);
+        const text = await new Response(child.stdout).text();
+        clearTimeout(timer);
+        if ((await child.exited) === 0 && text) {
+          const parsed = JSON.parse(text);
+          if (parsed.command?.data?.groups) {
+            agyData = parsed.command.data;
+            try { writeFileSync(AGY_CACHE_FILE, JSON.stringify(agyData)); } catch {}
+          }
+        }
+      } catch {}
+    }
+
+    if (agyData?.groups) {
+      const groups = agyData.groups.map((g: any) => {
+        const models = g.description?.startsWith("Models within this group:")
+          ? g.description.replace(/^Models within this group:\s*/i, "")
+          : undefined;
+        const groupDesc = !g.description?.startsWith("Models within this group:") ? g.description : undefined;
+        const buckets: AgyBucket[] = (g.buckets ?? []).map((b: any) => {
+          const remFraction = b.remaining_fraction ?? b.remainingFraction ?? 0;
+          return {
+            label: b.name ?? (b.window === "5h" ? "5h limit" : b.window === "weekly" ? "Weekly limit" : "Limit"),
+            remaining_percent: Math.round(remFraction * 100),
+            resets_at: b.reset_time ?? b.resetTime ?? null,
+            description: b.description,
+          };
+        });
+        return {
+          name: g.name,
+          models,
+          description: groupDesc,
+          buckets,
+        };
+      });
+
+      report.antigravity = {
+        account,
+        policy: agyData.description,
+        groups,
+      };
+      return;
+    }
+
+    // 3. Fallback to direct API if agy CLI wasn't available
     if (!s) return;
     const init = {
       method: "POST",
       headers: { authorization: `Bearer ${s.token}`, accept: "application/json", "content-type": "application/json", "user-agent": "antigravity" },
       body: "{}",
-      signal: AbortSignal.timeout(4000),
+      signal: AbortSignal.timeout(3000),
     };
     let res = await fetch("https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary", init).catch(() => null);
     if (!res || !res.ok) {
@@ -249,35 +318,25 @@ async function fetchDetailedReport(): Promise<FullReport> {
     if (!res || !res.ok) return;
     const body = await res.json() as any;
     const groupsRaw = Array.isArray(body.groups) ? body.groups : [];
-
-    const groups: DetailedAgy["groups"] = [];
-    for (const g of groupsRaw) {
-      const bucketsRaw = Array.isArray(g.buckets) ? g.buckets : [];
-      const buckets = bucketsRaw.map((b: any) => {
-        const remainingFraction = b.remainingFraction ?? 0;
-        const remainingPct = Math.round(remainingFraction * 100);
-        const label = b.window === "5h" ? "5h limit" : b.window === "weekly" ? "Weekly limit" : (b.displayName ?? "Limit");
-        return {
-          label,
-          remaining_percent: remainingPct,
-          resets_at: b.resetTime ?? null,
-          description: b.description,
-        };
-      });
-      groups.push({
-        name: g.displayName ?? "Model group",
-        models: g.description?.replace(/^Models within this group:\s*/i, "") ?? "",
-        buckets,
-      });
-    }
+    const groups = groupsRaw.map((g: any) => ({
+      name: g.displayName ?? "Model group",
+      models: g.description?.replace(/^Models within this group:\s*/i, "") ?? "",
+      buckets: (g.buckets ?? []).map((b: any) => ({
+        label: b.window === "5h" ? "5h limit" : b.window === "weekly" ? "Weekly limit" : (b.displayName ?? "Limit"),
+        remaining_percent: Math.round((b.remainingFraction ?? 0) * 100),
+        resets_at: b.resetTime ?? null,
+        description: b.description,
+      })),
+    }));
 
     report.antigravity = {
-      account: s.account?.label ?? "default",
+      account,
+      policy: body.description,
       groups,
     };
   })().catch(() => {});
 
-  // Also query other providers from the local bridge API cache if present
+  // Query other providers from the local bridge API cache if present
   const othersPromise = (async () => {
     try {
       const res = await fetch("http://127.0.0.1:7317/api/usage", { signal: AbortSignal.timeout(800) });
@@ -348,7 +407,7 @@ function render(report: FullReport, columns: number): string {
     lines.push("");
   }
 
-  // 3. ANTIGRAVITY
+  // 3. ANTIGRAVITY (AGY)
   if (report.antigravity) {
     const agy = report.antigravity;
     lines.push(`${bold("Antigravity")}${agy.account ? dim(` · ${agy.account}`) : ""}`);
@@ -360,10 +419,15 @@ function render(report: FullReport, columns: number): string {
         const timeR = until(b.resets_at);
         const exactTime = formatAtTime(b.resets_at);
         const reset = b.resets_at ? dim(` ↻${timeR}${exactTime ? ` (${exactTime})` : ""}`) : "";
-        lines.push(`    ${b.label.padEnd(14)} ${barRemaining(rem, barWidth)} ${pct} remaining${reset}`);
+        lines.push(`    ${b.label.padEnd(28)} ${barRemaining(rem, barWidth)} ${pct} remaining${reset}`);
+      }
+      if (g.description) {
+        lines.push(`    ${dim(g.description)}`);
       }
     }
-    lines.push(`  ${dim("Policy: Models share weekly & 5h limits; quota consumed proportionally to token cost.")}`);
+    if (agy.policy) {
+      lines.push(`  ${dim(agy.policy)}`);
+    }
     lines.push("");
   }
 
@@ -389,7 +453,6 @@ function render(report: FullReport, columns: number): string {
     lines.push("");
   }
 
-  // Trim trailing empty line
   while (lines.length && lines[lines.length - 1] === "") lines.pop();
   return lines.join("\n");
 }

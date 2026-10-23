@@ -70,6 +70,28 @@ for (const p of report.providers) {
 
   if (!primary && !p.credits) continue;
 
+  if (p.id === "antigravity") {
+    try {
+      const cachePath = "/tmp/herdr-agy-usage.json";
+      const file = Bun.file(cachePath);
+      if (await file.exists()) {
+        const agyJson = JSON.parse(await file.text());
+        const geminiGroup = agyJson.groups?.find((g: any) => g.name === "Gemini Models");
+        const argonGroup = agyJson.groups?.find((g: any) => g.name === "Gemini 4 Argon");
+        const gemini5h = geminiGroup?.buckets?.find((b: any) => b.window === "5h" || b.id === "gemini-5h");
+        const argonBucket = argonGroup?.buckets?.[0];
+
+        const geminiRem = gemini5h ? Math.round(gemini5h.remaining_fraction * 100) : null;
+        const argonRem = argonBucket ? Math.round(argonBucket.remaining_fraction * 100) : null;
+
+        const mainPct = geminiRem != null ? `${geminiRem}%` : (remaining != null ? `${remaining}%` : "");
+        const argonPart = argonRem != null && argonRem < 20 ? ` (Argon ${argonRem}%)` : "";
+        parts.push(`AGY ${mainPct}${argonPart}`.trim());
+        continue;
+      }
+    } catch {}
+  }
+
   // Inverted to % remaining (allowance left)
   const remaining = primary ? Math.max(0, 100 - Math.round(primary.used_percent)) : null;
   const pct = remaining != null ? `${remaining}%` : "";
