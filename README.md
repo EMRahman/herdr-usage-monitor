@@ -37,7 +37,15 @@ Supports Claude Code, OpenAI Codex, Antigravity CLI (AGY), Cursor, Grok, and Git
 
 ## Setup in Herdr
 
-Add the following to your Herdr configuration at `~/.config/herdr/config.toml`:
+Clone the repository to your preferred location (e.g., `~/Code/herdr-usage-monitor` or `~/.config/herdr/plugins/herdr-usage-monitor`):
+
+```bash
+git clone https://github.com/EMRahman/herdr-usage-monitor.git ~/Code/herdr-usage-monitor
+cd ~/Code/herdr-usage-monitor
+bun install # (if needed)
+```
+
+Add the following to your Herdr configuration at `~/.config/herdr/config.toml` (adjust `~/Code/herdr-usage-monitor` to match your clone path):
 
 ### 1. Tab Bar Status (`tab_bar_right`)
 
@@ -48,7 +56,7 @@ tab_bar_position = "top"
 
 # Show live provider remaining % at the right edge of the tab bar
 tab_bar_right = [
-  { type = "command", command = "bun /Users/ehsanrahman/Code/herdr-usage-monitor/usage-bar.ts", interval_seconds = 60, timeout_seconds = 2 }
+  { type = "command", command = "bun ~/Code/herdr-usage-monitor/usage-bar.ts", interval_seconds = 60, timeout_seconds = 2 }
 ]
 tab_bar_right_separator = " · "
 ```
@@ -59,10 +67,22 @@ tab_bar_right_separator = " · "
 [[keys.command]]
 key = "prefix+u"
 type = "popup"
-command = "bun /Users/ehsanrahman/Code/herdr-usage-monitor/usage-pane.ts"
+command = "bun ~/Code/herdr-usage-monitor/usage-pane.ts"
 description = "Show subscription usage breakdown"
 width = "65%"
 height = "65%"
+```
+
+### 3. Background Poller Daemon (Optional, for 0ms instant brings)
+
+To keep the cache warm in the background every 60s:
+
+```bash
+# Run in background via nohup:
+nohup bun ~/Code/herdr-usage-monitor/monitor.ts > /dev/null 2>&1 &
+
+# Or link as a managed Herdr plugin so Herdr supervises it on startup:
+herdr plugin link ~/Code/herdr-usage-monitor
 ```
 
 Then reload Herdr's configuration:

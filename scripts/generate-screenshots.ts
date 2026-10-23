@@ -1,8 +1,14 @@
-import { chromium } from "/Users/ehsanrahman/Code/herdr-web-ui/node_modules/playwright-core";
+import { homedir } from "node:os";
 import { join } from "node:path";
 
+const playwrightCorePath =
+  process.env.PLAYWRIGHT_CORE_PATH ??
+  join(homedir(), "Code", "herdr-web-ui", "node_modules", "playwright-core");
+const { chromium } = await import(playwrightCorePath);
+
 const executablePath =
-  "/Users/ehsanrahman/Library/Caches/ms-playwright/chromium-1248/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing";
+  process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE ??
+  join(homedir(), "Library/Caches/ms-playwright/chromium-1248/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing");
 
 const outDir = join(import.meta.dir, "..", "docs");
 
