@@ -7,17 +7,11 @@ interface Window {
   scope: string | null;
   used_percent: number;
 }
-interface Credits {
-  label: string | null;
-  balance: string | null;
-  used_percent?: number | null;
-}
 interface Provider {
   id: string;
   plan: string | null;
   problem: string | null;
   windows: Window[];
-  credits?: Credits | null;
 }
 interface Report {
   providers: Provider[];
@@ -36,7 +30,7 @@ async function getReport(): Promise<Report | null> {
   // 1. Try fast local web-ui server (runs on 7317 by default)
   try {
     const res = await fetch("http://127.0.0.1:7317/api/usage", { signal: AbortSignal.timeout(600) });
-    if (res.ok) return await res.json() as Report;
+    if (res.ok) return (await res.json()) as Report;
   } catch {}
 
   // 2. Fall back to direct UsageService
@@ -44,7 +38,7 @@ async function getReport(): Promise<Report | null> {
     const root = process.env.HERDR_WEB_UI_DIR ?? join(homedir(), "Code", "herdr-web-ui");
     const { UsageService } = await import(join(root, "server", "usage.ts"));
     const service = new UsageService();
-    return await service.report() as Report;
+    return (await service.report()) as Report;
   } catch {}
 
   return null;
@@ -63,44 +57,49 @@ for (const p of report.providers) {
     continue;
   }
 
-  // Find most relevant window (session first, then week, then max)
-  const session = p.windows.find(w => w.kind === "session");
-  const week = p.windows.find(w => w.kind === "week");
-  const primary = session ?? week ?? p.windows[0];
-
-  if (!primary && !p.credits) continue;
-
+  // Antigravity: highest of the 5-hour limits % remaining
   if (p.id === "antigravity") {
+    let highest5h: number | null = null;
+
     try {
       const cachePath = "/tmp/herdr-agy-usage.json";
       const file = Bun.file(cachePath);
       if (await file.exists()) {
         const agyJson = JSON.parse(await file.text());
-        const geminiGroup = agyJson.groups?.find((g: any) => g.name === "Gemini Models");
-        const argonGroup = agyJson.groups?.find((g: any) => g.name === "Gemini 4 Argon");
-        const gemini5h = geminiGroup?.buckets?.find((b: any) => b.window === "5h" || b.id === "gemini-5h");
-        const argonBucket = argonGroup?.buckets?.[0];
-
-        const geminiRem = gemini5h ? Math.round(gemini5h.remaining_fraction * 100) : null;
-        const argonRem = argonBucket ? Math.round(argonBucket.remaining_fraction * 100) : null;
-
-        const mainPct = geminiRem != null ? `${geminiRem}%` : (remaining != null ? `${remaining}%` : "");
-        const argonPart = argonRem != null && argonRem < 20 ? ` (Argon ${argonRem}%)` : "";
-        parts.push(`AGY ${mainPct}${argonPart}`.trim());
-        continue;
+        const fiveHourRemValues: number[] = [];
+        for (const g of agyJson.groups || []) {
+          for (const b of g.buckets || []) {
+            if (b.window === "5h" || b.id?.includes("5h") || b.name?.includes("Five Hour")) {
+              fiveHourRemValues.push(Math.round(b.remaining_fraction * 100));
+            }
+          }
+        }
+        if (fiveHourRemValues.length > 0) {
+          highest5h = Math.max(...fiveHourRemValues);
+        }
       }
     } catch {}
+
+    // Fallback if cache not found: check report session windows
+    if (highest5h === null) {
+      const sessionWindows = p.windows.filter((w) => w.kind === "session");
+      if (sessionWindows.length > 0) {
+        highest5h = Math.max(...sessionWindows.map((w) => Math.max(0, 100 - Math.round(w.used_percent))));
+      }
+    }
+
+    if (highest5h !== null) {
+      parts.push(`AGY ${highest5h}%`);
+    }
+    continue;
   }
 
-  // Inverted to % remaining (allowance left)
-  const remaining = primary ? Math.max(0, 100 - Math.round(primary.used_percent)) : null;
-  const pct = remaining != null ? `${remaining}%` : "";
-  let extra = "";
-  if (p.credits && p.credits.used_percent != null) {
-    const extraRemaining = Math.max(0, 100 - Math.round(p.credits.used_percent));
-    extra = ` (Extra ${extraRemaining}%)`;
-  }
-  parts.push(`${name} ${pct}${extra}`.trim());
+  // Claude and Codex (and others): strictly the 5-hour session window
+  const sessionWindow = p.windows.find((w) => w.kind === "session") ?? p.windows[0];
+  if (!sessionWindow) continue;
+
+  const remaining = Math.max(0, 100 - Math.round(sessionWindow.used_percent));
+  parts.push(`${name} ${remaining}%`);
 }
 
 if (parts.length > 0) {
