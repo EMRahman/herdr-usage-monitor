@@ -25,7 +25,8 @@ Supports Claude Code, OpenAI Codex, Antigravity CLI (AGY), Cursor, Grok, and Git
 * **Zero extra panels**: Fits cleanly on the right edge of Herdr's existing desktop tab bar (`tab_bar_right`).
 * **Focused 5-Hour view**: Glance at `Claude 97% · Codex 90% · AGY 100%` directly in your tab bar without cluttering your workflow.
 * **Inverted to % remaining**: Clearly shows how much allowance buffer you have left before limits or throttling.
-* **Instant on-demand breakdown**: Hit `prefix + u` to open a centered modal overlay with progress bars, reset countdowns, extra spend balances, and rate limit resets. Press `q` or `Esc` to close immediately.
+* **Instant on-demand breakdown (0ms)**: Hit `prefix + u` to instantly display the modal overlay from warm cache without any startup lag. Shows a subtle `↻ refreshing…` indicator in the footer while revalidating fresh data in the background. Press `q` or `Esc` to close immediately, or `r` to manually refresh.
+* **Background Polling Daemon**: Includes a background daemon (`bun monitor.ts`) that keeps usage caches warm every 60s, keeping tab bar checks fast (<1ms) and popup brings instantaneous.
 * **Deep Provider Details**:
   * **Claude**: 5h session, 7d weekly, and Extra usage spend balances with remaining amounts.
   * **Codex**: 5h and weekly limits, plus an itemized list of all available rate limit reset credits with exact expiration dates.

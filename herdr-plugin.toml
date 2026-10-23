@@ -5,6 +5,9 @@ min_herdr_version = "0.9.0"
 description = "Real-time subscription allowance monitor for Herdr: glanceable remaining % in the tab bar and an instant modal breakdown"
 platforms = ["macos", "linux"]
 
+[[startup]]
+command = ["bun", "monitor.ts"]
+
 [[actions]]
 id = "status"
 title = "Print subscription allowance status"
