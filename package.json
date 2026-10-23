@@ -1,0 +1,22 @@
+{
+  "name": "herdr-usage-monitor",
+  "version": "0.1.0",
+  "description": "Subscription allowance monitor for Herdr: glanceable remaining % in the tab bar and an instant popup breakdown",
+  "type": "module",
+  "scripts": {
+    "status": "bun usage-bar.ts",
+    "breakdown": "bun usage-pane.ts --once",
+    "popup": "bun usage-pane.ts"
+  },
+  "keywords": [
+    "herdr",
+    "herdr-plugin",
+    "claude",
+    "codex",
+    "antigravity",
+    "usage",
+    "allowance"
+  ],
+  "author": "Ehsan Rahman",
+  "license": "MIT"
+}
