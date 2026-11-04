@@ -15,9 +15,16 @@ import type { GenericProvider } from "./fetcher.ts";
 
 const MAX_READ_BYTES = 1024 * 1024;
 const COMMAND_TIMEOUT_MS = 4_000;
+const FAST_KEYCHAIN_TIMEOUT_MS = 450;
+const FAST_HTTP_TIMEOUT_MS = 1_000;
 const USER_AGENT = "herdr-usage-monitor";
 
 export type KeychainRead = { status: "found"; value: string } | { status: "missing" } | { status: "locked" };
+
+export interface DiscoveryOptions {
+  fast?: boolean;
+  deadlineMs?: number;
+}
 
 export interface Account {
   id: string;
@@ -49,6 +56,12 @@ const number = (value: unknown): number | null => {
   return typeof parsed === "number" && Number.isFinite(parsed) ? parsed : null;
 };
 const percent = (value: number): number => Math.round(Math.min(100, Math.max(0, value)) * 10) / 10;
+
+function budgetMs(opts: DiscoveryOptions | undefined, defaultMs: number, fastCapMs = defaultMs): number {
+  const cap = opts?.fast ? Math.min(defaultMs, fastCapMs) : defaultMs;
+  if (opts?.deadlineMs === undefined) return cap;
+  return Math.max(0, Math.min(cap, opts.deadlineMs - Date.now()));
+}
 
 export function resolveBinary(name: string): string | null {
   const found = Bun.which(name);
@@ -166,9 +179,9 @@ const promptedServices = new Set<string>();
 const xml = (value: string) => value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 let loginSessionJobs = 0;
 
-async function launchctl(args: string[]): Promise<number> {
+async function launchctl(args: string[], timeoutMs = COMMAND_TIMEOUT_MS): Promise<number> {
   const child = Bun.spawn(["launchctl", ...args], { stdin: "ignore", stdout: "ignore", stderr: "ignore" });
-  const timer = setTimeout(() => child.kill(), COMMAND_TIMEOUT_MS);
+  const timer = setTimeout(() => child.kill(), Math.max(50, timeoutMs));
   try {
     return await child.exited;
   } finally {
@@ -180,8 +193,12 @@ async function launchctl(args: string[]): Promise<number> {
  * Reads a macOS Keychain item inside the user's gui/<uid> launchd domain when the current process
  * runs in a detached daemon session where direct keychain reads return exit code 36.
  */
-async function readKeychainInLoginSession(service: string, account?: string): Promise<string | null> {
-  if (process.platform !== "darwin" || typeof process.getuid !== "function") return null;
+async function readKeychainInLoginSession(
+  service: string,
+  account: string | undefined,
+  timeoutMs: number,
+): Promise<string | null> {
+  if (process.platform !== "darwin" || typeof process.getuid !== "function" || timeoutMs < 150) return null;
   const args = ["/usr/bin/security", "find-generic-password", "-s", service, ...(account ? ["-a", account] : []), "-w"];
   const domain = `gui/${process.getuid()}`;
   const label = `dev.herdr.usage-monitor.keychain.${process.pid}.${Date.now()}.${++loginSessionJobs}`;
@@ -219,9 +236,9 @@ async function readKeychainInLoginSession(service: string, account?: string): Pr
       }
       return line === -1 ? null : buffer.toString("utf8", 0, line).trim();
     })().catch(() => null);
-    const timer = setTimeout(giveUp, COMMAND_TIMEOUT_MS);
+    const timer = setTimeout(giveUp, timeoutMs);
     try {
-      if ((await launchctl(["bootstrap", domain, plist]).catch(() => -1)) !== 0) giveUp();
+      if ((await launchctl(["bootstrap", domain, plist], timeoutMs).catch(() => -1)) !== 0) giveUp();
       const value = await reading;
       return gaveUp || !value ? null : value;
     } finally {
@@ -230,15 +247,22 @@ async function readKeychainInLoginSession(service: string, account?: string): Pr
   } catch {
     return null;
   } finally {
-    await launchctl(["bootout", `${domain}/${label}`]).catch(() => undefined);
+    await launchctl(["bootout", `${domain}/${label}`], Math.min(500, timeoutMs)).catch(() => undefined);
     await pipe?.close().catch(() => undefined);
     rmSync(dir, { recursive: true, force: true });
   }
 }
 
-export async function readKeychain(service: string, account?: string): Promise<KeychainRead> {
+export async function readKeychain(
+  service: string,
+  account?: string,
+  opts?: DiscoveryOptions,
+): Promise<KeychainRead> {
   if (process.platform !== "darwin") return { status: "missing" };
   if (promptedServices.has(service)) return { status: "locked" };
+  const timeoutMs = budgetMs(opts, COMMAND_TIMEOUT_MS, FAST_KEYCHAIN_TIMEOUT_MS);
+  if (timeoutMs <= 25) return { status: "locked" };
+
   const child = Bun.spawn(
     ["/usr/bin/security", "find-generic-password", "-s", service, ...(account ? ["-a", account] : []), "-w"],
     { stdin: "ignore", stdout: "pipe", stderr: "ignore" },
@@ -247,7 +271,7 @@ export async function readKeychain(service: string, account?: string): Promise<K
   const timer = setTimeout(() => {
     timedOut = true;
     child.kill();
-  }, COMMAND_TIMEOUT_MS);
+  }, timeoutMs);
   try {
     const output = await readCapped(child.stdout);
     if (output === null) child.kill();
@@ -257,7 +281,8 @@ export async function readKeychain(service: string, account?: string): Promise<K
     if (code === 0 && output.trim()) return { status: "found", value: output.trim() };
     if (code === 44 && !timedOut) return { status: "missing" };
     if (code === 36 && !timedOut) {
-      const gui = await readKeychainInLoginSession(service, account);
+      const guiBudget = budgetMs(opts, COMMAND_TIMEOUT_MS, 550);
+      const gui = await readKeychainInLoginSession(service, account, guiBudget);
       if (gui !== null) return { status: "found", value: gui };
     }
     if (timedOut) promptedServices.add(service);
@@ -269,12 +294,18 @@ export async function readKeychain(service: string, account?: string): Promise<K
   }
 }
 
-export async function runCommand(argv: string[], timeoutMs = COMMAND_TIMEOUT_MS): Promise<string | null> {
+export async function runCommand(
+  argv: string[],
+  timeoutMs = COMMAND_TIMEOUT_MS,
+  opts?: DiscoveryOptions,
+): Promise<string | null> {
+  const effectiveTimeout = budgetMs(opts, timeoutMs);
+  if (effectiveTimeout <= 25) return null;
   const bin = resolveBinary(argv[0]!);
   if (!bin) return null;
   try {
     const child = Bun.spawn([bin, ...argv.slice(1)], { stdin: "ignore", stdout: "pipe", stderr: "ignore" });
-    const timer = setTimeout(() => child.kill(), timeoutMs);
+    const timer = setTimeout(() => child.kill(), effectiveTimeout);
     try {
       const output = await readCapped(child.stdout);
       if (output === null) child.kill();
@@ -292,10 +323,11 @@ async function fromKeychain(
   service: string,
   accounts: Array<string | undefined>,
   parse: (value: string) => RawSignIn | null,
+  opts?: DiscoveryOptions,
 ): Promise<RawSignIn | "locked" | null> {
   if (process.platform !== "darwin") return null;
   for (const account of accounts) {
-    const found = await readKeychain(service, account);
+    const found = await readKeychain(service, account, opts);
     if (found.status === "locked") return "locked";
     if (found.status === "found") {
       const signIn = parse(found.value);
@@ -348,7 +380,7 @@ function claudeSignIn(source: string | null): RawSignIn | null {
   return token ? { token, expiresAt: number(oauth["expiresAt"]), plan: text(oauth["subscriptionType"]) } : null;
 }
 
-export async function getClaudeSignIns(): Promise<SignIn[]> {
+export async function getClaudeSignIns(opts?: DiscoveryOptions): Promise<SignIn[]> {
   const home = homedir();
   const user = process.env["USER"];
   const homes = [{ source: "default", service: "Claude Code-credentials", dir: join(home, ".claude"), config: join(home, ".claude.json") }];
@@ -361,8 +393,8 @@ export async function getClaudeSignIns(): Promise<SignIn[]> {
   const found = await Promise.all(
     homes.map(async (h) => {
       const account = claudeAccount(h.config);
-      const keychain = await fromKeychain(h.service, user ? [user, undefined] : [undefined], claudeSignIn);
       const file = claudeSignIn(readText(join(h.dir, ".credentials.json")));
+      const keychain = await fromKeychain(h.service, user ? [user, undefined] : [undefined], claudeSignIn, opts);
       return keychainOrFile(keychain, file, h.source, account);
     }),
   );
@@ -394,7 +426,7 @@ function codexSignIn(source: string | null): RawSignIn | null {
   };
 }
 
-export async function getCodexSignIns(): Promise<SignIn[]> {
+export async function getCodexSignIns(opts?: DiscoveryOptions): Promise<SignIn[]> {
   const home = homedir();
   const homes = [
     process.env["CODEX_HOME"],
@@ -408,7 +440,7 @@ export async function getCodexSignIns(): Promise<SignIn[]> {
     if (signIn) found.push({ ...signIn, source: dir });
   }
   if (found.length > 0) return unlockedSignIns(found);
-  return unlockedSignIns(keychainFound(await fromKeychain("Codex Auth", [undefined], codexSignIn), "keychain"));
+  return unlockedSignIns(keychainFound(await fromKeychain("Codex Auth", [undefined], codexSignIn, opts), "keychain"));
 }
 
 // ---- Antigravity (AGY) ----
@@ -430,11 +462,11 @@ function antigravitySignIn(value: string | null): RawSignIn | null {
   return { token: access, expiresAt: epochMs(token["expiry"]), account };
 }
 
-export async function getAntigravitySignIns(): Promise<SignIn[]> {
+export async function getAntigravitySignIns(opts?: DiscoveryOptions): Promise<SignIn[]> {
   const home = homedir();
   const dir = process.env["ANTIGRAVITY_APP_DATA_DIR"] || join(home, ".gemini", "antigravity-cli");
   const file = antigravitySignIn(readText(join(dir, "antigravity-oauth-token")));
-  const keychain = await fromKeychain("gemini", ["antigravity"], antigravitySignIn);
+  const keychain = await fromKeychain("gemini", ["antigravity"], antigravitySignIn, opts);
   return unlockedSignIns(keychainOrFile(keychain, file, "keychain"));
 }
 
@@ -478,14 +510,20 @@ function cursorAppSignIn(path: string): RawSignIn | null {
   }
 }
 
-async function fetchCursorProviders(timeoutMs: number): Promise<GenericProvider[]> {
+async function fetchCursorProviders(opts?: DiscoveryOptions): Promise<GenericProvider[]> {
+  if (budgetMs(opts, 3500, FAST_HTTP_TIMEOUT_MS) <= 50) return [];
   const home = homedir();
   const app = cursorAppSignIn(cursorDatabase(home));
   const cliEmail = text(record(record(parseJson(readText(join(home, ".cursor", "cli-config.json"))))["authInfo"])["email"]);
-  const cli = await fromKeychain("cursor-access-token", [undefined], (value) => {
-    const token = text(value);
-    return token ? { token, expiresAt: jwtExpiry(token), account: cursorAccount(token, cliEmail) } : null;
-  });
+  const cli = await fromKeychain(
+    "cursor-access-token",
+    [undefined],
+    (value) => {
+      const token = text(value);
+      return token ? { token, expiresAt: jwtExpiry(token), account: cursorAccount(token, cliEmail) } : null;
+    },
+    opts,
+  );
 
   let found: FoundSignIn[];
   if (!app) found = keychainFound(cli, "cli");
@@ -510,6 +548,8 @@ async function fetchCursorProviders(timeoutMs: number): Promise<GenericProvider[
       });
       continue;
     }
+    const reqTimeout = budgetMs(opts, 3500, FAST_HTTP_TIMEOUT_MS);
+    if (reqTimeout <= 50) break;
     try {
       const res = await fetch("https://api2.cursor.sh/aiserver.v1.DashboardService/GetCurrentPeriodUsage", {
         method: "POST",
@@ -520,7 +560,7 @@ async function fetchCursorProviders(timeoutMs: number): Promise<GenericProvider[
           "user-agent": USER_AGENT,
         },
         body: "{}",
-        signal: AbortSignal.timeout(timeoutMs),
+        signal: AbortSignal.timeout(reqTimeout),
       });
       if (res.status === 401 || res.status === 403) {
         results.push({ id: "cursor", account: item.account?.label ?? "", plan: item.plan ?? null, windows: [], problem: "expired" });
@@ -587,12 +627,12 @@ function copilotFileTokens(source: string | null): GitHubToken[] {
   });
 }
 
-async function ghTokens(skipSubprocess: boolean): Promise<GitHubToken[]> {
-  if (skipSubprocess) return [];
-  const rawStatus = await runCommand(["gh", "auth", "status", "--hostname", "github.com", "--json", "hosts"], 2500);
+async function ghTokens(opts?: DiscoveryOptions): Promise<GitHubToken[]> {
+  if (opts?.fast) return [];
+  const rawStatus = await runCommand(["gh", "auth", "status", "--hostname", "github.com", "--json", "hosts"], 2500, opts);
   const accounts = record(record(parseJson(rawStatus))["hosts"])["github.com"];
   if (!Array.isArray(accounts)) {
-    const token = text(await runCommand(["gh", "auth", "token", "--hostname", "github.com"], 2000));
+    const token = text(await runCommand(["gh", "auth", "token", "--hostname", "github.com"], 2000, opts));
     return token ? [{ token, login: null, editor: false }] : [];
   }
   const tokens = await Promise.all(
@@ -602,7 +642,7 @@ async function ghTokens(skipSubprocess: boolean): Promise<GitHubToken[]> {
       if (!login || account["state"] !== "success") return null;
       const fromEnv = ["GH_TOKEN", "GITHUB_TOKEN"].includes(text(account["tokenSource"]) ?? "");
       const token = text(
-        await runCommand(["gh", "auth", "token", "--hostname", "github.com", ...(fromEnv ? [] : ["--user", login])], 2000),
+        await runCommand(["gh", "auth", "token", "--hostname", "github.com", ...(fromEnv ? [] : ["--user", login])], 2000, opts),
       );
       return token ? { token, login, editor: false } : null;
     }),
@@ -618,13 +658,14 @@ function copilotWindow(value: unknown, scope: string, resetsAt: string | null) {
   return { kind: "month", scope, used_percent: percent(100 - left), resets_at: resetsAt };
 }
 
-async function fetchCopilotProviders(timeoutMs: number, skipSubprocess: boolean): Promise<GenericProvider[]> {
+async function fetchCopilotProviders(opts?: DiscoveryOptions): Promise<GenericProvider[]> {
+  if (budgetMs(opts, 3500, FAST_HTTP_TIMEOUT_MS) <= 50) return [];
   const home = homedir();
   const dir = join(process.env["XDG_CONFIG_HOME"] || join(home, ".config"), "github-copilot");
   const tokens = [
     ...copilotFileTokens(readText(join(dir, "apps.json"))),
     ...copilotFileTokens(readText(join(dir, "hosts.json"))),
-    ...(await ghTokens(skipSubprocess)),
+    ...(await ghTokens(opts)),
   ];
   if (tokens.length === 0) return [];
 
@@ -647,6 +688,8 @@ async function fetchCopilotProviders(timeoutMs: number, skipSubprocess: boolean)
     let body: Json | null = null;
     let expired = false;
     for (const token of accountTokens) {
+      const reqTimeout = budgetMs(opts, 3500, FAST_HTTP_TIMEOUT_MS);
+      if (reqTimeout <= 50) break;
       try {
         const res = await fetch("https://api.github.com/copilot_internal/user", {
           headers: {
@@ -657,7 +700,7 @@ async function fetchCopilotProviders(timeoutMs: number, skipSubprocess: boolean)
             "editor-plugin-version": "copilot-chat/0.26.7",
             "x-github-api-version": "2025-04-01",
           },
-          signal: AbortSignal.timeout(timeoutMs),
+          signal: AbortSignal.timeout(reqTimeout),
         });
         if (res.status === 404) continue;
         if (res.status === 401 || res.status === 403) {
@@ -725,7 +768,8 @@ const GROK_PERIOD_KINDS: Record<string, string> = {
   USAGE_PERIOD_TYPE_MONTHLY: "month",
 };
 
-async function fetchGrokProviders(timeoutMs: number): Promise<GenericProvider[]> {
+async function fetchGrokProviders(opts?: DiscoveryOptions): Promise<GenericProvider[]> {
+  if (budgetMs(opts, 3500, FAST_HTTP_TIMEOUT_MS) <= 50) return [];
   const home = homedir();
   const entries = Object.entries(record(parseJson(readText(join(home, ".grok", "auth.json")))));
   if (entries.length === 0) return [];
@@ -741,6 +785,8 @@ async function fetchGrokProviders(timeoutMs: number): Promise<GenericProvider[]>
       results.push({ id: "grok", account: email, plan: null, windows: [], problem: "expired" });
       continue;
     }
+    const reqTimeout = budgetMs(opts, 3500, FAST_HTTP_TIMEOUT_MS);
+    if (reqTimeout <= 50) break;
     try {
       const res = await fetch("https://cli-chat-proxy.grok.com/v1/billing?format=credits", {
         headers: {
@@ -749,7 +795,7 @@ async function fetchGrokProviders(timeoutMs: number): Promise<GenericProvider[]>
           accept: "application/json",
           "user-agent": USER_AGENT,
         },
-        signal: AbortSignal.timeout(timeoutMs),
+        signal: AbortSignal.timeout(reqTimeout),
       });
       if (res.status === 401 || res.status === 403) {
         results.push({ id: "grok", account: email, plan: null, windows: [], problem: "expired" });
@@ -777,7 +823,9 @@ async function fetchGrokProviders(timeoutMs: number): Promise<GenericProvider[]>
   return results;
 }
 
-async function fetchOpencodeProviders(timeoutMs: number): Promise<GenericProvider[]> {
+async function fetchOpencodeProviders(opts?: DiscoveryOptions): Promise<GenericProvider[]> {
+  const reqTimeout = budgetMs(opts, 3500, FAST_HTTP_TIMEOUT_MS);
+  if (reqTimeout <= 50) return [];
   const home = homedir();
   const dir = join(process.env["XDG_DATA_HOME"] || join(home, ".local", "share"), "opencode");
   const root = record(parseJson(readText(join(dir, "auth.json"))));
@@ -795,7 +843,7 @@ async function fetchOpencodeProviders(timeoutMs: number): Promise<GenericProvide
   try {
     const res = await fetch("https://opencode.ai/zen/go/v1/usage", {
       headers: { authorization: `Bearer ${token}`, accept: "application/json", "user-agent": USER_AGENT },
-      signal: AbortSignal.timeout(timeoutMs),
+      signal: AbortSignal.timeout(reqTimeout),
     });
     if (res.status === 403 || !res.ok) return [];
     const body = record(await res.json());
@@ -818,14 +866,12 @@ async function fetchOpencodeProviders(timeoutMs: number): Promise<GenericProvide
   }
 }
 
-export async function fetchOtherProviders(options?: { fast?: boolean }): Promise<GenericProvider[]> {
-  const fast = options?.fast === true;
-  const timeoutMs = fast ? 1200 : 3500;
+export async function fetchOtherProviders(opts?: DiscoveryOptions): Promise<GenericProvider[]> {
   const [cursor, copilot, grok, opencode] = await Promise.all([
-    fetchCursorProviders(timeoutMs),
-    fetchCopilotProviders(timeoutMs, fast),
-    fetchGrokProviders(timeoutMs),
-    fetchOpencodeProviders(timeoutMs),
+    fetchCursorProviders(opts),
+    fetchCopilotProviders(opts),
+    fetchGrokProviders(opts),
+    fetchOpencodeProviders(opts),
   ]);
   return [...cursor, ...copilot, ...grok, ...opencode];
 }

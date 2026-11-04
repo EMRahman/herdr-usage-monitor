@@ -1,5 +1,6 @@
 import { existsSync, writeFileSync } from "node:fs";
 import {
+  type DiscoveryOptions,
   fetchOtherProviders,
   getAntigravitySignIns,
   getClaudeSignIns,
@@ -8,7 +9,10 @@ import {
 } from "./providers.ts";
 
 export const CACHE_FILE = "/tmp/herdr-usage-cache.json";
+export const FAST_CACHE_FILE = "/tmp/herdr-usage-fast-cache.json";
 export const AGY_CACHE_FILE = "/tmp/herdr-agy-usage.json";
+
+const FAST_TOTAL_BUDGET_MS = 1_600;
 
 export interface CodexCreditItem {
   id: string;
@@ -70,15 +74,17 @@ export interface GenericProvider {
 
 export interface FullReport {
   timestamp: number;
+  /** True when produced by fast tab-bar mode (omits secondary breakdown calls). */
+  partial?: boolean;
   claude?: DetailedClaude | null;
   codex?: DetailedCodex | null;
   antigravity?: DetailedAgy | null;
   others: GenericProvider[];
 }
 
-export async function getCachedReport(maxAgeMs = 180_000): Promise<FullReport | null> {
+async function readCacheFile(path: string, maxAgeMs: number): Promise<FullReport | null> {
   try {
-    const file = Bun.file(CACHE_FILE);
+    const file = Bun.file(path);
     if (await file.exists()) {
       const data = JSON.parse(await file.text()) as FullReport;
       if (Date.now() - (data.timestamp || 0) < maxAgeMs) {
@@ -89,28 +95,51 @@ export async function getCachedReport(maxAgeMs = 180_000): Promise<FullReport | 
   return null;
 }
 
+export async function getCachedReport(
+  maxAgeMs = 180_000,
+  options?: { allowFast?: boolean },
+): Promise<FullReport | null> {
+  const complete = await readCacheFile(CACHE_FILE, maxAgeMs);
+  if (!options?.allowFast) {
+    return complete && !complete.partial ? complete : null;
+  }
+  const fast = await readCacheFile(FAST_CACHE_FILE, maxAgeMs);
+  if (complete && fast) {
+    return (complete.timestamp || 0) >= (fast.timestamp || 0) ? complete : fast;
+  }
+  return complete ?? fast;
+}
+
 export function saveCachedReport(report: FullReport): void {
   try {
-    writeFileSync(CACHE_FILE, JSON.stringify(report));
+    writeFileSync(report.partial ? FAST_CACHE_FILE : CACHE_FILE, JSON.stringify(report));
   } catch {}
+}
+
+function remainingBudget(deadlineMs: number | undefined, defaultMs: number, fastCapMs: number): number {
+  const cap = deadlineMs !== undefined ? Math.min(defaultMs, fastCapMs) : defaultMs;
+  if (deadlineMs === undefined) return cap;
+  return Math.max(0, Math.min(cap, deadlineMs - Date.now()));
 }
 
 export async function fetchDetailedReport(options?: { fast?: boolean }): Promise<FullReport> {
   const fast = options?.fast === true;
-  const timeoutMs = fast ? 1400 : 3500;
+  const deadlineMs = fast ? Date.now() + FAST_TOTAL_BUDGET_MS : undefined;
+  const discoveryOpts: DiscoveryOptions = { fast, deadlineMs };
 
-  const [claudeSignIns, codexSignIns, agySignIns] = await Promise.all([
-    getClaudeSignIns().catch(() => []),
-    getCodexSignIns().catch(() => []),
-    getAntigravitySignIns().catch(() => []),
-  ]);
+  const report: FullReport = {
+    timestamp: Date.now(),
+    ...(fast ? { partial: true } : {}),
+    others: [],
+  };
 
-  const report: FullReport = { timestamp: Date.now(), others: [] };
-
-  // Fetch Claude
+  // Fetch Claude (discovers its own credentials so slow Keychain never blocks other providers)
   const claudePromise = (async () => {
+    const claudeSignIns = await getClaudeSignIns(discoveryOpts).catch(() => []);
     const s = claudeSignIns[0];
     if (!s) return;
+    const reqTimeout = remainingBudget(deadlineMs, 3500, 1200);
+    if (reqTimeout <= 50) return;
     const res = await fetch("https://api.anthropic.com/api/oauth/usage?cedar_ember=1", {
       headers: {
         authorization: `Bearer ${s.token}`,
@@ -118,7 +147,7 @@ export async function fetchDetailedReport(options?: { fast?: boolean }): Promise
         "anthropic-beta": "oauth-2025-04-20",
         "user-agent": "claude-cli/2.1.0 (external, cli)",
       },
-      signal: AbortSignal.timeout(timeoutMs),
+      signal: AbortSignal.timeout(reqTimeout),
     });
     if (!res.ok) return;
     const body = (await res.json()) as any;
@@ -167,8 +196,11 @@ export async function fetchDetailedReport(options?: { fast?: boolean }): Promise
 
   // Fetch Codex
   const codexPromise = (async () => {
+    const codexSignIns = await getCodexSignIns(discoveryOpts).catch(() => []);
     const s = codexSignIns[0];
     if (!s) return;
+    const reqTimeout = remainingBudget(deadlineMs, 3500, 1200);
+    if (reqTimeout <= 50) return;
     const headers: Record<string, string> = {
       authorization: `Bearer ${s.token}`,
       accept: "application/json",
@@ -177,13 +209,13 @@ export async function fetchDetailedReport(options?: { fast?: boolean }): Promise
     const [usageRes, creditsRes] = await Promise.all([
       fetch("https://chatgpt.com/backend-api/wham/usage", {
         headers,
-        signal: AbortSignal.timeout(timeoutMs),
+        signal: AbortSignal.timeout(reqTimeout),
       }),
       fast
         ? Promise.resolve(null)
         : fetch("https://chatgpt.com/backend-api/wham/rate-limit-reset-credits", {
             headers,
-            signal: AbortSignal.timeout(timeoutMs),
+            signal: AbortSignal.timeout(reqTimeout),
           }).catch(() => null),
     ]);
     if (!usageRes.ok) return;
@@ -228,10 +260,7 @@ export async function fetchDetailedReport(options?: { fast?: boolean }): Promise
 
   // Fetch Antigravity (AGY)
   const agyPromise = (async () => {
-    const s = agySignIns[0];
-    const account = s?.account?.label ?? "default";
-
-    // Try reading recent agy cache
+    // Try reading recent agy cache first before touching Keychain
     let agyData: any = null;
     try {
       if (existsSync(AGY_CACHE_FILE)) {
@@ -241,6 +270,10 @@ export async function fetchDetailedReport(options?: { fast?: boolean }): Promise
         }
       }
     } catch {}
+
+    const agySignIns = await getAntigravitySignIns(discoveryOpts).catch(() => []);
+    const s = agySignIns[0];
+    const account = s?.account?.label ?? "default";
 
     // If not cached (and not in fast cold-bar mode), invoke agy CLI
     if (!agyData && !fast) {
@@ -301,20 +334,30 @@ export async function fetchDetailedReport(options?: { fast?: boolean }): Promise
 
     // Direct API fallback
     if (!s) return;
-    const init = {
-      method: "POST",
-      headers: {
-        authorization: `Bearer ${s.token}`,
-        accept: "application/json",
-        "content-type": "application/json",
-        "user-agent": "antigravity",
-      },
-      body: "{}",
-      signal: AbortSignal.timeout(timeoutMs),
+    const headers = {
+      authorization: `Bearer ${s.token}`,
+      accept: "application/json",
+      "content-type": "application/json",
+      "user-agent": "antigravity",
     };
-    let res = await fetch("https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary", init).catch(() => null);
+    const firstTimeout = remainingBudget(deadlineMs, 3000, 900);
+    if (firstTimeout <= 50) return;
+    let res = await fetch("https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary", {
+      method: "POST",
+      headers,
+      body: "{}",
+      signal: AbortSignal.timeout(firstTimeout),
+    }).catch(() => null);
     if (!res || !res.ok) {
-      res = await fetch("https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary", init).catch(() => null);
+      const retryTimeout = remainingBudget(deadlineMs, 3000, 900);
+      if (retryTimeout > 50) {
+        res = await fetch("https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary", {
+          method: "POST",
+          headers,
+          body: "{}",
+          signal: AbortSignal.timeout(retryTimeout),
+        }).catch(() => null);
+      }
     }
     if (!res || !res.ok) return;
     const body = (await res.json()) as any;
@@ -344,22 +387,53 @@ export async function fetchDetailedReport(options?: { fast?: boolean }): Promise
   })().catch(() => {});
 
   // Secondary providers (Cursor, Copilot, Grok, OpenCode)
-  const othersPromise = fetchOtherProviders({ fast })
+  const othersPromise = fetchOtherProviders(discoveryOpts)
     .then((others) => {
       report.others = others;
     })
     .catch(() => {});
 
-  await Promise.all([claudePromise, codexPromise, agyPromise, othersPromise]);
+  const allTasks = Promise.allSettled([claudePromise, codexPromise, agyPromise, othersPromise]);
+  if (deadlineMs !== undefined) {
+    await Promise.race([allTasks, Bun.sleep(Math.max(0, deadlineMs - Date.now()))]);
+  } else {
+    await allTasks;
+  }
 
-  // Fallback to previous disk cache if a provider was rate limited or temporarily unreachable
+  // Merge preserved details and fallback providers from previous cache
   try {
-    const prev = await getCachedReport(24 * 3600_000);
-    if (prev) {
-      if (!report.claude && prev.claude) report.claude = prev.claude;
-      if (!report.codex && prev.codex) report.codex = prev.codex;
-      if (!report.antigravity && prev.antigravity) report.antigravity = prev.antigravity;
-      if (report.others.length === 0 && prev.others?.length) report.others = prev.others;
+    const prevComplete = await getCachedReport(24 * 3600_000);
+    const prevAny = await getCachedReport(24 * 3600_000, { allowFast: true });
+
+    if (!report.claude) {
+      report.claude = prevAny?.claude ?? prevComplete?.claude;
+    }
+    if (!report.codex) {
+      report.codex = prevComplete?.codex ?? prevAny?.codex;
+    }
+    if (!report.antigravity) {
+      report.antigravity = prevComplete?.antigravity ?? prevAny?.antigravity;
+    }
+    if (report.others.length === 0) {
+      if (prevComplete?.others?.length) report.others = prevComplete.others;
+      else if (prevAny?.others?.length) report.others = prevAny.others;
+    }
+
+    // If Codex reset-credit details were skipped (or came from fast fallback), preserve cached items
+    if (
+      report.codex &&
+      report.codex.resets.available > 0 &&
+      report.codex.resets.items.length === 0 &&
+      prevComplete?.codex?.account === report.codex.account &&
+      prevComplete.codex.resets.items.length > 0
+    ) {
+      const now = Date.now();
+      report.codex.resets.items = prevComplete.codex.resets.items
+        .filter((item) => {
+          const exp = Date.parse(item.expires_at);
+          return !Number.isFinite(exp) || exp > now;
+        })
+        .slice(0, report.codex.resets.available);
     }
   } catch {}
 

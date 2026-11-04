@@ -63,8 +63,8 @@ function formatTabBar(report: FullReport): string {
   return parts.join(" · ");
 }
 
-// 1. Fast path: check warm cache (< 5 minutes)
-let report = await getCachedReport(300_000);
+// 1. Fast path: check warm cache (< 5 minutes, complete or fast)
+let report = await getCachedReport(300_000, { allowFast: true });
 if (report) {
   const line = formatTabBar(report);
   if (line) {
@@ -73,10 +73,10 @@ if (report) {
   }
 }
 
-// 2. Cold cache fallback: fast direct fetch (stays well under Herdr's 2s command timeout)
+// 2. Cold cache fallback: bounded fast direct fetch (stays well under Herdr's 2s command timeout)
 report = await fetchDetailedReport({ fast: true }).catch(() => null);
 if (!report) {
-  report = await getCachedReport(24 * 3600_000);
+  report = await getCachedReport(24 * 3600_000, { allowFast: true });
 }
 
 if (report) {
@@ -85,3 +85,4 @@ if (report) {
     console.log(line);
   }
 }
+process.exit(0);
