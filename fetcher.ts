@@ -1,10 +1,14 @@
-import { homedir } from "node:os";
-import { join } from "node:path";
 import { existsSync, writeFileSync } from "node:fs";
+import {
+  fetchOtherProviders,
+  getAntigravitySignIns,
+  getClaudeSignIns,
+  getCodexSignIns,
+  resolveBinary,
+} from "./providers.ts";
 
 export const CACHE_FILE = "/tmp/herdr-usage-cache.json";
 export const AGY_CACHE_FILE = "/tmp/herdr-agy-usage.json";
-const root = process.env.HERDR_WEB_UI_DIR ?? join(homedir(), "Code", "herdr-web-ui");
 
 export interface CodexCreditItem {
   id: string;
@@ -91,28 +95,14 @@ export function saveCachedReport(report: FullReport): void {
   } catch {}
 }
 
-export async function fetchDetailedReport(): Promise<FullReport> {
-  const { USAGE_PROVIDERS } = await import(join(root, "server", "usage.ts"));
-
-  const ctx = {
-    home: homedir(),
-    env: process.env,
-    platform: process.platform,
-    async fetch(url: string, init: RequestInit) { return fetch(url, init); },
-    async keychain(service: string, account?: string) {
-      const child = Bun.spawn(["security", "find-generic-password", "-s", service, ...(account ? ["-a", account] : []), "-w"], { stdout: "pipe", stderr: "ignore" });
-      const val = (await new Response(child.stdout).text()).trim();
-      if ((await child.exited) === 0 && val) return { status: "found" as const, value: val };
-      return { status: "missing" as const };
-    },
-    async run() { return null; },
-    now: () => Date.now(),
-  };
+export async function fetchDetailedReport(options?: { fast?: boolean }): Promise<FullReport> {
+  const fast = options?.fast === true;
+  const timeoutMs = fast ? 1400 : 3500;
 
   const [claudeSignIns, codexSignIns, agySignIns] = await Promise.all([
-    USAGE_PROVIDERS.find(p => p.id === "claude")?.signIns(ctx).catch(() => []) ?? [],
-    USAGE_PROVIDERS.find(p => p.id === "codex")?.signIns(ctx).catch(() => []) ?? [],
-    USAGE_PROVIDERS.find(p => p.id === "antigravity")?.signIns(ctx).catch(() => []) ?? [],
+    getClaudeSignIns().catch(() => []),
+    getCodexSignIns().catch(() => []),
+    getAntigravitySignIns().catch(() => []),
   ]);
 
   const report: FullReport = { timestamp: Date.now(), others: [] };
@@ -122,11 +112,16 @@ export async function fetchDetailedReport(): Promise<FullReport> {
     const s = claudeSignIns[0];
     if (!s) return;
     const res = await fetch("https://api.anthropic.com/api/oauth/usage?cedar_ember=1", {
-      headers: { authorization: `Bearer ${s.token}`, accept: "application/json", "anthropic-beta": "oauth-2025-04-20", "user-agent": "claude-cli/2.1.0 (external, cli)" },
-      signal: AbortSignal.timeout(3500),
+      headers: {
+        authorization: `Bearer ${s.token}`,
+        accept: "application/json",
+        "anthropic-beta": "oauth-2025-04-20",
+        "user-agent": "claude-cli/2.1.0 (external, cli)",
+      },
+      signal: AbortSignal.timeout(timeoutMs),
     });
     if (!res.ok) return;
-    const body = await res.json() as any;
+    const body = (await res.json()) as any;
 
     const windows: DetailedClaude["windows"] = [];
     if (body.five_hour && body.five_hour.utilization != null) {
@@ -144,13 +139,15 @@ export async function fetchDetailedReport(): Promise<FullReport> {
 
     let extra_usage = null;
     if (body.extra_usage?.is_enabled || body.spend?.enabled) {
-      const curr = body.extra_usage?.currency === "GBP" ? "£" : "$";
+      const currency = body.extra_usage?.currency ?? body.spend?.used?.currency ?? "USD";
+      const curr = currency === "GBP" ? "£" : currency === "EUR" ? "€" : currency === "USD" ? "$" : `${currency} `;
+      const decimals = body.extra_usage?.decimal_places ?? 2;
+      const divisor = Math.pow(10, decimals);
       const usedMinor = body.spend?.used?.amount_minor ?? body.extra_usage?.used_credits ?? 0;
       const limitMinor = body.spend?.limit?.amount_minor ?? body.extra_usage?.monthly_limit ?? 0;
-      const divisor = 100;
-      const usedStr = `${curr}${(usedMinor / divisor).toFixed(2)}`;
-      const limitStr = `${curr}${(limitMinor / divisor).toFixed(2)}`;
-      const leftStr = `${curr}${Math.max(0, (limitMinor - usedMinor) / divisor).toFixed(2)}`;
+      const usedStr = `${curr}${(usedMinor / divisor).toFixed(decimals)}`;
+      const limitStr = `${curr}${(limitMinor / divisor).toFixed(decimals)}`;
+      const leftStr = `${curr}${Math.max(0, (limitMinor - usedMinor) / divisor).toFixed(decimals)}`;
       const usedPct = body.extra_usage?.utilization ?? body.spend?.percent ?? 0;
       extra_usage = {
         used: usedStr,
@@ -172,19 +169,26 @@ export async function fetchDetailedReport(): Promise<FullReport> {
   const codexPromise = (async () => {
     const s = codexSignIns[0];
     if (!s) return;
+    const headers: Record<string, string> = {
+      authorization: `Bearer ${s.token}`,
+      accept: "application/json",
+      ...(s.chatgptAccount ? { "chatgpt-account-id": s.chatgptAccount } : {}),
+    };
     const [usageRes, creditsRes] = await Promise.all([
       fetch("https://chatgpt.com/backend-api/wham/usage", {
-        headers: { authorization: `Bearer ${s.token}`, accept: "application/json", ...(s.chatgptAccount ? { "chatgpt-account-id": s.chatgptAccount } : {}) },
-        signal: AbortSignal.timeout(3500),
+        headers,
+        signal: AbortSignal.timeout(timeoutMs),
       }),
-      fetch("https://chatgpt.com/backend-api/wham/rate-limit-reset-credits", {
-        headers: { authorization: `Bearer ${s.token}`, accept: "application/json", ...(s.chatgptAccount ? { "chatgpt-account-id": s.chatgptAccount } : {}) },
-        signal: AbortSignal.timeout(3500),
-      }).catch(() => null),
+      fast
+        ? Promise.resolve(null)
+        : fetch("https://chatgpt.com/backend-api/wham/rate-limit-reset-credits", {
+            headers,
+            signal: AbortSignal.timeout(timeoutMs),
+          }).catch(() => null),
     ]);
     if (!usageRes.ok) return;
-    const body = await usageRes.json() as any;
-    const creditsBody = creditsRes && creditsRes.ok ? await creditsRes.json() as any : null;
+    const body = (await usageRes.json()) as any;
+    const creditsBody = creditsRes && creditsRes.ok ? ((await creditsRes.json()) as any) : null;
 
     const rate = body.rate_limit ?? {};
     const windows: DetailedCodex["windows"] = [];
@@ -238,21 +242,33 @@ export async function fetchDetailedReport(): Promise<FullReport> {
       }
     } catch {}
 
-    // If not cached, invoke agy CLI
-    if (!agyData) {
-      try {
-        const child = Bun.spawn(["agy", "-p", "/usage", "--output-format", "json"], { stdout: "pipe", stderr: "ignore" });
-        const timer = setTimeout(() => { try { child.kill(); } catch {} }, 4500);
-        const text = await new Response(child.stdout).text();
-        clearTimeout(timer);
-        if ((await child.exited) === 0 && text) {
-          const parsed = JSON.parse(text);
-          if (parsed.command?.data?.groups) {
-            agyData = parsed.command.data;
-            try { writeFileSync(AGY_CACHE_FILE, JSON.stringify(agyData)); } catch {}
+    // If not cached (and not in fast cold-bar mode), invoke agy CLI
+    if (!agyData && !fast) {
+      const agyBin = resolveBinary("agy");
+      if (agyBin) {
+        try {
+          const child = Bun.spawn([agyBin, "-p", "/usage", "--output-format", "json"], {
+            stdout: "pipe",
+            stderr: "ignore",
+          });
+          const timer = setTimeout(() => {
+            try {
+              child.kill();
+            } catch {}
+          }, 4500);
+          const text = await new Response(child.stdout).text();
+          clearTimeout(timer);
+          if ((await child.exited) === 0 && text) {
+            const parsed = JSON.parse(text);
+            if (parsed.command?.data?.groups) {
+              agyData = parsed.command.data;
+              try {
+                writeFileSync(AGY_CACHE_FILE, JSON.stringify(agyData));
+              } catch {}
+            }
           }
-        }
-      } catch {}
+        } catch {}
+      }
     }
 
     if (agyData?.groups) {
@@ -287,81 +303,63 @@ export async function fetchDetailedReport(): Promise<FullReport> {
     if (!s) return;
     const init = {
       method: "POST",
-      headers: { authorization: `Bearer ${s.token}`, accept: "application/json", "content-type": "application/json", "user-agent": "antigravity" },
+      headers: {
+        authorization: `Bearer ${s.token}`,
+        accept: "application/json",
+        "content-type": "application/json",
+        "user-agent": "antigravity",
+      },
       body: "{}",
-      signal: AbortSignal.timeout(3000),
+      signal: AbortSignal.timeout(timeoutMs),
     };
     let res = await fetch("https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary", init).catch(() => null);
     if (!res || !res.ok) {
       res = await fetch("https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary", init).catch(() => null);
     }
     if (!res || !res.ok) return;
-    const body = await res.json() as any;
-    const groupsRaw = Array.isArray(body.groups) ? body.groups : [];
+    const body = (await res.json()) as any;
+    const rawGroups = body.groups ?? body.response?.groups;
+    const groupsRaw = Array.isArray(rawGroups) ? rawGroups : [];
     const groups = groupsRaw.map((g: any) => ({
-      name: g.displayName ?? "Model group",
+      name: g.displayName ?? g.name ?? "Model group",
       models: g.description?.replace(/^Models within this group:\s*/i, "") ?? "",
-      buckets: (g.buckets ?? []).map((b: any) => ({
-        label: b.window === "5h" ? "5h limit" : b.window === "weekly" ? "Weekly limit" : (b.displayName ?? "Limit"),
-        remaining_percent: Math.round((b.remainingFraction ?? 0) * 100),
-        resets_at: b.resetTime ?? null,
-      })),
+      buckets: (g.buckets ?? []).map((b: any) => {
+        const bucketId = String(b.bucketId ?? "");
+        const is5h = b.window === "5h" || bucketId.endsWith("-5h");
+        const isWeekly = b.window === "weekly" || bucketId.endsWith("-weekly");
+        return {
+          label: is5h ? "5h limit" : isWeekly ? "Weekly limit" : (b.displayName ?? b.name ?? "Limit"),
+          remaining_percent: Math.round((b.remainingFraction ?? 0) * 100),
+          resets_at: b.resetTime ?? null,
+        };
+      }),
     }));
 
-    report.antigravity = {
-      account,
-      groups,
-    };
+    if (groups.length > 0) {
+      report.antigravity = {
+        account,
+        groups,
+      };
+    }
   })().catch(() => {});
 
-  // Local bridge API cache baseline
-  let bridgeProviders: any[] = [];
-  const othersPromise = (async () => {
-    try {
-      const res = await fetch("http://127.0.0.1:7317/api/usage", { signal: AbortSignal.timeout(800) });
-      if (res.ok) {
-        const data = await res.json() as { providers: any[] };
-        bridgeProviders = data.providers ?? [];
-        for (const p of bridgeProviders) {
-          if (!["claude", "codex", "antigravity"].includes(p.id)) {
-            report.others.push(p);
-          }
-        }
-      }
-    } catch {}
-  })().catch(() => {});
+  // Secondary providers (Cursor, Copilot, Grok, OpenCode)
+  const othersPromise = fetchOtherProviders({ fast })
+    .then((others) => {
+      report.others = others;
+    })
+    .catch(() => {});
 
   await Promise.all([claudePromise, codexPromise, agyPromise, othersPromise]);
 
-  // Fallback to bridge cache if a provider was rate limited
-  if (!report.claude) {
-    const p = bridgeProviders.find((x) => x.id === "claude");
-    if (p) {
-      report.claude = {
-        account: p.account ?? "default",
-        plan: p.plan ?? "pro",
-        windows: (p.windows ?? []).map((w: any) => ({
-          label: w.kind === "session" ? "5h session" : w.kind === "week" ? "7d weekly" : w.kind,
-          used_percent: w.used_percent,
-          resets_at: w.resets_at,
-        })),
-        extra_usage: p.credits ? {
-          used: p.credits.balance?.split("/")?.[0]?.trim() ?? "",
-          limit: p.credits.balance?.split("/")?.[1]?.trim() ?? "",
-          balance_left: "£2.47",
-          used_percent: p.credits.used_percent ?? 84,
-        } : null,
-      };
-    }
-  }
-
-  // Fallback to previous disk cache if still missing (e.g. rate limit / network hiccup)
+  // Fallback to previous disk cache if a provider was rate limited or temporarily unreachable
   try {
     const prev = await getCachedReport(24 * 3600_000);
     if (prev) {
       if (!report.claude && prev.claude) report.claude = prev.claude;
       if (!report.codex && prev.codex) report.codex = prev.codex;
       if (!report.antigravity && prev.antigravity) report.antigravity = prev.antigravity;
+      if (report.others.length === 0 && prev.others?.length) report.others = prev.others;
     }
   } catch {}
 

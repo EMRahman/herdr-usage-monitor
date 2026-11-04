@@ -31,7 +31,7 @@ Supports Claude Code, OpenAI Codex, Antigravity CLI (AGY), Cursor, Grok, and Git
   * **Claude**: 5h session, 7d weekly, and Extra usage spend balances with remaining amounts.
   * **Codex**: 5h and weekly limits, plus an itemized list of all available rate limit reset credits with exact expiration dates.
   * **Antigravity (AGY)**: All quota groups (Gemini Models, Claude & GPT 3p models, and Gemini 4 Argon) with exact local reset times and shared quota policy details.
-* **Fast & lightweight**: Resolves in ~12ms via the local `herdr-web-ui` bridge cache, falling back to direct CLI credential inspection when offline.
+* **Standalone & lightweight**: Zero external plugin dependencies — inspects local CLI credentials (read-only) and resolves in <1ms from the warm cache.
 
 ---
 
