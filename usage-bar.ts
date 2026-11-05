@@ -1,7 +1,5 @@
 // Single-line compact usage status for herdr tab_bar_right
-import { homedir } from "node:os";
-import { join } from "node:path";
-import { getCachedReport } from "./fetcher.ts";
+import { fetchDetailedReport, getCachedReport, type FullReport } from "./fetcher.ts";
 
 const SHORT_NAMES: Record<string, string> = {
   claude: "Claude",
@@ -10,33 +8,32 @@ const SHORT_NAMES: Record<string, string> = {
   antigravity: "AGY",
   grok: "Grok",
   copilot: "Copilot",
+  opencode: "OpenCode",
 };
 
-// 1. Fast path: check warm cache
-const cached = await getCachedReport(300_000);
-if (cached) {
+function formatTabBar(report: FullReport): string {
   const parts: string[] = [];
 
   // Claude 5h
-  if (cached.claude) {
-    const s = cached.claude.windows.find(w => w.label.includes("5h")) ?? cached.claude.windows[0];
+  if (report.claude) {
+    const s = report.claude.windows.find((w) => w.label.includes("5h")) ?? report.claude.windows[0];
     if (s) {
       parts.push(`Claude ${Math.max(0, 100 - Math.round(s.used_percent))}%`);
     }
   }
 
   // Codex 5h
-  if (cached.codex) {
-    const s = cached.codex.windows.find(w => w.label.includes("5h")) ?? cached.codex.windows[0];
+  if (report.codex) {
+    const s = report.codex.windows.find((w) => w.label.includes("5h")) ?? report.codex.windows[0];
     if (s) {
       parts.push(`Codex ${Math.max(0, 100 - Math.round(s.used_percent))}%`);
     }
   }
 
   // AGY highest 5h
-  if (cached.antigravity) {
+  if (report.antigravity) {
     const fiveHourValues: number[] = [];
-    for (const g of cached.antigravity.groups || []) {
+    for (const g of report.antigravity.groups || []) {
       for (const b of g.buckets || []) {
         if (b.label.includes("5h") || b.label.includes("Five Hour")) {
           fiveHourValues.push(b.remaining_percent);
@@ -48,57 +45,44 @@ if (cached) {
     }
   }
 
-  if (parts.length > 0) {
-    console.log(parts.join(" · "));
+  // Fallback to secondary providers if none of the primary 5h providers are active
+  if (parts.length === 0 && report.others?.length) {
+    for (const p of report.others) {
+      const name = SHORT_NAMES[p.id] ?? p.id.charAt(0).toUpperCase() + p.id.slice(1);
+      if (p.problem === "expired") {
+        parts.push(`${name}: auth expired`);
+        continue;
+      }
+      const sessionWindow = p.windows.find((w) => w.kind === "session") ?? p.windows[0];
+      if (!sessionWindow) continue;
+      const remaining = Math.max(0, 100 - Math.round(sessionWindow.used_percent));
+      parts.push(`${name} ${remaining}%`);
+    }
+  }
+
+  return parts.join(" · ");
+}
+
+// 1. Fast path: check warm cache (< 5 minutes, complete or fast)
+let report = await getCachedReport(300_000, { allowFast: true });
+if (report) {
+  const line = formatTabBar(report);
+  if (line) {
+    console.log(line);
     process.exit(0);
   }
 }
 
-// 2. Fallback path if cache is cold
-async function getReport() {
-  try {
-    const res = await fetch("http://127.0.0.1:7317/api/usage", { signal: AbortSignal.timeout(600) });
-    if (res.ok) return await res.json() as any;
-  } catch {}
-
-  try {
-    const root = process.env.HERDR_WEB_UI_DIR ?? join(homedir(), "Code", "herdr-web-ui");
-    const { UsageService } = await import(join(root, "server", "usage.ts"));
-    return await new UsageService().report();
-  } catch {}
-
-  return null;
+// 2. Cold cache fallback: bounded fast direct fetch (stays well under Herdr's 2s command timeout)
+report = await fetchDetailedReport({ fast: true }).catch(() => null);
+if (!report) {
+  report = await getCachedReport(24 * 3600_000, { allowFast: true });
 }
 
-const report = await getReport();
-if (!report || !report.providers?.length) {
-  process.exit(0);
-}
-
-const parts: string[] = [];
-for (const p of report.providers) {
-  const name = SHORT_NAMES[p.id] ?? (p.id.charAt(0).toUpperCase() + p.id.slice(1));
-  if (p.problem === "expired") {
-    parts.push(`${name}: auth expired`);
-    continue;
+if (report) {
+  const line = formatTabBar(report);
+  if (line) {
+    console.log(line);
   }
-
-  if (p.id === "antigravity") {
-    const sessionWindows = p.windows.filter((w: any) => w.kind === "session");
-    if (sessionWindows.length > 0) {
-      const highest = Math.max(...sessionWindows.map((w: any) => Math.max(0, 100 - Math.round(w.used_percent))));
-      parts.push(`AGY ${highest}%`);
-    }
-    continue;
-  }
-
-  const sessionWindow = p.windows.find((w: any) => w.kind === "session") ?? p.windows[0];
-  if (!sessionWindow) continue;
-
-  const remaining = Math.max(0, 100 - Math.round(sessionWindow.used_percent));
-  parts.push(`${name} ${remaining}%`);
 }
-
-if (parts.length > 0) {
-  console.log(parts.join(" · "));
-}
+process.exit(0);
