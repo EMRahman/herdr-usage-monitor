@@ -26,7 +26,7 @@ Supports Claude Code, OpenAI Codex, Antigravity CLI (AGY), Cursor, Grok, and Git
 * **Focused 5-Hour view**: Glance at `Claude 97% · Codex 90% · AGY 100%` directly in your tab bar without cluttering your workflow.
 * **Inverted to % remaining**: Clearly shows how much allowance buffer you have left before limits or throttling.
 * **Instant on-demand breakdown (0ms)**: Hit `prefix + u` to instantly display the modal overlay from warm cache without any startup lag. Shows a subtle `↻ refreshing…` indicator in the footer while revalidating fresh data in the background. Press `q` or `Esc` to close immediately, or `r` to manually refresh.
-* **Background Polling Daemon**: Includes a background daemon (`bun monitor.ts`) that keeps usage caches warm every 60s, keeping tab bar checks fast (<1ms) and popup brings instantaneous.
+* **Background Polling Daemon**: Includes a background daemon (`bun monitor.ts`) that keeps usage caches warm in the background (every 3 minutes), keeping tab bar checks fast (<1ms) and popup brings instantaneous while respecting provider rate limits.
 * **Deep Provider Details**:
   * **Claude**: 5h session, 7d weekly, and Extra usage spend balances with remaining amounts.
   * **Codex**: 5h and weekly limits, plus an itemized list of all available rate limit reset credits with exact expiration dates.
@@ -45,7 +45,9 @@ cd ~/Code/herdr-usage-monitor
 bun install # (if needed)
 ```
 
-Add the following to your Herdr configuration at `~/.config/herdr/config.toml` (adjust `~/Code/herdr-usage-monitor` to match your clone path):
+Add the following to your Herdr configuration at `~/.config/herdr/config.toml` (adjust `~/Code/herdr-usage-monitor` to match your clone path).
+
+> **Important:** Herdr runs commands with a minimal `PATH`, so a bare `bun` often fails with `exit status: 127` (command not found). Replace `/path/to/bun` below with the absolute path from `which bun` (e.g. `~/.bun/bin/bun`, `~/.local/bin/bun`, or `/opt/homebrew/bin/bun`).
 
 ### 1. Tab Bar Status (`tab_bar_right`)
 
@@ -56,7 +58,7 @@ tab_bar_position = "top"
 
 # Show live provider remaining % at the right edge of the tab bar
 tab_bar_right = [
-  { type = "command", command = "bun ~/Code/herdr-usage-monitor/usage-bar.ts", interval_seconds = 60, timeout_seconds = 2 }
+  { type = "command", command = "/path/to/bun ~/Code/herdr-usage-monitor/usage-bar.ts", interval_seconds = 60, timeout_seconds = 2 }
 ]
 tab_bar_right_separator = " · "
 ```
@@ -67,7 +69,7 @@ tab_bar_right_separator = " · "
 [[keys.command]]
 key = "prefix+u"
 type = "popup"
-command = "bun ~/Code/herdr-usage-monitor/usage-pane.ts"
+command = "/path/to/bun ~/Code/herdr-usage-monitor/usage-pane.ts"
 description = "Show subscription usage breakdown"
 width = "65%"
 height = "65%"
@@ -75,7 +77,7 @@ height = "65%"
 
 ### 3. Background Poller Daemon (Optional, for 0ms instant brings)
 
-To keep the cache warm in the background every 60s:
+To keep the cache warm in the background:
 
 ```bash
 # Run in background via nohup:

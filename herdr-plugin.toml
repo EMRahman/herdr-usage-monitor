@@ -6,20 +6,20 @@ description = "Real-time subscription allowance monitor for Herdr: glanceable re
 platforms = ["macos", "linux"]
 
 [[startup]]
-command = ["bun", "monitor.ts"]
+command = ["sh", "-c", "PATH=$HOME/.local/bin:$HOME/.bun/bin:/opt/homebrew/bin:/usr/local/bin:$PATH exec bun monitor.ts"]
 
 [[actions]]
 id = "status"
 title = "Print subscription allowance status"
-command = ["bun", "usage-bar.ts"]
+command = ["sh", "-c", "PATH=$HOME/.local/bin:$HOME/.bun/bin:/opt/homebrew/bin:/usr/local/bin:$PATH exec bun usage-bar.ts"]
 
 [[actions]]
 id = "breakdown"
 title = "Show subscription usage breakdown once"
-command = ["bun", "usage-pane.ts", "--once"]
+command = ["sh", "-c", "PATH=$HOME/.local/bin:$HOME/.bun/bin:/opt/homebrew/bin:/usr/local/bin:$PATH exec bun usage-pane.ts --once"]
 
 [[panes]]
 id = "usage"
 title = "Subscription Allowance"
 placement = "split"
-command = ["bun", "usage-pane.ts"]
+command = ["sh", "-c", "PATH=$HOME/.local/bin:$HOME/.bun/bin:/opt/homebrew/bin:/usr/local/bin:$PATH exec bun usage-pane.ts"]

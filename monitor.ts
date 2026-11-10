@@ -1,7 +1,7 @@
-// Background poller for herdr-usage-monitor: keeps the usage cache warm every 60s
+// Background poller for herdr-usage-monitor: keeps the usage cache warm every 3 minutes
 import { fetchDetailedReport, saveCachedReport } from "./fetcher.ts";
 
-const INTERVAL_MS = 60_000;
+const INTERVAL_MS = 180_000; // 3 minutes: maintains fresh cache while preventing provider rate limits (e.g. Anthropic 429)
 
 async function tick() {
   try {
