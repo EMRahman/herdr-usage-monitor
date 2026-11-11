@@ -1,4 +1,6 @@
-import { existsSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { basename, join } from "node:path";
 import {
   type DiscoveryOptions,
   fetchOtherProviders,
@@ -8,9 +10,16 @@ import {
   resolveBinary,
 } from "./providers.ts";
 
-export const CACHE_FILE = "/tmp/herdr-usage-cache.json";
-export const FAST_CACHE_FILE = "/tmp/herdr-usage-fast-cache.json";
-export const AGY_CACHE_FILE = "/tmp/herdr-agy-usage.json";
+export const CACHE_DIR =
+  process.env["HERDR_USAGE_CACHE_DIR"] ??
+  (process.env["XDG_CACHE_HOME"]
+    ? join(process.env["XDG_CACHE_HOME"], "herdr-usage-monitor")
+    : join(homedir(), ".cache", "herdr-usage-monitor"));
+
+export const CACHE_FILE = join(CACHE_DIR, "herdr-usage-cache.json");
+export const FAST_CACHE_FILE = join(CACHE_DIR, "herdr-usage-fast-cache.json");
+export const AGY_CACHE_FILE = join(CACHE_DIR, "herdr-agy-usage.json");
+export const RATE_LIMITS_FILE = join(CACHE_DIR, "rate-limits.json");
 
 const FAST_TOTAL_BUDGET_MS = 1_600;
 
@@ -82,9 +91,37 @@ export interface FullReport {
   others: GenericProvider[];
 }
 
+interface RateLimitState {
+  claudeUntil?: number;
+}
+
+async function getRateLimitsAsync(): Promise<RateLimitState> {
+  try {
+    const file = Bun.file(RATE_LIMITS_FILE);
+    if (await file.exists()) {
+      return JSON.parse(await file.text()) as RateLimitState;
+    }
+  } catch {}
+  return {};
+}
+
+function saveRateLimits(state: RateLimitState): void {
+  try {
+    mkdirSync(CACHE_DIR, { recursive: true });
+    writeFileSync(RATE_LIMITS_FILE, JSON.stringify(state));
+  } catch {}
+}
+
 async function readCacheFile(path: string, maxAgeMs: number): Promise<FullReport | null> {
   try {
-    const file = Bun.file(path);
+    let file = Bun.file(path);
+    if (!(await file.exists())) {
+      const legacyPath = join("/tmp", basename(path));
+      const legacyFile = Bun.file(legacyPath);
+      if (await legacyFile.exists()) {
+        file = legacyFile;
+      }
+    }
     if (await file.exists()) {
       const data = JSON.parse(await file.text()) as FullReport;
       if (Date.now() - (data.timestamp || 0) < maxAgeMs) {
@@ -112,6 +149,7 @@ export async function getCachedReport(
 
 export function saveCachedReport(report: FullReport): void {
   try {
+    mkdirSync(CACHE_DIR, { recursive: true });
     writeFileSync(report.partial ? FAST_CACHE_FILE : CACHE_FILE, JSON.stringify(report));
   } catch {}
 }
@@ -135,6 +173,11 @@ export async function fetchDetailedReport(options?: { fast?: boolean }): Promise
 
   // Fetch Claude (discovers its own credentials so slow Keychain never blocks other providers)
   const claudePromise = (async () => {
+    const limits = await getRateLimitsAsync();
+    if (limits.claudeUntil && Date.now() < limits.claudeUntil) {
+      return;
+    }
+
     const claudeSignIns = await getClaudeSignIns(discoveryOpts).catch(() => []);
     const s = claudeSignIns[0];
     if (!s) return;
@@ -148,8 +191,25 @@ export async function fetchDetailedReport(options?: { fast?: boolean }): Promise
         "user-agent": "claude-cli/2.1.0 (external, cli)",
       },
       signal: AbortSignal.timeout(reqTimeout),
-    });
+    }).catch(() => null);
+
+    if (!res) return;
+
+    if (res.status === 429) {
+      const retryHeader = res.headers.get("retry-after");
+      const retrySec = retryHeader ? parseInt(retryHeader, 10) : NaN;
+      const cooldownMs = Number.isFinite(retrySec) && retrySec > 0 ? retrySec * 1000 : 300_000;
+      saveRateLimits({ ...limits, claudeUntil: Date.now() + cooldownMs });
+      return;
+    }
+
     if (!res.ok) return;
+
+    if (limits.claudeUntil) {
+      delete limits.claudeUntil;
+      saveRateLimits(limits);
+    }
+
     const body = (await res.json()) as any;
 
     const windows: DetailedClaude["windows"] = [];
@@ -263,10 +323,14 @@ export async function fetchDetailedReport(options?: { fast?: boolean }): Promise
     // Try reading recent agy cache first before touching Keychain
     let agyData: any = null;
     try {
-      if (existsSync(AGY_CACHE_FILE)) {
-        const stat = await Bun.file(AGY_CACHE_FILE).stat();
+      let agyPath = AGY_CACHE_FILE;
+      if (!existsSync(agyPath) && existsSync("/tmp/herdr-agy-usage.json")) {
+        agyPath = "/tmp/herdr-agy-usage.json";
+      }
+      if (existsSync(agyPath)) {
+        const stat = await Bun.file(agyPath).stat();
         if (Date.now() - stat.mtimeMs < 120_000) {
-          agyData = JSON.parse(await Bun.file(AGY_CACHE_FILE).text());
+          agyData = JSON.parse(await Bun.file(agyPath).text());
         }
       }
     } catch {}
@@ -296,6 +360,7 @@ export async function fetchDetailedReport(options?: { fast?: boolean }): Promise
             if (parsed.command?.data?.groups) {
               agyData = parsed.command.data;
               try {
+                mkdirSync(CACHE_DIR, { recursive: true });
                 writeFileSync(AGY_CACHE_FILE, JSON.stringify(agyData));
               } catch {}
             }
