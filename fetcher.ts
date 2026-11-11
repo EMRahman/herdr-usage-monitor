@@ -133,7 +133,7 @@ async function readCacheFile(path: string, maxAgeMs: number): Promise<FullReport
 }
 
 export async function getCachedReport(
-  maxAgeMs = 180_000,
+  maxAgeMs = 300_000,
   options?: { allowFast?: boolean },
 ): Promise<FullReport | null> {
   const complete = await readCacheFile(CACHE_FILE, maxAgeMs);
