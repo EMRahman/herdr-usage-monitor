@@ -183,14 +183,25 @@ async function refresh(): Promise<void> {
 }
 
 // 1. Instant paint from cache (0 ms)
-currentReport = await getCachedReport();
+currentReport = once
+  ? await getCachedReport(300_000)
+  : (await getCachedReport(300_000)) ??
+    (await getCachedReport(300_000, { allowFast: true })) ??
+    (await getCachedReport(24 * 3600_000)) ??
+    (await getCachedReport(24 * 3600_000, { allowFast: true }));
+
+const cacheAgeMs = currentReport?.timestamp ? Date.now() - currentReport.timestamp : Infinity;
+const needsImmediateRefresh = !currentReport || Boolean(currentReport.partial) || cacheAgeMs >= 60_000;
+
 if (currentReport && !once) {
-  draw(true); // Paint cached report immediately with "refreshing..." indicator
+  draw(needsImmediateRefresh); // Paint cached report immediately
 }
 
-// 2. Immediate async refresh in background
+// 2. Immediate async refresh in background when cache is stale or partial
 if (!once) {
-  void refresh();
+  if (needsImmediateRefresh) {
+    void refresh();
+  }
   const timer = setInterval(() => void refresh(), POLL_MS);
   process.on("SIGINT", () => { clearInterval(timer); process.exit(0); });
   process.on("SIGTERM", () => { clearInterval(timer); process.exit(0); });
