@@ -184,7 +184,7 @@ async function refresh(): Promise<void> {
 
 // 1. Instant paint from cache (0 ms)
 currentReport = once
-  ? await getCachedReport(300_000, { allowFast: true })
+  ? await getCachedReport(300_000)
   : (await getCachedReport(300_000)) ??
     (await getCachedReport(300_000, { allowFast: true })) ??
     (await getCachedReport(24 * 3600_000)) ??
