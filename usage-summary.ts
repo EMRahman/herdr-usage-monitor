@@ -68,8 +68,8 @@ export function summaryParts(report: FullReport): SummaryPart[] {
   return parts;
 }
 
-export function formatTabBar(report: FullReport): string {
-  return summaryParts(report)
+export function formatSummary(parts: SummaryPart[]): string {
+  return parts
     .map((part) => (part.note ? `${part.name}: ${part.note}` : `${part.name} ${part.remaining}%`))
     .join(" · ");
 }

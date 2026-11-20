@@ -1,18 +1,15 @@
 {
   "name": "herdr-usage-monitor",
   "version": "0.1.0",
-  "description": "Subscription allowance monitor for Herdr: glanceable remaining % in the tab bar and an instant popup breakdown",
+  "description": "Subscription allowance monitor for Herdr desktop with a sidebar readout and a full breakdown",
   "type": "module",
   "scripts": {
-    "status": "bun usage-bar.ts",
-    "breakdown": "bun usage-pane.ts --once",
-    "popup": "bun usage-pane.ts",
     "build:mod": "bun herdr-app/build.ts",
     "check:mod": "bun herdr-app/build.ts --check"
   },
   "keywords": [
     "herdr",
-    "herdr-plugin",
+    "herdr-mod",
     "claude",
     "codex",
     "antigravity",

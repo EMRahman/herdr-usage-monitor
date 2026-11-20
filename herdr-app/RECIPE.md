@@ -4,10 +4,7 @@ How much of each AI subscription allowance is left, at the bottom left of the
 window: `Claude 47%  Codex 20%  AGY 100%` above Settings. Clicking it, or Cmd+U,
 opens a large breakdown of every limit for Claude, Codex, Antigravity, Cursor,
 Copilot, Grok and OpenCode. Traffic lights show where allowance will reset
-unused at your current pace, so you know where there's capacity to spend. It
-is the Herdr app version of the
-[herdr-usage-monitor](https://github.com/EMRahman/herdr-usage-monitor) TUI
-plugin and runs the same provider code.
+unused at your current pace, so you know where there's capacity to spend.
 
 ![Subscription Usage](preview.png)
 
@@ -65,7 +62,7 @@ plugin and runs the same provider code.
 - **Refresh** asks every provider now. It's greyed out while a read is running.
 - **Polling.** Each copy of the mod checks every 60s. The bridge answers from a
   shared cache and only asks the providers when the cache is 3 minutes old, so
-  the readout, the breakdown and the TUI plugin share one set of requests.
+  the readout and breakdown share recent results.
 - On start, the readout shows the last cached report (up to a day old) at once,
   then refreshes.
 - Hovering the readout shows the full summary, or the error.
@@ -87,7 +84,7 @@ plugin and runs the same provider code.
     `layout` (to tell the rail), `run("mod.open")`, `closeOverlay`, `setShared`,
     `theme`, `checking`, `cx.timer.every`, `.on_size_change`.
   - `breakdown.js`: the dialog. `pace.js`: the traffic-light rules.
-  - `bridge.js`: the TUI plugin's provider code, prebuilt by `build.ts`. It
+  - `bridge.js`: the provider code, prebuilt by `build.ts`. It
     prints `{report, summary, parts}` as JSON: `--cached` returns whatever's
     cached, no flag refreshes a cache 3 minutes old, `--refresh` asks now.
   - `gauge.svg`: the icon.
@@ -124,8 +121,8 @@ plugin and runs the same provider code.
 
 ## Done when
 
-- `herdr-app check mods/usage-monitor` passes.
-- `bun mods/usage-monitor/bridge.js --cached` prints JSON with a `summary`.
+- `herdr-app check herdr-app/mods/usage-monitor` passes from the repository root.
+- `bun herdr-app/mods/usage-monitor/bridge.js --cached` prints JSON with a `summary`.
 - The readout shows each signed-in provider's % left above Settings within a
   few seconds, and its tooltip shows the full summary.
 - Folding the sidebar leaves only the gauge, coloured by the lowest figure.
