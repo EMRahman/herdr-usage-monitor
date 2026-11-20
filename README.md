@@ -8,6 +8,12 @@ Claude Code · Codex · Antigravity · Cursor · GitHub Copilot · Grok · OpenC
 [![Herdr mod](https://img.shields.io/badge/Herdr-mod-2fbf71)](https://herdr.dev/mods)
 [![Runs on Bun](https://img.shields.io/badge/runs%20on-Bun-f9f1e1)](https://bun.sh)
 
+**Always on screen.** What's left of each subscription sits at the bottom left of the Herdr app's sidebar, above Settings. A figure turns yellow at 30% or less and red at 10% or less.
+
+<img src="docs/herdr-app-sidebar.png" width="456" alt="The Herdr app's sidebar, bottom left: a gauge icon, then Claude 80%, Codex 100%, AGY 100%, above Settings and Add machine">
+
+**One shortcut for the full breakdown.** Press <kbd>Cmd</kbd>+<kbd>U</kbd>, or click the readout, to see every limit, when it resets, and where allowance is going unused:
+
 ![The breakdown in the Herdr app: an Untapped allowance panel, then Claude, Codex and Antigravity cards with traffic-light bars](herdr-app/preview.png)
 
 ## Pick your Herdr
@@ -29,9 +35,7 @@ cd herdr-usage-monitor
 bun herdr-app/install.ts --bind-key
 ```
 
-That's it. The readout appears at the bottom left of the sidebar:
-
-![Sidebar readout: a gauge icon, then Claude 38%, Codex 15% in yellow, AGY 100%, above Settings](docs/herdr-app-sidebar.png)
+That's it. The readout appears at the bottom left of the sidebar, above Settings.
 
 - **If you don't see it**, switch layouts with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>L</kbd>. The installer prints the layout's name: the personal layout you had open, or its own `herdr-with-usage`.
 - **Open the breakdown** with <kbd>Cmd</kbd>+<kbd>U</kbd> (<kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>U</kbd> on Linux and Windows), or click the readout.
