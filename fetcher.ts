@@ -2,7 +2,6 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import {
-  type DiscoveryOptions,
   fetchOtherProviders,
   getAntigravitySignIns,
   getClaudeSignIns,
@@ -10,18 +9,16 @@ import {
   resolveBinary,
 } from "./providers.ts";
 
-export const CACHE_DIR =
+const CACHE_DIR =
   process.env["HERDR_USAGE_CACHE_DIR"] ??
   (process.env["XDG_CACHE_HOME"]
     ? join(process.env["XDG_CACHE_HOME"], "herdr-usage-monitor")
     : join(homedir(), ".cache", "herdr-usage-monitor"));
 
-export const CACHE_FILE = join(CACHE_DIR, "herdr-usage-cache.json");
-export const FAST_CACHE_FILE = join(CACHE_DIR, "herdr-usage-fast-cache.json");
-export const AGY_CACHE_FILE = join(CACHE_DIR, "herdr-agy-usage.json");
-export const RATE_LIMITS_FILE = join(CACHE_DIR, "rate-limits.json");
-
-const FAST_TOTAL_BUDGET_MS = 1_600;
+const CACHE_FILE = join(CACHE_DIR, "herdr-usage-cache.json");
+const LEGACY_PARTIAL_CACHE_FILE = join(CACHE_DIR, "herdr-usage-fast-cache.json");
+const AGY_CACHE_FILE = join(CACHE_DIR, "herdr-agy-usage.json");
+const RATE_LIMITS_FILE = join(CACHE_DIR, "rate-limits.json");
 
 export interface CodexCreditItem {
   id: string;
@@ -83,7 +80,7 @@ export interface GenericProvider {
 
 export interface FullReport {
   timestamp: number;
-  /** True when produced by fast tab-bar mode (omits secondary breakdown calls). */
+  /** Older cached reports may omit parts of the breakdown. */
   partial?: boolean;
   claude?: DetailedClaude | null;
   codex?: DetailedCodex | null;
@@ -134,40 +131,29 @@ async function readCacheFile(path: string, maxAgeMs: number): Promise<FullReport
 
 export async function getCachedReport(
   maxAgeMs = 300_000,
-  options?: { allowFast?: boolean },
+  options?: { allowPartial?: boolean },
 ): Promise<FullReport | null> {
   const complete = await readCacheFile(CACHE_FILE, maxAgeMs);
-  if (!options?.allowFast) {
+  if (!options?.allowPartial) {
     return complete && !complete.partial ? complete : null;
   }
-  const fast = await readCacheFile(FAST_CACHE_FILE, maxAgeMs);
-  if (complete && fast) {
-    return (complete.timestamp || 0) >= (fast.timestamp || 0) ? complete : fast;
+  const partial = await readCacheFile(LEGACY_PARTIAL_CACHE_FILE, maxAgeMs);
+  if (complete && partial) {
+    return complete.timestamp >= partial.timestamp ? complete : partial;
   }
-  return complete ?? fast;
+  return complete ?? partial;
 }
 
-export function saveCachedReport(report: FullReport): void {
+function saveCachedReport(report: FullReport): void {
   try {
     mkdirSync(CACHE_DIR, { recursive: true });
-    writeFileSync(report.partial ? FAST_CACHE_FILE : CACHE_FILE, JSON.stringify(report));
+    writeFileSync(CACHE_FILE, JSON.stringify(report));
   } catch {}
 }
 
-function remainingBudget(deadlineMs: number | undefined, defaultMs: number, fastCapMs: number): number {
-  const cap = deadlineMs !== undefined ? Math.min(defaultMs, fastCapMs) : defaultMs;
-  if (deadlineMs === undefined) return cap;
-  return Math.max(0, Math.min(cap, deadlineMs - Date.now()));
-}
-
-export async function fetchDetailedReport(options?: { fast?: boolean }): Promise<FullReport> {
-  const fast = options?.fast === true;
-  const deadlineMs = fast ? Date.now() + FAST_TOTAL_BUDGET_MS : undefined;
-  const discoveryOpts: DiscoveryOptions = { fast, deadlineMs };
-
+export async function fetchDetailedReport(): Promise<FullReport> {
   const report: FullReport = {
     timestamp: Date.now(),
-    ...(fast ? { partial: true } : {}),
     others: [],
   };
 
@@ -178,11 +164,9 @@ export async function fetchDetailedReport(options?: { fast?: boolean }): Promise
       return;
     }
 
-    const claudeSignIns = await getClaudeSignIns(discoveryOpts).catch(() => []);
+    const claudeSignIns = await getClaudeSignIns().catch(() => []);
     const s = claudeSignIns[0];
     if (!s) return;
-    const reqTimeout = remainingBudget(deadlineMs, 3500, 1200);
-    if (reqTimeout <= 50) return;
     const res = await fetch("https://api.anthropic.com/api/oauth/usage?cedar_ember=1", {
       headers: {
         authorization: `Bearer ${s.token}`,
@@ -190,7 +174,7 @@ export async function fetchDetailedReport(options?: { fast?: boolean }): Promise
         "anthropic-beta": "oauth-2025-04-20",
         "user-agent": "claude-cli/2.1.0 (external, cli)",
       },
-      signal: AbortSignal.timeout(reqTimeout),
+      signal: AbortSignal.timeout(3500),
     }).catch(() => null);
 
     if (!res) return;
@@ -256,11 +240,9 @@ export async function fetchDetailedReport(options?: { fast?: boolean }): Promise
 
   // Fetch Codex
   const codexPromise = (async () => {
-    const codexSignIns = await getCodexSignIns(discoveryOpts).catch(() => []);
+    const codexSignIns = await getCodexSignIns().catch(() => []);
     const s = codexSignIns[0];
     if (!s) return;
-    const reqTimeout = remainingBudget(deadlineMs, 3500, 1200);
-    if (reqTimeout <= 50) return;
     const headers: Record<string, string> = {
       authorization: `Bearer ${s.token}`,
       accept: "application/json",
@@ -269,14 +251,12 @@ export async function fetchDetailedReport(options?: { fast?: boolean }): Promise
     const [usageRes, creditsRes] = await Promise.all([
       fetch("https://chatgpt.com/backend-api/wham/usage", {
         headers,
-        signal: AbortSignal.timeout(reqTimeout),
+        signal: AbortSignal.timeout(3500),
       }),
-      fast
-        ? Promise.resolve(null)
-        : fetch("https://chatgpt.com/backend-api/wham/rate-limit-reset-credits", {
-            headers,
-            signal: AbortSignal.timeout(reqTimeout),
-          }).catch(() => null),
+      fetch("https://chatgpt.com/backend-api/wham/rate-limit-reset-credits", {
+        headers,
+        signal: AbortSignal.timeout(3500),
+      }).catch(() => null),
     ]);
     if (!usageRes.ok) return;
     const body = (await usageRes.json()) as any;
@@ -335,12 +315,12 @@ export async function fetchDetailedReport(options?: { fast?: boolean }): Promise
       }
     } catch {}
 
-    const agySignIns = await getAntigravitySignIns(discoveryOpts).catch(() => []);
+    const agySignIns = await getAntigravitySignIns().catch(() => []);
     const s = agySignIns[0];
     const account = s?.account?.label ?? "default";
 
-    // If not cached (and not in fast cold-bar mode), invoke agy CLI
-    if (!agyData && !fast) {
+    // Invoke the agy CLI when there is no recent cache.
+    if (!agyData) {
       const agyBin = resolveBinary("agy");
       if (agyBin) {
         try {
@@ -405,24 +385,19 @@ export async function fetchDetailedReport(options?: { fast?: boolean }): Promise
       "content-type": "application/json",
       "user-agent": "antigravity",
     };
-    const firstTimeout = remainingBudget(deadlineMs, 3000, 900);
-    if (firstTimeout <= 50) return;
     let res = await fetch("https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary", {
       method: "POST",
       headers,
       body: "{}",
-      signal: AbortSignal.timeout(firstTimeout),
+      signal: AbortSignal.timeout(3000),
     }).catch(() => null);
     if (!res || !res.ok) {
-      const retryTimeout = remainingBudget(deadlineMs, 3000, 900);
-      if (retryTimeout > 50) {
-        res = await fetch("https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary", {
-          method: "POST",
-          headers,
-          body: "{}",
-          signal: AbortSignal.timeout(retryTimeout),
-        }).catch(() => null);
-      }
+      res = await fetch("https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary", {
+        method: "POST",
+        headers,
+        body: "{}",
+        signal: AbortSignal.timeout(3000),
+      }).catch(() => null);
     }
     if (!res || !res.ok) return;
     const body = (await res.json()) as any;
@@ -452,23 +427,18 @@ export async function fetchDetailedReport(options?: { fast?: boolean }): Promise
   })().catch(() => {});
 
   // Secondary providers (Cursor, Copilot, Grok, OpenCode)
-  const othersPromise = fetchOtherProviders(discoveryOpts)
+  const othersPromise = fetchOtherProviders()
     .then((others) => {
       report.others = others;
     })
     .catch(() => {});
 
-  const allTasks = Promise.allSettled([claudePromise, codexPromise, agyPromise, othersPromise]);
-  if (deadlineMs !== undefined) {
-    await Promise.race([allTasks, Bun.sleep(Math.max(0, deadlineMs - Date.now()))]);
-  } else {
-    await allTasks;
-  }
+  await Promise.allSettled([claudePromise, codexPromise, agyPromise, othersPromise]);
 
   // Merge preserved details and fallback providers from previous cache
   try {
     const prevComplete = await getCachedReport(24 * 3600_000);
-    const prevAny = await getCachedReport(24 * 3600_000, { allowFast: true });
+    const prevAny = await getCachedReport(24 * 3600_000, { allowPartial: true });
 
     if (!report.claude) {
       report.claude = prevAny?.claude ?? prevComplete?.claude;
@@ -484,7 +454,7 @@ export async function fetchDetailedReport(options?: { fast?: boolean }): Promise
       else if (prevAny?.others?.length) report.others = prevAny.others;
     }
 
-    // If Codex reset-credit details were skipped (or came from fast fallback), preserve cached items
+    // Preserve cached Codex reset credits when the provider does not return details.
     if (
       report.codex &&
       report.codex.resets.available > 0 &&

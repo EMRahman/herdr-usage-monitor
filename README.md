@@ -1,6 +1,6 @@
 # Herdr Usage Monitor
 
-**See how much of your AI subscriptions is left, and where allowance is about to go unused, without leaving [Herdr](https://herdr.dev).**
+**See how much of your AI subscriptions is left, and where allowance is about to go unused, in the [Herdr desktop app](https://herdr.dev).**
 
 Claude Code · Codex · Antigravity · Cursor · GitHub Copilot · Grok · OpenCode
 
@@ -16,16 +16,7 @@ Claude Code · Codex · Antigravity · Cursor · GitHub Copilot · Grok · OpenC
 
 ![The breakdown in the Herdr app: an Untapped allowance panel, then Claude, Codex and Antigravity cards with traffic-light bars](herdr-app/preview.png)
 
-## Pick your Herdr
-
-|  | **Herdr app** (desktop) | **Herdr** (terminal) |
-|---|---|---|
-| **At a glance** | Bottom left of the sidebar, above Settings | Right edge of the tab bar |
-| **Full breakdown** | <kbd>Cmd</kbd>+<kbd>U</kbd>, or click the readout | <kbd>prefix</kbd> then <kbd>u</kbd> |
-| **Traffic lights for unused allowance** | ✅ | n/a |
-| **Install** | [One command](#quick-start-herdr-app) | [Two config entries](#quick-start-herdr-terminal) |
-
-## Quick start: Herdr app
+## Quick start
 
 You need the [Herdr app](https://herdr.dev) (opened at least once), [Bun](https://bun.sh), and at least one supported AI CLI you're signed in to.
 
@@ -43,51 +34,7 @@ That's it. The readout appears at the bottom left of the sidebar, above Settings
 
 To update, `git pull` and run the installer again.
 
-## Quick start: Herdr (terminal)
-
-Clone the repo into `~/Code`:
-
-```sh
-git clone https://github.com/EMRahman/herdr-usage-monitor.git ~/Code/herdr-usage-monitor
-```
-
-Then add this to `~/.config/herdr/config.toml`. Replace `/path/to/bun` with the output of `which bun`, because Herdr runs commands with a minimal `PATH`. If you cloned somewhere else, change `~/Code/herdr-usage-monitor` to match:
-
-```toml
-[ui]
-tab_bar_right = [
-  { type = "command", command = "/path/to/bun ~/Code/herdr-usage-monitor/usage-bar.ts", interval_seconds = 60, timeout_seconds = 2 }
-]
-tab_bar_right_separator = " · "
-
-[[keys.command]]
-key = "prefix+u"
-type = "popup"
-command = "/path/to/bun ~/Code/herdr-usage-monitor/usage-pane.ts"
-description = "Show subscription usage breakdown"
-width = "65%"
-height = "65%"
-```
-
-Reload with `herdr server reload-config`. The tab bar shows `Claude 97% · Codex 90% · AGY 100%`, and <kbd>prefix</kbd> then <kbd>u</kbd> opens the breakdown. Close it with <kbd>q</kbd> or <kbd>Esc</kbd>, or press <kbd>r</kbd> to refresh.
-
-| Tab bar | Breakdown |
-|---|---|
-| ![Tab bar status](docs/tab-bar.png) | ![Breakdown popup](docs/modal-breakdown.png) |
-
-<details>
-<summary><b>Keep the cache warm in the background</b> (optional)</summary>
-
-A small poller refreshes every 3 minutes, so the tab bar and popup always open from a fresh cache:
-
-```sh
-herdr plugin link ~/Code/herdr-usage-monitor   # Herdr starts and supervises it
-# or
-nohup bun ~/Code/herdr-usage-monitor/monitor.ts > /dev/null 2>&1 &
-```
-
-The Herdr app mod shares the same cache, so this helps both.
-</details>
+The terminal plugin has been retired. If you installed it, remove its status command and shortcut from your terminal Herdr config and stop any linked plugin or standalone poller.
 
 ## Spot unused allowance
 
@@ -116,7 +63,7 @@ Providers you aren't signed in to are left out.
 
 - **Sign-ins are only read.** It reads each CLI's existing sign-in on your machine, from its config files or the macOS Keychain, and never changes them. The first time it runs, macOS may ask you to allow Keychain access.
 - **It connects only to the providers themselves:** Anthropic, OpenAI and ChatGPT, GitHub, Cursor, Google, Grok and OpenCode, to read your usage. It has no server of its own and sends nothing anywhere else.
-- **Results are cached** in `~/.cache/herdr-usage-monitor/` and shared by the tab bar, the popup and the app, so the providers aren't asked on every check.
+- **Results are cached** in `~/.cache/herdr-usage-monitor/` and shared by the sidebar and breakdown, so the providers aren't asked on every check.
 
 ## Troubleshooting
 
@@ -126,7 +73,6 @@ Providers you aren't signed in to are left out.
 | The readout says **Usage unavailable**, or its gauge is red | Hover it to see why. |
 | "Couldn't find Bun" | Install [Bun](https://bun.sh), then reopen Herdr. |
 | A provider is missing | Sign in to its CLI, then press **Refresh** in the breakdown. |
-| `exit status: 127` in the terminal tab bar | Use the full path from `which bun` in `config.toml`. |
 
 <details>
 <summary><b>More ways to install the Herdr app mod</b></summary>
@@ -138,16 +84,6 @@ Providers you aren't signed in to are left out.
 **Updating.** Like other Herdr mods, this one doesn't update itself. Run the installer again after `git pull` or a Herdr update. It only writes what changed. It rebuilds `herdr-with-usage` from Herdr's current main layout unless you've edited that layout, and it keeps other mods' blocks in place.
 
 **Refresh timing.** While the readout shows, the mod checks the cache every minute and asks the providers when the cache is 3 minutes old.
-</details>
-
-<details>
-<summary><b>Command line</b></summary>
-
-```sh
-bun usage-bar.ts            # one-line status, as in the tab bar
-bun usage-pane.ts --once    # full breakdown, printed once
-bun usage-pane.ts           # interactive breakdown (q or Esc to close)
-```
 </details>
 
 <details>

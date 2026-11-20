@@ -13,8 +13,7 @@ import { homedir, tmpdir } from "os";
 import { join } from "path";
 var MAX_READ_BYTES = 1024 * 1024;
 var COMMAND_TIMEOUT_MS = 4000;
-var FAST_KEYCHAIN_TIMEOUT_MS = 450;
-var FAST_HTTP_TIMEOUT_MS = 1000;
+var HTTP_TIMEOUT_MS = 3500;
 var USER_AGENT = "herdr-usage-monitor";
 var record = (value) => value !== null && typeof value === "object" && !Array.isArray(value) ? value : {};
 var text = (value) => typeof value === "string" && value.trim() ? value.trim() : null;
@@ -23,12 +22,6 @@ var number = (value) => {
   return typeof parsed === "number" && Number.isFinite(parsed) ? parsed : null;
 };
 var percent = (value) => Math.round(Math.min(100, Math.max(0, value)) * 10) / 10;
-function budgetMs(opts, defaultMs, fastCapMs = defaultMs) {
-  const cap = opts?.fast ? Math.min(defaultMs, fastCapMs) : defaultMs;
-  if (opts?.deadlineMs === undefined)
-    return cap;
-  return Math.max(0, Math.min(cap, opts.deadlineMs - Date.now()));
-}
 function resolveBinary(name) {
   const found = Bun.which(name);
   if (found)
@@ -212,20 +205,17 @@ async function readKeychainInLoginSession(service, account, timeoutMs) {
     rmSync(dir, { recursive: true, force: true });
   }
 }
-async function readKeychain(service, account, opts) {
+async function readKeychain(service, account) {
   if (process.platform !== "darwin")
     return { status: "missing" };
   if (promptedServices.has(service))
-    return { status: "locked" };
-  const timeoutMs = budgetMs(opts, COMMAND_TIMEOUT_MS, FAST_KEYCHAIN_TIMEOUT_MS);
-  if (timeoutMs <= 25)
     return { status: "locked" };
   const child = Bun.spawn(["/usr/bin/security", "find-generic-password", "-s", service, ...account ? ["-a", account] : [], "-w"], { stdin: "ignore", stdout: "pipe", stderr: "ignore" });
   let timedOut = false;
   const timer = setTimeout(() => {
     timedOut = true;
     child.kill();
-  }, timeoutMs);
+  }, COMMAND_TIMEOUT_MS);
   try {
     const output = await readCapped(child.stdout);
     if (output === null)
@@ -239,8 +229,7 @@ async function readKeychain(service, account, opts) {
     if (code === 44 && !timedOut)
       return { status: "missing" };
     if (code === 36 && !timedOut) {
-      const guiBudget = budgetMs(opts, COMMAND_TIMEOUT_MS, 550);
-      const gui = await readKeychainInLoginSession(service, account, guiBudget);
+      const gui = await readKeychainInLoginSession(service, account, COMMAND_TIMEOUT_MS);
       if (gui !== null)
         return { status: "found", value: gui };
     }
@@ -253,16 +242,13 @@ async function readKeychain(service, account, opts) {
     clearTimeout(timer);
   }
 }
-async function runCommand(argv, timeoutMs = COMMAND_TIMEOUT_MS, opts) {
-  const effectiveTimeout = budgetMs(opts, timeoutMs);
-  if (effectiveTimeout <= 25)
-    return null;
+async function runCommand(argv, timeoutMs = COMMAND_TIMEOUT_MS) {
   const bin = resolveBinary(argv[0]);
   if (!bin)
     return null;
   try {
     const child = Bun.spawn([bin, ...argv.slice(1)], { stdin: "ignore", stdout: "pipe", stderr: "ignore" });
-    const timer = setTimeout(() => child.kill(), effectiveTimeout);
+    const timer = setTimeout(() => child.kill(), timeoutMs);
     try {
       const output = await readCapped(child.stdout);
       if (output === null)
@@ -276,11 +262,11 @@ async function runCommand(argv, timeoutMs = COMMAND_TIMEOUT_MS, opts) {
     return null;
   }
 }
-async function fromKeychain(service, accounts, parse, opts) {
+async function fromKeychain(service, accounts, parse) {
   if (process.platform !== "darwin")
     return null;
   for (const account of accounts) {
-    const found = await readKeychain(service, account, opts);
+    const found = await readKeychain(service, account);
     if (found.status === "locked")
       return "locked";
     if (found.status === "found") {
@@ -322,7 +308,7 @@ function claudeSignIn(source) {
   const token = text(oauth["accessToken"]);
   return token ? { token, expiresAt: number(oauth["expiresAt"]), plan: text(oauth["subscriptionType"]) } : null;
 }
-async function getClaudeSignIns(opts) {
+async function getClaudeSignIns() {
   const home = homedir();
   const user = process.env["USER"];
   const homes = [{ source: "default", service: "Claude Code-credentials", dir: join(home, ".claude"), config: join(home, ".claude.json") }];
@@ -334,7 +320,7 @@ async function getClaudeSignIns(opts) {
   const found = await Promise.all(homes.map(async (h) => {
     const account = claudeAccount(h.config);
     const file = claudeSignIn(readText(join(h.dir, ".credentials.json")));
-    const keychain = await fromKeychain(h.service, user ? [user, undefined] : [undefined], claudeSignIn, opts);
+    const keychain = await fromKeychain(h.service, user ? [user, undefined] : [undefined], claudeSignIn);
     return keychainOrFile(keychain, file, h.source, account);
   }));
   return unlockedSignIns(found.flat());
@@ -358,7 +344,7 @@ function codexSignIn(source) {
     account: id ? { id, label: email } : null
   };
 }
-async function getCodexSignIns(opts) {
+async function getCodexSignIns() {
   const home = homedir();
   const homes = [
     process.env["CODEX_HOME"],
@@ -374,7 +360,7 @@ async function getCodexSignIns(opts) {
   }
   if (found.length > 0)
     return unlockedSignIns(found);
-  return unlockedSignIns(keychainFound(await fromKeychain("Codex Auth", [undefined], codexSignIn, opts), "keychain"));
+  return unlockedSignIns(keychainFound(await fromKeychain("Codex Auth", [undefined], codexSignIn), "keychain"));
 }
 function antigravitySignIn(value) {
   if (value === null)
@@ -392,11 +378,11 @@ function antigravitySignIn(value) {
   const account = sub || email ? { id: sub ?? email, label: email } : null;
   return { token: access, expiresAt: epochMs(token["expiry"]), account };
 }
-async function getAntigravitySignIns(opts) {
+async function getAntigravitySignIns() {
   const home = homedir();
   const dir = process.env["ANTIGRAVITY_APP_DATA_DIR"] || join(home, ".gemini", "antigravity-cli");
   const file = antigravitySignIn(readText(join(dir, "antigravity-oauth-token")));
-  const keychain = await fromKeychain("gemini", ["antigravity"], antigravitySignIn, opts);
+  const keychain = await fromKeychain("gemini", ["antigravity"], antigravitySignIn);
   return unlockedSignIns(keychainOrFile(keychain, file, "keychain"));
 }
 function cursorDatabase(home) {
@@ -426,16 +412,14 @@ function cursorAppSignIn(path) {
     db?.close();
   }
 }
-async function fetchCursorProviders(opts) {
-  if (budgetMs(opts, 3500, FAST_HTTP_TIMEOUT_MS) <= 50)
-    return [];
+async function fetchCursorProviders() {
   const home = homedir();
   const app = cursorAppSignIn(cursorDatabase(home));
   const cliEmail = text(record(record(parseJson(readText(join(home, ".cursor", "cli-config.json"))))["authInfo"])["email"]);
   const cli = await fromKeychain("cursor-access-token", [undefined], (value) => {
     const token = text(value);
     return token ? { token, expiresAt: jwtExpiry(token), account: cursorAccount(token, cliEmail) } : null;
-  }, opts);
+  });
   let found;
   if (!app)
     found = keychainFound(cli, "cli");
@@ -458,9 +442,6 @@ async function fetchCursorProviders(opts) {
       });
       continue;
     }
-    const reqTimeout = budgetMs(opts, 3500, FAST_HTTP_TIMEOUT_MS);
-    if (reqTimeout <= 50)
-      break;
     try {
       const res = await fetch("https://api2.cursor.sh/aiserver.v1.DashboardService/GetCurrentPeriodUsage", {
         method: "POST",
@@ -471,7 +452,7 @@ async function fetchCursorProviders(opts) {
           "user-agent": USER_AGENT
         },
         body: "{}",
-        signal: AbortSignal.timeout(reqTimeout)
+        signal: AbortSignal.timeout(HTTP_TIMEOUT_MS)
       });
       if (res.status === 401 || res.status === 403) {
         results.push({ id: "cursor", account: item.account?.label ?? "", plan: item.plan ?? null, windows: [], problem: "expired" });
@@ -522,13 +503,11 @@ function copilotFileTokens(source) {
     return token ? [{ token, login: text(record(entry)["user"]), editor: true }] : [];
   });
 }
-async function ghTokens(opts) {
-  if (opts?.fast)
-    return [];
-  const rawStatus = await runCommand(["gh", "auth", "status", "--hostname", "github.com", "--json", "hosts"], 2500, opts);
+async function ghTokens() {
+  const rawStatus = await runCommand(["gh", "auth", "status", "--hostname", "github.com", "--json", "hosts"], 2500);
   const accounts = record(record(parseJson(rawStatus))["hosts"])["github.com"];
   if (!Array.isArray(accounts)) {
-    const token = text(await runCommand(["gh", "auth", "token", "--hostname", "github.com"], 2000, opts));
+    const token = text(await runCommand(["gh", "auth", "token", "--hostname", "github.com"], 2000));
     return token ? [{ token, login: null, editor: false }] : [];
   }
   const tokens = await Promise.all(accounts.map(async (entry) => {
@@ -537,7 +516,7 @@ async function ghTokens(opts) {
     if (!login || account["state"] !== "success")
       return null;
     const fromEnv = ["GH_TOKEN", "GITHUB_TOKEN"].includes(text(account["tokenSource"]) ?? "");
-    const token = text(await runCommand(["gh", "auth", "token", "--hostname", "github.com", ...fromEnv ? [] : ["--user", login]], 2000, opts));
+    const token = text(await runCommand(["gh", "auth", "token", "--hostname", "github.com", ...fromEnv ? [] : ["--user", login]], 2000));
     return token ? { token, login, editor: false } : null;
   }));
   return tokens.filter((t) => t !== null);
@@ -550,15 +529,13 @@ function copilotWindow(value, scope, resetsAt) {
     return null;
   return { kind: "month", scope, used_percent: percent(100 - left), resets_at: resetsAt };
 }
-async function fetchCopilotProviders(opts) {
-  if (budgetMs(opts, 3500, FAST_HTTP_TIMEOUT_MS) <= 50)
-    return [];
+async function fetchCopilotProviders() {
   const home = homedir();
   const dir = join(process.env["XDG_CONFIG_HOME"] || join(home, ".config"), "github-copilot");
   const tokens = [
     ...copilotFileTokens(readText(join(dir, "apps.json"))),
     ...copilotFileTokens(readText(join(dir, "hosts.json"))),
-    ...await ghTokens(opts)
+    ...await ghTokens()
   ];
   if (tokens.length === 0)
     return [];
@@ -581,9 +558,6 @@ async function fetchCopilotProviders(opts) {
     let body = null;
     let expired = false;
     for (const token of accountTokens) {
-      const reqTimeout = budgetMs(opts, 3500, FAST_HTTP_TIMEOUT_MS);
-      if (reqTimeout <= 50)
-        break;
       try {
         const res = await fetch("https://api.github.com/copilot_internal/user", {
           headers: {
@@ -594,7 +568,7 @@ async function fetchCopilotProviders(opts) {
             "editor-plugin-version": "copilot-chat/0.26.7",
             "x-github-api-version": "2025-04-01"
           },
-          signal: AbortSignal.timeout(reqTimeout)
+          signal: AbortSignal.timeout(HTTP_TIMEOUT_MS)
         });
         if (res.status === 404)
           continue;
@@ -658,9 +632,7 @@ var GROK_PERIOD_KINDS = {
   USAGE_PERIOD_TYPE_WEEKLY: "week",
   USAGE_PERIOD_TYPE_MONTHLY: "month"
 };
-async function fetchGrokProviders(opts) {
-  if (budgetMs(opts, 3500, FAST_HTTP_TIMEOUT_MS) <= 50)
-    return [];
+async function fetchGrokProviders() {
   const home = homedir();
   const entries = Object.entries(record(parseJson(readText(join(home, ".grok", "auth.json")))));
   if (entries.length === 0)
@@ -677,9 +649,6 @@ async function fetchGrokProviders(opts) {
       results.push({ id: "grok", account: email, plan: null, windows: [], problem: "expired" });
       continue;
     }
-    const reqTimeout = budgetMs(opts, 3500, FAST_HTTP_TIMEOUT_MS);
-    if (reqTimeout <= 50)
-      break;
     try {
       const res = await fetch("https://cli-chat-proxy.grok.com/v1/billing?format=credits", {
         headers: {
@@ -688,7 +657,7 @@ async function fetchGrokProviders(opts) {
           accept: "application/json",
           "user-agent": USER_AGENT
         },
-        signal: AbortSignal.timeout(reqTimeout)
+        signal: AbortSignal.timeout(HTTP_TIMEOUT_MS)
       });
       if (res.status === 401 || res.status === 403) {
         results.push({ id: "grok", account: email, plan: null, windows: [], problem: "expired" });
@@ -717,10 +686,7 @@ async function fetchGrokProviders(opts) {
   }
   return results;
 }
-async function fetchOpencodeProviders(opts) {
-  const reqTimeout = budgetMs(opts, 3500, FAST_HTTP_TIMEOUT_MS);
-  if (reqTimeout <= 50)
-    return [];
+async function fetchOpencodeProviders() {
   const home = homedir();
   const dir = join(process.env["XDG_DATA_HOME"] || join(home, ".local", "share"), "opencode");
   const root = record(parseJson(readText(join(dir, "auth.json"))));
@@ -740,7 +706,7 @@ async function fetchOpencodeProviders(opts) {
   try {
     const res = await fetch("https://opencode.ai/zen/go/v1/usage", {
       headers: { authorization: `Bearer ${token}`, accept: "application/json", "user-agent": USER_AGENT },
-      signal: AbortSignal.timeout(reqTimeout)
+      signal: AbortSignal.timeout(HTTP_TIMEOUT_MS)
     });
     if (res.status === 403 || !res.ok)
       return [];
@@ -763,12 +729,12 @@ async function fetchOpencodeProviders(opts) {
     return [];
   }
 }
-async function fetchOtherProviders(opts) {
+async function fetchOtherProviders() {
   const [cursor, copilot, grok, opencode] = await Promise.all([
-    fetchCursorProviders(opts),
-    fetchCopilotProviders(opts),
-    fetchGrokProviders(opts),
-    fetchOpencodeProviders(opts)
+    fetchCursorProviders(),
+    fetchCopilotProviders(),
+    fetchGrokProviders(),
+    fetchOpencodeProviders()
   ]);
   return [...cursor, ...copilot, ...grok, ...opencode];
 }
@@ -776,10 +742,9 @@ async function fetchOtherProviders(opts) {
 // fetcher.ts
 var CACHE_DIR = process.env["HERDR_USAGE_CACHE_DIR"] ?? (process.env["XDG_CACHE_HOME"] ? join2(process.env["XDG_CACHE_HOME"], "herdr-usage-monitor") : join2(homedir2(), ".cache", "herdr-usage-monitor"));
 var CACHE_FILE = join2(CACHE_DIR, "herdr-usage-cache.json");
-var FAST_CACHE_FILE = join2(CACHE_DIR, "herdr-usage-fast-cache.json");
+var LEGACY_PARTIAL_CACHE_FILE = join2(CACHE_DIR, "herdr-usage-fast-cache.json");
 var AGY_CACHE_FILE = join2(CACHE_DIR, "herdr-agy-usage.json");
 var RATE_LIMITS_FILE = join2(CACHE_DIR, "rate-limits.json");
-var FAST_TOTAL_BUDGET_MS = 1600;
 async function getRateLimitsAsync() {
   try {
     const file = Bun.file(RATE_LIMITS_FILE);
@@ -816,34 +781,24 @@ async function readCacheFile(path, maxAgeMs) {
 }
 async function getCachedReport(maxAgeMs = 300000, options) {
   const complete = await readCacheFile(CACHE_FILE, maxAgeMs);
-  if (!options?.allowFast) {
+  if (!options?.allowPartial) {
     return complete && !complete.partial ? complete : null;
   }
-  const fast = await readCacheFile(FAST_CACHE_FILE, maxAgeMs);
-  if (complete && fast) {
-    return (complete.timestamp || 0) >= (fast.timestamp || 0) ? complete : fast;
+  const partial = await readCacheFile(LEGACY_PARTIAL_CACHE_FILE, maxAgeMs);
+  if (complete && partial) {
+    return complete.timestamp >= partial.timestamp ? complete : partial;
   }
-  return complete ?? fast;
+  return complete ?? partial;
 }
 function saveCachedReport(report) {
   try {
     mkdirSync(CACHE_DIR, { recursive: true });
-    writeFileSync2(report.partial ? FAST_CACHE_FILE : CACHE_FILE, JSON.stringify(report));
+    writeFileSync2(CACHE_FILE, JSON.stringify(report));
   } catch {}
 }
-function remainingBudget(deadlineMs, defaultMs, fastCapMs) {
-  const cap = deadlineMs !== undefined ? Math.min(defaultMs, fastCapMs) : defaultMs;
-  if (deadlineMs === undefined)
-    return cap;
-  return Math.max(0, Math.min(cap, deadlineMs - Date.now()));
-}
-async function fetchDetailedReport(options) {
-  const fast = options?.fast === true;
-  const deadlineMs = fast ? Date.now() + FAST_TOTAL_BUDGET_MS : undefined;
-  const discoveryOpts = { fast, deadlineMs };
+async function fetchDetailedReport() {
   const report = {
     timestamp: Date.now(),
-    ...fast ? { partial: true } : {},
     others: []
   };
   const claudePromise = (async () => {
@@ -851,12 +806,9 @@ async function fetchDetailedReport(options) {
     if (limits.claudeUntil && Date.now() < limits.claudeUntil) {
       return;
     }
-    const claudeSignIns = await getClaudeSignIns(discoveryOpts).catch(() => []);
+    const claudeSignIns = await getClaudeSignIns().catch(() => []);
     const s = claudeSignIns[0];
     if (!s)
-      return;
-    const reqTimeout = remainingBudget(deadlineMs, 3500, 1200);
-    if (reqTimeout <= 50)
       return;
     const res = await fetch("https://api.anthropic.com/api/oauth/usage?cedar_ember=1", {
       headers: {
@@ -865,7 +817,7 @@ async function fetchDetailedReport(options) {
         "anthropic-beta": "oauth-2025-04-20",
         "user-agent": "claude-cli/2.1.0 (external, cli)"
       },
-      signal: AbortSignal.timeout(reqTimeout)
+      signal: AbortSignal.timeout(3500)
     }).catch(() => null);
     if (!res)
       return;
@@ -923,12 +875,9 @@ async function fetchDetailedReport(options) {
     };
   })().catch(() => {});
   const codexPromise = (async () => {
-    const codexSignIns = await getCodexSignIns(discoveryOpts).catch(() => []);
+    const codexSignIns = await getCodexSignIns().catch(() => []);
     const s = codexSignIns[0];
     if (!s)
-      return;
-    const reqTimeout = remainingBudget(deadlineMs, 3500, 1200);
-    if (reqTimeout <= 50)
       return;
     const headers = {
       authorization: `Bearer ${s.token}`,
@@ -938,11 +887,11 @@ async function fetchDetailedReport(options) {
     const [usageRes, creditsRes] = await Promise.all([
       fetch("https://chatgpt.com/backend-api/wham/usage", {
         headers,
-        signal: AbortSignal.timeout(reqTimeout)
+        signal: AbortSignal.timeout(3500)
       }),
-      fast ? Promise.resolve(null) : fetch("https://chatgpt.com/backend-api/wham/rate-limit-reset-credits", {
+      fetch("https://chatgpt.com/backend-api/wham/rate-limit-reset-credits", {
         headers,
-        signal: AbortSignal.timeout(reqTimeout)
+        signal: AbortSignal.timeout(3500)
       }).catch(() => null)
     ]);
     if (!usageRes.ok)
@@ -993,10 +942,10 @@ async function fetchDetailedReport(options) {
         }
       }
     } catch {}
-    const agySignIns = await getAntigravitySignIns(discoveryOpts).catch(() => []);
+    const agySignIns = await getAntigravitySignIns().catch(() => []);
     const s = agySignIns[0];
     const account = s?.account?.label ?? "default";
-    if (!agyData && !fast) {
+    if (!agyData) {
       const agyBin = resolveBinary("agy");
       if (agyBin) {
         try {
@@ -1056,25 +1005,19 @@ async function fetchDetailedReport(options) {
       "content-type": "application/json",
       "user-agent": "antigravity"
     };
-    const firstTimeout = remainingBudget(deadlineMs, 3000, 900);
-    if (firstTimeout <= 50)
-      return;
     let res = await fetch("https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary", {
       method: "POST",
       headers,
       body: "{}",
-      signal: AbortSignal.timeout(firstTimeout)
+      signal: AbortSignal.timeout(3000)
     }).catch(() => null);
     if (!res || !res.ok) {
-      const retryTimeout = remainingBudget(deadlineMs, 3000, 900);
-      if (retryTimeout > 50) {
-        res = await fetch("https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary", {
-          method: "POST",
-          headers,
-          body: "{}",
-          signal: AbortSignal.timeout(retryTimeout)
-        }).catch(() => null);
-      }
+      res = await fetch("https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary", {
+        method: "POST",
+        headers,
+        body: "{}",
+        signal: AbortSignal.timeout(3000)
+      }).catch(() => null);
     }
     if (!res || !res.ok)
       return;
@@ -1102,18 +1045,13 @@ async function fetchDetailedReport(options) {
       };
     }
   })().catch(() => {});
-  const othersPromise = fetchOtherProviders(discoveryOpts).then((others) => {
+  const othersPromise = fetchOtherProviders().then((others) => {
     report.others = others;
   }).catch(() => {});
-  const allTasks = Promise.allSettled([claudePromise, codexPromise, agyPromise, othersPromise]);
-  if (deadlineMs !== undefined) {
-    await Promise.race([allTasks, Bun.sleep(Math.max(0, deadlineMs - Date.now()))]);
-  } else {
-    await allTasks;
-  }
+  await Promise.allSettled([claudePromise, codexPromise, agyPromise, othersPromise]);
   try {
     const prevComplete = await getCachedReport(24 * 3600000);
-    const prevAny = await getCachedReport(24 * 3600000, { allowFast: true });
+    const prevAny = await getCachedReport(24 * 3600000, { allowPartial: true });
     if (!report.claude) {
       report.claude = prevAny?.claude ?? prevComplete?.claude;
     }
@@ -1193,16 +1131,17 @@ function summaryParts(report) {
   }
   return parts;
 }
-function formatTabBar(report) {
-  return summaryParts(report).map((part) => part.note ? `${part.name}: ${part.note}` : `${part.name} ${part.remaining}%`).join(" \xB7 ");
+function formatSummary(parts) {
+  return parts.map((part) => part.note ? `${part.name}: ${part.note}` : `${part.name} ${part.remaining}%`).join(" \xB7 ");
 }
 
 // herdr-app/usage-json.ts
 var DAY_MS = 24 * 60 * 60000;
 var mode = process.argv[2];
-var report = mode === "--cached" ? await getCachedReport(DAY_MS) ?? await getCachedReport(DAY_MS, { allowFast: true }) : (mode === "--refresh" ? null : await getCachedReport(180000)) ?? await fetchDetailedReport();
+var report = mode === "--cached" ? await getCachedReport(DAY_MS) ?? await getCachedReport(DAY_MS, { allowPartial: true }) : (mode === "--refresh" ? null : await getCachedReport(180000)) ?? await fetchDetailedReport();
+var parts = report ? summaryParts(report) : [];
 console.log(JSON.stringify({
   report,
-  summary: report ? formatTabBar(report) : "",
-  parts: report ? summaryParts(report) : []
+  summary: formatSummary(parts),
+  parts
 }));

@@ -15,16 +15,10 @@ import type { GenericProvider } from "./fetcher.ts";
 
 const MAX_READ_BYTES = 1024 * 1024;
 const COMMAND_TIMEOUT_MS = 4_000;
-const FAST_KEYCHAIN_TIMEOUT_MS = 450;
-const FAST_HTTP_TIMEOUT_MS = 1_000;
+const HTTP_TIMEOUT_MS = 3_500;
 const USER_AGENT = "herdr-usage-monitor";
 
 export type KeychainRead = { status: "found"; value: string } | { status: "missing" } | { status: "locked" };
-
-export interface DiscoveryOptions {
-  fast?: boolean;
-  deadlineMs?: number;
-}
 
 export interface Account {
   id: string;
@@ -56,12 +50,6 @@ const number = (value: unknown): number | null => {
   return typeof parsed === "number" && Number.isFinite(parsed) ? parsed : null;
 };
 const percent = (value: number): number => Math.round(Math.min(100, Math.max(0, value)) * 10) / 10;
-
-function budgetMs(opts: DiscoveryOptions | undefined, defaultMs: number, fastCapMs = defaultMs): number {
-  const cap = opts?.fast ? Math.min(defaultMs, fastCapMs) : defaultMs;
-  if (opts?.deadlineMs === undefined) return cap;
-  return Math.max(0, Math.min(cap, opts.deadlineMs - Date.now()));
-}
 
 export function resolveBinary(name: string): string | null {
   const found = Bun.which(name);
@@ -256,12 +244,9 @@ async function readKeychainInLoginSession(
 export async function readKeychain(
   service: string,
   account?: string,
-  opts?: DiscoveryOptions,
 ): Promise<KeychainRead> {
   if (process.platform !== "darwin") return { status: "missing" };
   if (promptedServices.has(service)) return { status: "locked" };
-  const timeoutMs = budgetMs(opts, COMMAND_TIMEOUT_MS, FAST_KEYCHAIN_TIMEOUT_MS);
-  if (timeoutMs <= 25) return { status: "locked" };
 
   const child = Bun.spawn(
     ["/usr/bin/security", "find-generic-password", "-s", service, ...(account ? ["-a", account] : []), "-w"],
@@ -271,7 +256,7 @@ export async function readKeychain(
   const timer = setTimeout(() => {
     timedOut = true;
     child.kill();
-  }, timeoutMs);
+  }, COMMAND_TIMEOUT_MS);
   try {
     const output = await readCapped(child.stdout);
     if (output === null) child.kill();
@@ -281,8 +266,7 @@ export async function readKeychain(
     if (code === 0 && output.trim()) return { status: "found", value: output.trim() };
     if (code === 44 && !timedOut) return { status: "missing" };
     if (code === 36 && !timedOut) {
-      const guiBudget = budgetMs(opts, COMMAND_TIMEOUT_MS, 550);
-      const gui = await readKeychainInLoginSession(service, account, guiBudget);
+      const gui = await readKeychainInLoginSession(service, account, COMMAND_TIMEOUT_MS);
       if (gui !== null) return { status: "found", value: gui };
     }
     if (timedOut) promptedServices.add(service);
@@ -297,15 +281,12 @@ export async function readKeychain(
 export async function runCommand(
   argv: string[],
   timeoutMs = COMMAND_TIMEOUT_MS,
-  opts?: DiscoveryOptions,
 ): Promise<string | null> {
-  const effectiveTimeout = budgetMs(opts, timeoutMs);
-  if (effectiveTimeout <= 25) return null;
   const bin = resolveBinary(argv[0]!);
   if (!bin) return null;
   try {
     const child = Bun.spawn([bin, ...argv.slice(1)], { stdin: "ignore", stdout: "pipe", stderr: "ignore" });
-    const timer = setTimeout(() => child.kill(), effectiveTimeout);
+    const timer = setTimeout(() => child.kill(), timeoutMs);
     try {
       const output = await readCapped(child.stdout);
       if (output === null) child.kill();
@@ -323,11 +304,10 @@ async function fromKeychain(
   service: string,
   accounts: Array<string | undefined>,
   parse: (value: string) => RawSignIn | null,
-  opts?: DiscoveryOptions,
 ): Promise<RawSignIn | "locked" | null> {
   if (process.platform !== "darwin") return null;
   for (const account of accounts) {
-    const found = await readKeychain(service, account, opts);
+    const found = await readKeychain(service, account);
     if (found.status === "locked") return "locked";
     if (found.status === "found") {
       const signIn = parse(found.value);
@@ -380,7 +360,7 @@ function claudeSignIn(source: string | null): RawSignIn | null {
   return token ? { token, expiresAt: number(oauth["expiresAt"]), plan: text(oauth["subscriptionType"]) } : null;
 }
 
-export async function getClaudeSignIns(opts?: DiscoveryOptions): Promise<SignIn[]> {
+export async function getClaudeSignIns(): Promise<SignIn[]> {
   const home = homedir();
   const user = process.env["USER"];
   const homes = [{ source: "default", service: "Claude Code-credentials", dir: join(home, ".claude"), config: join(home, ".claude.json") }];
@@ -394,7 +374,7 @@ export async function getClaudeSignIns(opts?: DiscoveryOptions): Promise<SignIn[
     homes.map(async (h) => {
       const account = claudeAccount(h.config);
       const file = claudeSignIn(readText(join(h.dir, ".credentials.json")));
-      const keychain = await fromKeychain(h.service, user ? [user, undefined] : [undefined], claudeSignIn, opts);
+      const keychain = await fromKeychain(h.service, user ? [user, undefined] : [undefined], claudeSignIn);
       return keychainOrFile(keychain, file, h.source, account);
     }),
   );
@@ -426,7 +406,7 @@ function codexSignIn(source: string | null): RawSignIn | null {
   };
 }
 
-export async function getCodexSignIns(opts?: DiscoveryOptions): Promise<SignIn[]> {
+export async function getCodexSignIns(): Promise<SignIn[]> {
   const home = homedir();
   const homes = [
     process.env["CODEX_HOME"],
@@ -440,7 +420,7 @@ export async function getCodexSignIns(opts?: DiscoveryOptions): Promise<SignIn[]
     if (signIn) found.push({ ...signIn, source: dir });
   }
   if (found.length > 0) return unlockedSignIns(found);
-  return unlockedSignIns(keychainFound(await fromKeychain("Codex Auth", [undefined], codexSignIn, opts), "keychain"));
+  return unlockedSignIns(keychainFound(await fromKeychain("Codex Auth", [undefined], codexSignIn), "keychain"));
 }
 
 // ---- Antigravity (AGY) ----
@@ -462,11 +442,11 @@ function antigravitySignIn(value: string | null): RawSignIn | null {
   return { token: access, expiresAt: epochMs(token["expiry"]), account };
 }
 
-export async function getAntigravitySignIns(opts?: DiscoveryOptions): Promise<SignIn[]> {
+export async function getAntigravitySignIns(): Promise<SignIn[]> {
   const home = homedir();
   const dir = process.env["ANTIGRAVITY_APP_DATA_DIR"] || join(home, ".gemini", "antigravity-cli");
   const file = antigravitySignIn(readText(join(dir, "antigravity-oauth-token")));
-  const keychain = await fromKeychain("gemini", ["antigravity"], antigravitySignIn, opts);
+  const keychain = await fromKeychain("gemini", ["antigravity"], antigravitySignIn);
   return unlockedSignIns(keychainOrFile(keychain, file, "keychain"));
 }
 
@@ -510,8 +490,7 @@ function cursorAppSignIn(path: string): RawSignIn | null {
   }
 }
 
-async function fetchCursorProviders(opts?: DiscoveryOptions): Promise<GenericProvider[]> {
-  if (budgetMs(opts, 3500, FAST_HTTP_TIMEOUT_MS) <= 50) return [];
+async function fetchCursorProviders(): Promise<GenericProvider[]> {
   const home = homedir();
   const app = cursorAppSignIn(cursorDatabase(home));
   const cliEmail = text(record(record(parseJson(readText(join(home, ".cursor", "cli-config.json"))))["authInfo"])["email"]);
@@ -522,7 +501,6 @@ async function fetchCursorProviders(opts?: DiscoveryOptions): Promise<GenericPro
       const token = text(value);
       return token ? { token, expiresAt: jwtExpiry(token), account: cursorAccount(token, cliEmail) } : null;
     },
-    opts,
   );
 
   let found: FoundSignIn[];
@@ -548,8 +526,6 @@ async function fetchCursorProviders(opts?: DiscoveryOptions): Promise<GenericPro
       });
       continue;
     }
-    const reqTimeout = budgetMs(opts, 3500, FAST_HTTP_TIMEOUT_MS);
-    if (reqTimeout <= 50) break;
     try {
       const res = await fetch("https://api2.cursor.sh/aiserver.v1.DashboardService/GetCurrentPeriodUsage", {
         method: "POST",
@@ -560,7 +536,7 @@ async function fetchCursorProviders(opts?: DiscoveryOptions): Promise<GenericPro
           "user-agent": USER_AGENT,
         },
         body: "{}",
-        signal: AbortSignal.timeout(reqTimeout),
+        signal: AbortSignal.timeout(HTTP_TIMEOUT_MS),
       });
       if (res.status === 401 || res.status === 403) {
         results.push({ id: "cursor", account: item.account?.label ?? "", plan: item.plan ?? null, windows: [], problem: "expired" });
@@ -627,12 +603,11 @@ function copilotFileTokens(source: string | null): GitHubToken[] {
   });
 }
 
-async function ghTokens(opts?: DiscoveryOptions): Promise<GitHubToken[]> {
-  if (opts?.fast) return [];
-  const rawStatus = await runCommand(["gh", "auth", "status", "--hostname", "github.com", "--json", "hosts"], 2500, opts);
+async function ghTokens(): Promise<GitHubToken[]> {
+  const rawStatus = await runCommand(["gh", "auth", "status", "--hostname", "github.com", "--json", "hosts"], 2500);
   const accounts = record(record(parseJson(rawStatus))["hosts"])["github.com"];
   if (!Array.isArray(accounts)) {
-    const token = text(await runCommand(["gh", "auth", "token", "--hostname", "github.com"], 2000, opts));
+    const token = text(await runCommand(["gh", "auth", "token", "--hostname", "github.com"], 2000));
     return token ? [{ token, login: null, editor: false }] : [];
   }
   const tokens = await Promise.all(
@@ -642,7 +617,7 @@ async function ghTokens(opts?: DiscoveryOptions): Promise<GitHubToken[]> {
       if (!login || account["state"] !== "success") return null;
       const fromEnv = ["GH_TOKEN", "GITHUB_TOKEN"].includes(text(account["tokenSource"]) ?? "");
       const token = text(
-        await runCommand(["gh", "auth", "token", "--hostname", "github.com", ...(fromEnv ? [] : ["--user", login])], 2000, opts),
+        await runCommand(["gh", "auth", "token", "--hostname", "github.com", ...(fromEnv ? [] : ["--user", login])], 2000),
       );
       return token ? { token, login, editor: false } : null;
     }),
@@ -658,14 +633,13 @@ function copilotWindow(value: unknown, scope: string, resetsAt: string | null) {
   return { kind: "month", scope, used_percent: percent(100 - left), resets_at: resetsAt };
 }
 
-async function fetchCopilotProviders(opts?: DiscoveryOptions): Promise<GenericProvider[]> {
-  if (budgetMs(opts, 3500, FAST_HTTP_TIMEOUT_MS) <= 50) return [];
+async function fetchCopilotProviders(): Promise<GenericProvider[]> {
   const home = homedir();
   const dir = join(process.env["XDG_CONFIG_HOME"] || join(home, ".config"), "github-copilot");
   const tokens = [
     ...copilotFileTokens(readText(join(dir, "apps.json"))),
     ...copilotFileTokens(readText(join(dir, "hosts.json"))),
-    ...(await ghTokens(opts)),
+    ...(await ghTokens()),
   ];
   if (tokens.length === 0) return [];
 
@@ -688,8 +662,6 @@ async function fetchCopilotProviders(opts?: DiscoveryOptions): Promise<GenericPr
     let body: Json | null = null;
     let expired = false;
     for (const token of accountTokens) {
-      const reqTimeout = budgetMs(opts, 3500, FAST_HTTP_TIMEOUT_MS);
-      if (reqTimeout <= 50) break;
       try {
         const res = await fetch("https://api.github.com/copilot_internal/user", {
           headers: {
@@ -700,7 +672,7 @@ async function fetchCopilotProviders(opts?: DiscoveryOptions): Promise<GenericPr
             "editor-plugin-version": "copilot-chat/0.26.7",
             "x-github-api-version": "2025-04-01",
           },
-          signal: AbortSignal.timeout(reqTimeout),
+          signal: AbortSignal.timeout(HTTP_TIMEOUT_MS),
         });
         if (res.status === 404) continue;
         if (res.status === 401 || res.status === 403) {
@@ -768,8 +740,7 @@ const GROK_PERIOD_KINDS: Record<string, string> = {
   USAGE_PERIOD_TYPE_MONTHLY: "month",
 };
 
-async function fetchGrokProviders(opts?: DiscoveryOptions): Promise<GenericProvider[]> {
-  if (budgetMs(opts, 3500, FAST_HTTP_TIMEOUT_MS) <= 50) return [];
+async function fetchGrokProviders(): Promise<GenericProvider[]> {
   const home = homedir();
   const entries = Object.entries(record(parseJson(readText(join(home, ".grok", "auth.json")))));
   if (entries.length === 0) return [];
@@ -785,8 +756,6 @@ async function fetchGrokProviders(opts?: DiscoveryOptions): Promise<GenericProvi
       results.push({ id: "grok", account: email, plan: null, windows: [], problem: "expired" });
       continue;
     }
-    const reqTimeout = budgetMs(opts, 3500, FAST_HTTP_TIMEOUT_MS);
-    if (reqTimeout <= 50) break;
     try {
       const res = await fetch("https://cli-chat-proxy.grok.com/v1/billing?format=credits", {
         headers: {
@@ -795,7 +764,7 @@ async function fetchGrokProviders(opts?: DiscoveryOptions): Promise<GenericProvi
           accept: "application/json",
           "user-agent": USER_AGENT,
         },
-        signal: AbortSignal.timeout(reqTimeout),
+        signal: AbortSignal.timeout(HTTP_TIMEOUT_MS),
       });
       if (res.status === 401 || res.status === 403) {
         results.push({ id: "grok", account: email, plan: null, windows: [], problem: "expired" });
@@ -823,9 +792,7 @@ async function fetchGrokProviders(opts?: DiscoveryOptions): Promise<GenericProvi
   return results;
 }
 
-async function fetchOpencodeProviders(opts?: DiscoveryOptions): Promise<GenericProvider[]> {
-  const reqTimeout = budgetMs(opts, 3500, FAST_HTTP_TIMEOUT_MS);
-  if (reqTimeout <= 50) return [];
+async function fetchOpencodeProviders(): Promise<GenericProvider[]> {
   const home = homedir();
   const dir = join(process.env["XDG_DATA_HOME"] || join(home, ".local", "share"), "opencode");
   const root = record(parseJson(readText(join(dir, "auth.json"))));
@@ -843,7 +810,7 @@ async function fetchOpencodeProviders(opts?: DiscoveryOptions): Promise<GenericP
   try {
     const res = await fetch("https://opencode.ai/zen/go/v1/usage", {
       headers: { authorization: `Bearer ${token}`, accept: "application/json", "user-agent": USER_AGENT },
-      signal: AbortSignal.timeout(reqTimeout),
+      signal: AbortSignal.timeout(HTTP_TIMEOUT_MS),
     });
     if (res.status === 403 || !res.ok) return [];
     const body = record(await res.json());
@@ -866,12 +833,12 @@ async function fetchOpencodeProviders(opts?: DiscoveryOptions): Promise<GenericP
   }
 }
 
-export async function fetchOtherProviders(opts?: DiscoveryOptions): Promise<GenericProvider[]> {
+export async function fetchOtherProviders(): Promise<GenericProvider[]> {
   const [cursor, copilot, grok, opencode] = await Promise.all([
-    fetchCursorProviders(opts),
-    fetchCopilotProviders(opts),
-    fetchGrokProviders(opts),
-    fetchOpencodeProviders(opts),
+    fetchCursorProviders(),
+    fetchCopilotProviders(),
+    fetchGrokProviders(),
+    fetchOpencodeProviders(),
   ]);
   return [...cursor, ...copilot, ...grok, ...opencode];
 }
