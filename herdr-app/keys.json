@@ -1,0 +1,5 @@
+{
+  "global": {
+    "cmd-u": "mod.open:usage-monitor"
+  }
+}

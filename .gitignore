@@ -1,3 +1,7 @@
 node_modules/
 .DS_Store
 *.log
+
+# Written by `herdr-app check`
+herdr-app/mods/*/gpui-kit.d.ts
+herdr-app/mods/*/jsconfig.json
