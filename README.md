@@ -35,7 +35,57 @@ Supports Claude Code, OpenAI Codex, Antigravity CLI (AGY), Cursor, Grok, and Git
 
 ---
 
-## Setup in Herdr
+## Herdr app (desktop)
+
+The native desktop mod puts the same allowance readout at the bottom of the sidebar, above Settings. Click it or press Cmd+U (Ctrl+Shift+U on Linux and Windows) to open the breakdown, then use **Refresh** for an immediate check. The mod shares the TUI monitor’s provider code and cache.
+
+![Herdr app breakdown](herdr-app/preview.png)
+
+The breakdown uses traffic lights to show where allowance will reset unused. Each limit's time left is compared with its allowance left:
+
+- 🟢 **Untapped**: at least 20 points more allowance left than time left, so at your current pace some of it resets unused. Codex reset credits that expire within 3 days count too. The **Untapped allowance** panel at the top lists all of these, soonest reset first.
+- 🟡 **On pace**: within 20 points either way.
+- 🔴 **Tight**: 10% or less left, or 20 points behind, so it runs out before the reset.
+
+A tick on each bar marks where an even pace would be.
+
+### Install
+
+The mod needs [Bun](https://bun.sh). Open Herdr once, then pick one of these:
+
+- **With the installer** (from this checkout):
+
+  ```sh
+  bun herdr-app/install.ts --bind-key
+  ```
+
+  It copies the mod, binds Cmd+U (`--bind-key`, optional), and adds the readout to a layout: the personal layout on screen if you have one open (`main-context` from [herdr-context-monitor](https://github.com/EMRahman/herdr-context-monitor), say), otherwise its own `herdr-with-usage`. Switch to it with `herdr-app do layout.switch '{"name":"herdr-with-usage"}'` or the layout picker.
+- **By hand**, as with any Herdr mod: copy `herdr-app/mods/usage-monitor/` into `~/.config/herdr-app/mods/`, merge `herdr-app/keys.json` into yours, and add the block from [`herdr-app/RECIPE.md`](herdr-app/RECIPE.md) to a personal layout. Or ask your agent to add it from the recipe.
+
+Binding the key edits `keys.json`, and Herdr stops adding new default shortcuts to an edited keys file on upgrade. Without it, clicking the readout opens the breakdown.
+
+### Choosing the layout
+
+Herdr shows one layout at a time, so mods that each add a panel share a personal layout. Pass `--layout <name>` to pick one. Later runs remember the choice, and `--layout herdr-with-usage` moves the readout back to its own layout. The installer only adds its block to a layout it didn't make, and never rebuilds it.
+
+### Updating
+
+Like other Herdr mods, this one doesn't update itself. Rerun the installer after pulling changes or updating Herdr. A rerun only writes what changed. It rebuilds `herdr-with-usage` from Herdr's current main layout, unless you've edited that layout since. Blocks other mods added don't count as edits, and a rebuild keeps them in place.
+
+While the readout shows, the app checks the cache every minute and refreshes allowances when the cached report is at least three minutes old. The optional TUI poller also keeps this cache warm.
+
+### Developing
+
+`herdr-app/mods/usage-monitor/bridge.js` is the provider code prebuilt for the mod. After changing `fetcher.ts`, `providers.ts` or `usage-summary.ts`, rebuild it, and check it before committing:
+
+```sh
+bun run build:mod     # rebuild bridge.js
+bun run check:mod     # fail if bridge.js is out of date
+```
+
+The installer also rebuilds it on every run.
+
+## Setup in Herdr TUI
 
 Clone the repository to your preferred location (e.g., `~/Code/herdr-usage-monitor` or `~/.config/herdr/plugins/herdr-usage-monitor`):
 

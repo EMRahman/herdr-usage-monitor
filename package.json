@@ -6,7 +6,9 @@
   "scripts": {
     "status": "bun usage-bar.ts",
     "breakdown": "bun usage-pane.ts --once",
-    "popup": "bun usage-pane.ts"
+    "popup": "bun usage-pane.ts",
+    "build:mod": "bun herdr-app/build.ts",
+    "check:mod": "bun herdr-app/build.ts --check"
   },
   "keywords": [
     "herdr",
