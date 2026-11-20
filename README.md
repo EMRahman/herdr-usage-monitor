@@ -39,6 +39,12 @@ Supports Claude Code, OpenAI Codex, Antigravity CLI (AGY), Cursor, Grok, and Git
 
 The native desktop mod puts the same allowance readout at the bottom of the sidebar, above Settings. Click it or press Cmd+U (Ctrl+Shift+U on Linux and Windows) to open the breakdown, then use **Refresh** for an immediate check. The mod shares the TUI monitor’s provider code and cache.
 
+#### 1. Bottom-left readout (always visible)
+![Herdr app sidebar readout](docs/herdr-app-sidebar.png)
+
+Each provider's % left at a glance. A figure turns yellow at 30% or less and red at 10% or less, and the gauge takes the colour of the lowest one. With the sidebar folded, only the gauge shows; hover it for the figures.
+
+#### 2. Breakdown (Cmd+U or click the readout)
 ![Herdr app breakdown](herdr-app/preview.png)
 
 The breakdown uses traffic lights to show where allowance will reset unused. Each limit's time left is compared with its allowance left:
