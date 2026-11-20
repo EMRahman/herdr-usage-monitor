@@ -45,7 +45,13 @@ To update, `git pull` and run the installer again.
 
 ## Quick start: Herdr (terminal)
 
-Clone the repo, then add this to `~/.config/herdr/config.toml`. Replace `/path/to/bun` with the output of `which bun`, because Herdr runs commands with a minimal `PATH`:
+Clone the repo into `~/Code`:
+
+```sh
+git clone https://github.com/EMRahman/herdr-usage-monitor.git ~/Code/herdr-usage-monitor
+```
+
+Then add this to `~/.config/herdr/config.toml`. Replace `/path/to/bun` with the output of `which bun`, because Herdr runs commands with a minimal `PATH`. If you cloned somewhere else, change `~/Code/herdr-usage-monitor` to match:
 
 ```toml
 [ui]
