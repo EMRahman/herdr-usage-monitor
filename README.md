@@ -16,6 +16,10 @@ Claude Code · Codex · Antigravity · Cursor · GitHub Copilot · Grok · OpenC
 
 ![The breakdown in the Herdr app: an Untapped allowance panel, then Claude, Codex and Antigravity cards with traffic-light bars](herdr-app/preview.png)
 
+Press <kbd>B</kbd> to switch to the **Burndown** view, which charts how each limit has drained through its current window against an even pace (see [Burndown charts](#burndown-charts)):
+
+![The Burndown view: Claude, Codex and Antigravity cards, each with a chart of % left through its 5-hour and weekly windows, against a dotted even-pace line](docs/herdr-app-burndown.png)
+
 ## Quick start
 
 You need the [Herdr app](https://herdr.dev) (opened at least once), [Bun](https://bun.sh), and at least one supported AI CLI you're signed in to.
@@ -51,8 +55,6 @@ Everything green is listed in the **Untapped allowance** panel at the top, soone
 ## Burndown charts
 
 Switch the breakdown to **Burndown** (press <kbd>B</kbd>, and <kbd>U</kbd> to go back) to see how each 5-hour and weekly limit has drained through its current window, from 100% at the start to the reset. Limits a provider sets per model get their own chart: Claude's 7d Opus and 7d Sonnet, and each Antigravity model group. A dotted line shows an even pace to 0% at the reset, so a line below it is spending faster than the window allows. Hover a chart for the reading at that time.
-
-![The Burndown view: Claude, Codex and Antigravity cards, each with a chart of % left through its 5-hour and weekly windows, against a dotted even-pace line](docs/herdr-app-burndown.png)
 
 The charts come from readings kept on your machine, recorded each time allowances are read (every few minutes while Herdr is open), so they fill in from when you install this version. Time when Herdr was closed or the machine was asleep shows as a gap.
 
