@@ -176,20 +176,27 @@ function untapped(t, spares) {
           .filter(Boolean).join(" · ")))));
 }
 
-function button(t, id, label, onClick, disabled = false) {
-  const el = div().id(id).h(28).px(10).rounded(5).flex().items_center().bg(t.raised);
-  if (disabled) return el.text_color(t.muted).child(label);
-  return el.hover((s) => s.bg(t.hover)).cursor_pointer().on_click(onClick).child(label);
+function button(t, id, label, onClick, disabled = false, key = "") {
+  const el = div().id(id).h(28).px(10).gap(6).rounded(5).flex().items_center().bg(t.raised);
+  const hinted = (e) => (key ? e.child(keyHint(t, key)) : e);
+  if (disabled) return hinted(el.text_color(t.muted).child(label));
+  return hinted(el.hover((s) => s.bg(t.hover)).cursor_pointer().on_click(onClick).child(label));
 }
 
-// Allowances | Burndown.
+// A button's shortcut, beside its label.
+function keyHint(t, key) {
+  return div().text_size(10).text_color(t.dim).child(key);
+}
+
+// Allowances | Burndown, switched with U and B.
 function views(t, current, choose) {
-  return h_flex().gap(2).p(2).rounded(6).bg(t.raised).children([["allowances", "Allowances"], ["burndown", "Burndown"]]
-    .map(([view, label]) => {
-      const el = div().id(`view-${view}`).h(24).px(10).rounded(4).flex().items_center();
-      return view === current ? el.bg(t.selected).text_color(t.foreground).child(label)
+  return h_flex().gap(2).p(2).rounded(6).bg(t.raised).children([["allowances", "Allowances", "U"], ["burndown", "Burndown", "B"]]
+    .map(([view, label, key]) => {
+      const el = div().id(`view-${view}`).h(24).px(10).gap(6).rounded(4).flex().items_center();
+      return (view === current ? el.bg(t.selected).text_color(t.foreground)
         : el.text_color(t.muted).hover((s) => s.bg(t.hover).text_color(t.foreground)).cursor_pointer()
-          .on_click((_event, cx) => choose(view, cx)).child(label);
+          .on_click((_event, cx) => choose(view, cx)))
+        .child(label).child(keyHint(t, key));
     }));
 }
 
@@ -214,6 +221,7 @@ export function breakdown(t, report, state) {
     : report?.partial ? "Partial report"
     : report?.timestamp ? `${state.stale ? "Cached" : "Updated"} · ${localTime(report.timestamp)}` : "");
   return v_flex().id("usage-root").size_full().overflow_hidden().bg(t.popover).text_color(t.foreground).text_size(12)
+    .when(Boolean(state.focus), (el) => el.track_focus(state.focus).on_key_down(state.onKey))
     .on_size_change(state.onSize)
     .child(h_flex().flex_none().justify_between().items_center().gap(8).px(16).py(12)
       .border_b(1).border_color(t.border)
@@ -221,7 +229,7 @@ export function breakdown(t, report, state) {
         .child(div().text_size(16).font_semibold().child("Subscription usage"))
         .child(views(t, burndown ? "burndown" : "allowances", state.setView)))
       .child(h_flex().gap(6)
-        .child(button(t, "refresh-usage", "Refresh", state.refresh, state.pending))
+        .child(button(t, "refresh-usage", "Refresh", state.refresh, state.pending, "R"))
         .child(button(t, "close-usage", "Close", state.close))))
     .child(v_flex().id("usage-scroll").flex_1().min_h(0).overflow_y_scrollbar().p(16).gap(8)
       .when(burndown, (el) => el.child(burndownView(t, state)))
