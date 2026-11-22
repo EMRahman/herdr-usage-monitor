@@ -1,6 +1,6 @@
 // JSON bridge for the desktop mod.
 import { fetchDetailedReport, getCachedReport } from "../fetcher.ts";
-import { burndowns, readHistory } from "../history.ts";
+import { burndowns, readHistory, recordReport } from "../history.ts";
 import { formatSummary, summaryParts } from "../usage-summary.ts";
 
 const DAY_MS = 24 * 60 * 60_000;
@@ -15,6 +15,8 @@ if (mode === "--history") {
 const report = mode === "--cached"
   ? (await getCachedReport(DAY_MS)) ?? (await getCachedReport(DAY_MS, { allowPartial: true }))
   : (mode === "--refresh" ? null : await getCachedReport(180_000)) ?? await fetchDetailedReport();
+// Whoever refreshed the cache, its new figures go into the history once.
+if (report) recordReport(report);
 const parts = report ? summaryParts(report) : [];
 
 console.log(JSON.stringify({

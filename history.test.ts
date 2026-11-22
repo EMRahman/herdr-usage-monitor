@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { FullReport } from "./fetcher.ts";
-import { BUCKETS, KEEP_MS, burndowns, readHistory, recordHistory, runs, samplesFrom, type Entry } from "./history.ts";
+import { BUCKETS, KEEP_MS, burndowns, readHistory, recordHistory, recordReport, recentReadings, runs, samplesFrom, type Entry } from "./history.ts";
 
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
@@ -67,6 +67,55 @@ describe("recordHistory", () => {
     writeFileSync(file, JSON.stringify({ t: NOW - KEEP_MS - HOUR, s: [sample] }) + "\n");
     recordHistory([sample], NOW, file);
     expect(readHistory(file)).toHaveLength(2);
+  });
+});
+
+describe("recordReport", () => {
+  const report = (readAt: FullReport["read_at"], claude = 80, codex = 60): FullReport => ({
+    timestamp: NOW,
+    claude: { account: "a", plan: "max", windows: [{ label: "5h session", used_percent: 100 - claude, resets_at: null }] },
+    codex: { account: "a", plan: "pro", windows: [{ label: "Weekly", used_percent: 100 - codex, resets_at: null }], resets: { available: 0, items: [] } },
+    others: [],
+    ...(readAt ? { read_at: readAt } : {}),
+  });
+
+  test("stamps each provider with when it was read", () => {
+    const file = tempFile();
+    recordReport(report({ claude: NOW - 2 * MINUTE, codex: NOW }), file);
+    expect(readHistory(file).map((e) => [e.t, e.s.map((s) => s.p)]))
+      .toEqual([[NOW - 2 * MINUTE, ["claude"]], [NOW, ["codex"]]]);
+  });
+
+  test("records a reading once, however many times the report is seen", () => {
+    const file = tempFile();
+    const seen = report({ claude: NOW, codex: NOW });
+    recordReport(seen, file);
+    recordReport(seen, file);
+    expect(readHistory(file)).toHaveLength(1);
+  });
+
+  test("skips carried-over figures and keeps the ones read since", () => {
+    const file = tempFile();
+    recordReport(report({ claude: NOW, codex: NOW }), file);
+    // Claude was rate limited: its figures are the earlier ones, carried over.
+    recordReport(report({ claude: NOW, codex: NOW + 3 * MINUTE }, 80, 55), file);
+    expect(readHistory(file).map((e) => [e.t, e.s.map((s) => `${s.p} ${s.left}`)]))
+      .toEqual([[NOW, ["claude 80", "codex 60"]], [NOW + 3 * MINUTE, ["codex 55"]]]);
+  });
+
+  test("records nothing from a report without read times", () => {
+    const file = tempFile();
+    recordReport(report(undefined), file);
+    expect(readHistory(file)).toEqual([]);
+  });
+
+  test("leaves readings older than the end of a long file alone", () => {
+    const file = tempFile();
+    const line = JSON.stringify({ t: NOW, s: [{ p: "codex", w: "Weekly", left: 50, reset: null }] });
+    writeFileSync(file, `${line}\n`.repeat(4000));
+    expect(recentReadings(file).since).toBe(NOW);
+    recordReport(report({ claude: NOW - HOUR }), file);
+    expect(readHistory(file)).toHaveLength(4000);
   });
 });
 

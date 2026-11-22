@@ -89,9 +89,12 @@ unused at your current pace, so you know where there's capacity to spend.
 - **History.** Every fresh read appends one line to
   `~/.local/share/herdr-usage-monitor/history.jsonl` (under `$XDG_DATA_HOME`
   when set): `{"t": ms, "s": [{"p": provider, "g": model group, "w": limit,
-  "left": %, "reset": ISO}]}`. Only providers read just then are recorded, not
-  ones filled in from the cache. Entries older than 8 days are dropped, about
-  once a day. While Burndown is on screen, the dialog reads the history on
+  "left": %, "reset": ISO}]}`. The report's `read_at` says when each
+  provider's figures were read; figures carried over from an older report keep
+  their time. Every bridge call records each provider whose `read_at` is newer
+  than its last line in the history, stamped with that time, so readings are
+  kept whichever program refreshed the cache, and carried-over figures aren't
+  recorded twice. Entries older than 8 days are dropped, about once a day. While Burndown is on screen, the dialog reads the history on
   opening it and after each poll.
 - Hovering the readout shows the full summary, or the error.
 

@@ -1,9 +1,10 @@
 // Allowance history, kept on this machine only, for the burndown charts.
 //
-// Every fresh read of the providers appends one line to history.jsonl: when it was read and each
-// limit's % left with its reset time. Nothing leaves the machine. Entries older than 8 days are
-// dropped, enough for a full weekly window and the one before it started.
-import { appendFileSync, closeSync, mkdirSync, openSync, readFileSync, readSync, renameSync, writeFileSync } from "node:fs";
+// Each provider's figures go into history.jsonl once, stamped with when they were read: each
+// limit's % left with its reset time. Any report the bridge handles is checked, so readings are
+// kept whichever program refreshed the cache. Nothing leaves the machine. Entries older than
+// 8 days are dropped, enough for a full weekly window and the one before it started.
+import { appendFileSync, closeSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { FullReport } from "./fetcher.ts";
@@ -54,8 +55,8 @@ export function historyFile(): string {
 
 const round = (value: number) => Math.round(value * 10) / 10;
 
-/** Every limit in a report, as samples. Call it before stale providers are merged in from the
- *  cache, so only what was just read is recorded. */
+/** Every limit in a report, as samples. A report can carry older figures for a provider that
+ *  wasn't read this time; recordReport uses read_at to tell them apart. */
 export function samplesFrom(report: FullReport): Sample[] {
   const samples: Sample[] = [];
   for (const [id, provider] of [["claude", report.claude], ["codex", report.codex]] as const) {
@@ -89,6 +90,64 @@ export function recordHistory(samples: Sample[], t = Date.now(), file = historyF
     appendFileSync(file, `${JSON.stringify({ t, s: samples })}\n`);
     pruneHistory(file, t);
   } catch {}
+}
+
+// How far back recordReport looks for each provider's last recorded reading.
+const TAIL_BYTES = 256 * 1024;
+
+/** Each provider's latest recorded reading in the end of the file, and the oldest reading that
+ *  part reaches back to (-Infinity when it's the whole file). */
+export function recentReadings(file = historyFile()): { last: Map<string, number>; since: number } {
+  const last = new Map<string, number>();
+  let since = -Infinity;
+  let fd: number;
+  try {
+    fd = openSync(file, "r");
+  } catch {
+    return { last, since };
+  }
+  try {
+    const size = fstatSync(fd).size;
+    const offset = Math.max(0, size - TAIL_BYTES);
+    const buffer = Buffer.alloc(size - offset);
+    const read = readSync(fd, buffer, 0, buffer.length, offset);
+    const lines = buffer.subarray(0, read).toString("utf8").split("\n");
+    if (offset > 0) {
+      lines.shift(); // starts mid-line
+      since = Infinity;
+    }
+    for (const line of lines) {
+      try {
+        const entry = JSON.parse(line) as Entry;
+        if (offset > 0) since = Math.min(since, entry.t);
+        for (const s of entry.s) last.set(s.p, Math.max(last.get(s.p) ?? -Infinity, entry.t));
+      } catch {}
+    }
+  } finally {
+    closeSync(fd);
+  }
+  return { last, since };
+}
+
+/**
+ * Records a report's figures that aren't in the history yet: each provider whose read_at is
+ * newer than its last recorded reading, as a line stamped with that time. A report without
+ * read_at (from an older version) records nothing, since fresh figures can't be told from
+ * carried-over ones. Two bridges handling the same report at once can both record it; equal
+ * readings at the same time draw as one.
+ */
+export function recordReport(report: FullReport, file = historyFile()): void {
+  const readAt = report.read_at;
+  if (!readAt) return;
+  const { last, since } = recentReadings(file);
+  const lines = new Map<number, Sample[]>();
+  for (const sample of samplesFrom(report)) {
+    const t = readAt[sample.p];
+    if (!t || t < since || t <= (last.get(sample.p) ?? -Infinity)) continue;
+    if (!lines.has(t)) lines.set(t, []);
+    lines.get(t)!.push(sample);
+  }
+  for (const [t, samples] of [...lines].sort((a, b) => a[0] - b[0])) recordHistory(samples, t, file);
 }
 
 function firstTime(file: string): number | null {

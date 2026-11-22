@@ -1,200 +1,16 @@
 // @bun
 // fetcher.ts
-import { existsSync as existsSync2, mkdirSync as mkdirSync2, writeFileSync as writeFileSync3 } from "fs";
-import { homedir as homedir3 } from "os";
-import { basename, join as join3 } from "path";
-
-// history.ts
-import { appendFileSync, closeSync, mkdirSync, openSync, readFileSync, readSync, renameSync, writeFileSync } from "fs";
-import { homedir } from "os";
-import { dirname, join } from "path";
-
-// herdr-app/mods/usage-monitor/pace.js
-var HOUR = 3600000;
-var DAY = 24 * HOUR;
-var CREDIT_SOON = 3 * DAY;
-function windowLength(text) {
-  const s = String(text ?? "").toLowerCase();
-  if (/\b5\s*h\b|five[\s-]hour/.test(s))
-    return 5 * HOUR;
-  if (/\b7\s*d\b|week/.test(s))
-    return 7 * DAY;
-  if (/\b24\s*h\b|\bday\b|daily/.test(s))
-    return DAY;
-  if (/month/.test(s))
-    return 30 * DAY;
-  return null;
-}
-
-// history.ts
-var MINUTE = 60000;
-var HOUR2 = 60 * MINUTE;
-var DAY2 = 24 * HOUR2;
-var KEEP_MS = 8 * DAY2;
-var BUCKETS = 180;
-function historyFile() {
-  if (process.env["HERDR_USAGE_HISTORY_FILE"])
-    return process.env["HERDR_USAGE_HISTORY_FILE"];
-  const data = process.env["XDG_DATA_HOME"] || join(homedir(), ".local", "share");
-  return join(data, "herdr-usage-monitor", "history.jsonl");
-}
-var round = (value) => Math.round(value * 10) / 10;
-function samplesFrom(report) {
-  const samples = [];
-  for (const [id, provider] of [["claude", report.claude], ["codex", report.codex]]) {
-    for (const w of provider?.windows ?? []) {
-      samples.push({ p: id, w: w.label, left: round(100 - w.used_percent), reset: w.resets_at ?? null });
-    }
-  }
-  for (const group of report.antigravity?.groups ?? []) {
-    for (const b of group.buckets ?? []) {
-      samples.push({ p: "antigravity", g: group.name, w: b.label, left: round(b.remaining_percent), reset: b.resets_at ?? null });
-    }
-  }
-  for (const provider of report.others ?? []) {
-    for (const w of provider.windows ?? []) {
-      samples.push({
-        p: provider.id,
-        ...w.scope ? { g: w.scope } : {},
-        w: w.kind,
-        left: round(100 - w.used_percent),
-        reset: w.resets_at ?? null
-      });
-    }
-  }
-  return samples.filter((s) => Number.isFinite(s.left));
-}
-function recordHistory(samples, t = Date.now(), file = historyFile()) {
-  if (samples.length === 0)
-    return;
-  try {
-    mkdirSync(dirname(file), { recursive: true });
-    appendFileSync(file, `${JSON.stringify({ t, s: samples })}
-`);
-    pruneHistory(file, t);
-  } catch {}
-}
-function firstTime(file) {
-  const fd = openSync(file, "r");
-  try {
-    const buffer = Buffer.alloc(64 * 1024);
-    const read = readSync(fd, buffer, 0, buffer.length, 0);
-    const line = buffer.subarray(0, read).toString("utf8").split(`
-`)[0];
-    const t = JSON.parse(line ?? "").t;
-    return Number.isFinite(t) ? t : null;
-  } catch {
-    return null;
-  } finally {
-    closeSync(fd);
-  }
-}
-function pruneHistory(file, now = Date.now()) {
-  const oldest = firstTime(file);
-  if (oldest !== null && now - oldest < KEEP_MS + DAY2)
-    return;
-  const kept = readFileSync(file, "utf8").split(`
-`).filter((line) => {
-    try {
-      return JSON.parse(line).t >= now - KEEP_MS;
-    } catch {
-      return false;
-    }
-  });
-  const temp = `${file}.${process.pid}.tmp`;
-  writeFileSync(temp, kept.map((line) => `${line}
-`).join(""));
-  renameSync(temp, file);
-}
-function readHistory(file = historyFile()) {
-  let text = "";
-  try {
-    text = readFileSync(file, "utf8");
-  } catch {
-    return [];
-  }
-  const entries = [];
-  for (const line of text.split(`
-`)) {
-    if (!line)
-      continue;
-    try {
-      const entry = JSON.parse(line);
-      if (Number.isFinite(entry.t) && Array.isArray(entry.s))
-        entries.push(entry);
-    } catch {}
-  }
-  return entries.sort((a, b) => a.t - b.t);
-}
-var keyOf = (s) => `${s.p}\x00${s.g ?? ""}\x00${s.w}`;
-var CHARTED = new Set([5 * HOUR2, 7 * DAY2]);
-function burndowns(entries, now = Date.now()) {
-  const series = new Map;
-  for (const entry of entries) {
-    for (const s of entry.s) {
-      const key = keyOf(s);
-      if (!series.has(key))
-        series.set(key, []);
-      series.get(key).push({ t: entry.t, s });
-    }
-  }
-  const result = [];
-  for (const readings of series.values()) {
-    const latest = readings.at(-1);
-    if (now - latest.t > DAY2)
-      continue;
-    const length = windowLength(latest.s.w);
-    if (!length || !CHARTED.has(length))
-      continue;
-    const reset = Date.parse(latest.s.reset ?? "");
-    const end = Number.isFinite(reset) ? reset : now;
-    const start = end - length;
-    const inWindow = readings.filter((r) => r.t >= start && r.t <= end);
-    result.push({
-      provider: latest.s.p,
-      ...latest.s.g ? { group: latest.s.g } : {},
-      label: latest.s.w,
-      length,
-      start,
-      end,
-      left: latest.s.left,
-      reset: latest.s.reset,
-      runs: runs(inWindow.map((r) => [r.t, r.s.left]), length, Math.min(now, end))
-    });
-  }
-  return result;
-}
-function runs(readings, length, until) {
-  const slice = length / BUCKETS;
-  const gap = Math.max(20 * MINUTE, 3 * slice);
-  const thinned = [];
-  for (const reading of readings) {
-    const last = thinned.at(-1);
-    if (last && Math.floor(last[0] / slice) === Math.floor(reading[0] / slice))
-      thinned[thinned.length - 1] = reading;
-    else
-      thinned.push(reading);
-  }
-  const out = [];
-  thinned.forEach(([t, left], i) => {
-    const next = thinned[i + 1]?.[0] ?? until;
-    const to = next - t <= gap ? Math.max(next, t) : t + slice;
-    const prev = out.at(-1);
-    if (prev && prev[1] === t && prev[2] === left)
-      prev[1] = to;
-    else
-      out.push([t, to, left]);
-  });
-  return out;
-}
+import { existsSync as existsSync2, mkdirSync, writeFileSync as writeFileSync2 } from "fs";
+import { homedir as homedir2 } from "os";
+import { basename, join as join2 } from "path";
 
 // providers.ts
 import { Database } from "bun:sqlite";
 import { createHash } from "crypto";
-import { closeSync as closeSync2, existsSync, mkdtempSync, openSync as openSync2, readdirSync, readSync as readSync2, rmSync, writeFileSync as writeFileSync2, writeSync } from "fs";
+import { closeSync, existsSync, mkdtempSync, openSync, readdirSync, readSync, rmSync, writeFileSync, writeSync } from "fs";
 import { open } from "fs/promises";
-import { homedir as homedir2, tmpdir } from "os";
-import { join as join2 } from "path";
+import { homedir, tmpdir } from "os";
+import { join } from "path";
 var MAX_READ_BYTES = 1024 * 1024;
 var COMMAND_TIMEOUT_MS = 4000;
 var HTTP_TIMEOUT_MS = 3500;
@@ -211,12 +27,12 @@ function resolveBinary(name) {
   if (found)
     return found;
   const extraDirs = [
-    join2(homedir2(), ".local", "bin"),
+    join(homedir(), ".local", "bin"),
     "/opt/homebrew/bin",
     "/usr/local/bin"
   ];
   for (const dir of extraDirs) {
-    const candidate = join2(dir, name);
+    const candidate = join(dir, name);
     if (existsSync(candidate))
       return candidate;
   }
@@ -224,7 +40,7 @@ function resolveBinary(name) {
 }
 function siblingDirs(home, prefix) {
   try {
-    return readdirSync(home, { withFileTypes: true }).filter((entry) => entry.isDirectory() && entry.name.startsWith(prefix)).map((entry) => join2(home, entry.name)).sort();
+    return readdirSync(home, { withFileTypes: true }).filter((entry) => entry.isDirectory() && entry.name.startsWith(prefix)).map((entry) => join(home, entry.name)).sort();
   } catch {
     return [];
   }
@@ -241,18 +57,18 @@ function parseJson(source) {
 function readText(path) {
   let fd;
   try {
-    fd = openSync2(path, "r");
+    fd = openSync(path, "r");
     const buffer = Buffer.alloc(MAX_READ_BYTES + 1);
     let size = 0;
     for (let read = 1;read > 0 && size <= MAX_READ_BYTES; size += read) {
-      read = readSync2(fd, buffer, size, buffer.length - size, null);
+      read = readSync(fd, buffer, size, buffer.length - size, null);
     }
     return size > MAX_READ_BYTES ? null : buffer.toString("utf8", 0, size);
   } catch {
     return null;
   } finally {
     if (fd !== undefined)
-      closeSync2(fd);
+      closeSync(fd);
   }
 }
 async function readCapped(stream) {
@@ -335,14 +151,14 @@ async function readKeychainInLoginSession(service, account, timeoutMs) {
   const args = ["/usr/bin/security", "find-generic-password", "-s", service, ...account ? ["-a", account] : [], "-w"];
   const domain = `gui/${process.getuid()}`;
   const label = `dev.herdr.usage-monitor.keychain.${process.pid}.${Date.now()}.${++loginSessionJobs}`;
-  const dir = mkdtempSync(join2(tmpdir(), "herdr-usage-keychain-"));
-  const fifo = join2(dir, "out");
-  const plist = join2(dir, "job.plist");
+  const dir = mkdtempSync(join(tmpdir(), "herdr-usage-keychain-"));
+  const fifo = join(dir, "out");
+  const plist = join(dir, "job.plist");
   let pipe;
   try {
     if (Bun.spawnSync(["mkfifo", "-m", "600", fifo]).exitCode !== 0)
       return null;
-    writeFileSync2(plist, `<?xml version="1.0" encoding="UTF-8"?>
+    writeFileSync(plist, `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict><key>Label</key><string>${xml(label)}</string><key>ProgramArguments</key><array>${args.map((a) => `<string>${xml(a)}</string>`).join("")}</array><key>StandardOutPath</key><string>${xml(fifo)}</string><key>StandardErrorPath</key><string>/dev/null</string><key>RunAtLoad</key><true/></dict></plist>
 `, { mode: 384 });
@@ -493,17 +309,17 @@ function claudeSignIn(source) {
   return token ? { token, expiresAt: number(oauth["expiresAt"]), plan: text(oauth["subscriptionType"]) } : null;
 }
 async function getClaudeSignIns() {
-  const home = homedir2();
+  const home = homedir();
   const user = process.env["USER"];
-  const homes = [{ source: "default", service: "Claude Code-credentials", dir: join2(home, ".claude"), config: join2(home, ".claude.json") }];
+  const homes = [{ source: "default", service: "Claude Code-credentials", dir: join(home, ".claude"), config: join(home, ".claude.json") }];
   const extraDirs = [process.env["CLAUDE_CONFIG_DIR"], ...siblingDirs(home, ".claude-")].filter((d) => Boolean(d));
   for (const dir of new Set(extraDirs)) {
     const hash = createHash("sha256").update(dir).digest("hex").slice(0, 8);
-    homes.push({ source: dir, service: `Claude Code-credentials-${hash}`, dir, config: join2(dir, ".claude.json") });
+    homes.push({ source: dir, service: `Claude Code-credentials-${hash}`, dir, config: join(dir, ".claude.json") });
   }
   const found = await Promise.all(homes.map(async (h) => {
     const account = claudeAccount(h.config);
-    const file = claudeSignIn(readText(join2(h.dir, ".credentials.json")));
+    const file = claudeSignIn(readText(join(h.dir, ".credentials.json")));
     const keychain = await fromKeychain(h.service, user ? [user, undefined] : [undefined], claudeSignIn);
     return keychainOrFile(keychain, file, h.source, account);
   }));
@@ -529,16 +345,16 @@ function codexSignIn(source) {
   };
 }
 async function getCodexSignIns() {
-  const home = homedir2();
+  const home = homedir();
   const homes = [
     process.env["CODEX_HOME"],
-    join2(home, ".config", "codex"),
-    join2(home, ".codex"),
+    join(home, ".config", "codex"),
+    join(home, ".codex"),
     ...siblingDirs(home, ".codex-")
   ];
   const found = [];
   for (const dir of new Set(homes.filter((d) => Boolean(d)))) {
-    const signIn = codexSignIn(readText(join2(dir, "auth.json")));
+    const signIn = codexSignIn(readText(join(dir, "auth.json")));
     if (signIn)
       found.push({ ...signIn, source: dir });
   }
@@ -563,14 +379,14 @@ function antigravitySignIn(value) {
   return { token: access, expiresAt: epochMs(token["expiry"]), account };
 }
 async function getAntigravitySignIns() {
-  const home = homedir2();
-  const dir = process.env["ANTIGRAVITY_APP_DATA_DIR"] || join2(home, ".gemini", "antigravity-cli");
-  const file = antigravitySignIn(readText(join2(dir, "antigravity-oauth-token")));
+  const home = homedir();
+  const dir = process.env["ANTIGRAVITY_APP_DATA_DIR"] || join(home, ".gemini", "antigravity-cli");
+  const file = antigravitySignIn(readText(join(dir, "antigravity-oauth-token")));
   const keychain = await fromKeychain("gemini", ["antigravity"], antigravitySignIn);
   return unlockedSignIns(keychainOrFile(keychain, file, "keychain"));
 }
 function cursorDatabase(home) {
-  return process.platform === "darwin" ? join2(home, "Library", "Application Support", "Cursor", "User", "globalStorage", "state.vscdb") : join2(process.env["XDG_CONFIG_HOME"] || join2(home, ".config"), "Cursor", "User", "globalStorage", "state.vscdb");
+  return process.platform === "darwin" ? join(home, "Library", "Application Support", "Cursor", "User", "globalStorage", "state.vscdb") : join(process.env["XDG_CONFIG_HOME"] || join(home, ".config"), "Cursor", "User", "globalStorage", "state.vscdb");
 }
 function cursorAccount(token, email) {
   const id = text(jwtClaims(token)["sub"]);
@@ -597,9 +413,9 @@ function cursorAppSignIn(path) {
   }
 }
 async function fetchCursorProviders() {
-  const home = homedir2();
+  const home = homedir();
   const app = cursorAppSignIn(cursorDatabase(home));
-  const cliEmail = text(record(record(parseJson(readText(join2(home, ".cursor", "cli-config.json"))))["authInfo"])["email"]);
+  const cliEmail = text(record(record(parseJson(readText(join(home, ".cursor", "cli-config.json"))))["authInfo"])["email"]);
   const cli = await fromKeychain("cursor-access-token", [undefined], (value) => {
     const token = text(value);
     return token ? { token, expiresAt: jwtExpiry(token), account: cursorAccount(token, cliEmail) } : null;
@@ -714,11 +530,11 @@ function copilotWindow(value, scope, resetsAt) {
   return { kind: "month", scope, used_percent: percent(100 - left), resets_at: resetsAt };
 }
 async function fetchCopilotProviders() {
-  const home = homedir2();
-  const dir = join2(process.env["XDG_CONFIG_HOME"] || join2(home, ".config"), "github-copilot");
+  const home = homedir();
+  const dir = join(process.env["XDG_CONFIG_HOME"] || join(home, ".config"), "github-copilot");
   const tokens = [
-    ...copilotFileTokens(readText(join2(dir, "apps.json"))),
-    ...copilotFileTokens(readText(join2(dir, "hosts.json"))),
+    ...copilotFileTokens(readText(join(dir, "apps.json"))),
+    ...copilotFileTokens(readText(join(dir, "hosts.json"))),
     ...await ghTokens()
   ];
   if (tokens.length === 0)
@@ -817,8 +633,8 @@ var GROK_PERIOD_KINDS = {
   USAGE_PERIOD_TYPE_MONTHLY: "month"
 };
 async function fetchGrokProviders() {
-  const home = homedir2();
-  const entries = Object.entries(record(parseJson(readText(join2(home, ".grok", "auth.json")))));
+  const home = homedir();
+  const entries = Object.entries(record(parseJson(readText(join(home, ".grok", "auth.json")))));
   if (entries.length === 0)
     return [];
   const results = [];
@@ -871,9 +687,9 @@ async function fetchGrokProviders() {
   return results;
 }
 async function fetchOpencodeProviders() {
-  const home = homedir2();
-  const dir = join2(process.env["XDG_DATA_HOME"] || join2(home, ".local", "share"), "opencode");
-  const root = record(parseJson(readText(join2(dir, "auth.json"))));
+  const home = homedir();
+  const dir = join(process.env["XDG_DATA_HOME"] || join(home, ".local", "share"), "opencode");
+  const root = record(parseJson(readText(join(dir, "auth.json"))));
   let token = null;
   for (const provider of ["opencode-go", "opencode"]) {
     const entry = record(root[provider]);
@@ -924,11 +740,11 @@ async function fetchOtherProviders() {
 }
 
 // fetcher.ts
-var CACHE_DIR = process.env["HERDR_USAGE_CACHE_DIR"] ?? (process.env["XDG_CACHE_HOME"] ? join3(process.env["XDG_CACHE_HOME"], "herdr-usage-monitor") : join3(homedir3(), ".cache", "herdr-usage-monitor"));
-var CACHE_FILE = join3(CACHE_DIR, "herdr-usage-cache.json");
-var LEGACY_PARTIAL_CACHE_FILE = join3(CACHE_DIR, "herdr-usage-fast-cache.json");
-var AGY_CACHE_FILE = join3(CACHE_DIR, "herdr-agy-usage.json");
-var RATE_LIMITS_FILE = join3(CACHE_DIR, "rate-limits.json");
+var CACHE_DIR = process.env["HERDR_USAGE_CACHE_DIR"] ?? (process.env["XDG_CACHE_HOME"] ? join2(process.env["XDG_CACHE_HOME"], "herdr-usage-monitor") : join2(homedir2(), ".cache", "herdr-usage-monitor"));
+var CACHE_FILE = join2(CACHE_DIR, "herdr-usage-cache.json");
+var LEGACY_PARTIAL_CACHE_FILE = join2(CACHE_DIR, "herdr-usage-fast-cache.json");
+var AGY_CACHE_FILE = join2(CACHE_DIR, "herdr-agy-usage.json");
+var RATE_LIMITS_FILE = join2(CACHE_DIR, "rate-limits.json");
 async function getRateLimitsAsync() {
   try {
     const file = Bun.file(RATE_LIMITS_FILE);
@@ -940,15 +756,15 @@ async function getRateLimitsAsync() {
 }
 function saveRateLimits(state) {
   try {
-    mkdirSync2(CACHE_DIR, { recursive: true });
-    writeFileSync3(RATE_LIMITS_FILE, JSON.stringify(state));
+    mkdirSync(CACHE_DIR, { recursive: true });
+    writeFileSync2(RATE_LIMITS_FILE, JSON.stringify(state));
   } catch {}
 }
 async function readCacheFile(path, maxAgeMs) {
   try {
     let file = Bun.file(path);
     if (!await file.exists()) {
-      const legacyPath = join3("/tmp", basename(path));
+      const legacyPath = join2("/tmp", basename(path));
       const legacyFile = Bun.file(legacyPath);
       if (await legacyFile.exists()) {
         file = legacyFile;
@@ -976,8 +792,8 @@ async function getCachedReport(maxAgeMs = 300000, options) {
 }
 function saveCachedReport(report) {
   try {
-    mkdirSync2(CACHE_DIR, { recursive: true });
-    writeFileSync3(CACHE_FILE, JSON.stringify(report));
+    mkdirSync(CACHE_DIR, { recursive: true });
+    writeFileSync2(CACHE_FILE, JSON.stringify(report));
   } catch {}
 }
 async function fetchDetailedReport() {
@@ -985,6 +801,7 @@ async function fetchDetailedReport() {
     timestamp: Date.now(),
     others: []
   };
+  const readAt = {};
   const claudePromise = (async () => {
     const limits = await getRateLimitsAsync();
     if (limits.claudeUntil && Date.now() < limits.claudeUntil) {
@@ -1051,6 +868,7 @@ async function fetchDetailedReport() {
         used_percent: usedPct
       };
     }
+    readAt.claude = Date.now();
     report.claude = {
       account: s.account?.label ?? "default",
       plan: s.plan ?? "pro",
@@ -1102,6 +920,7 @@ async function fetchDetailedReport() {
       expires_at: c.expires_at,
       description: c.description
     })).sort((a, b) => Date.parse(a.expires_at) - Date.parse(b.expires_at));
+    readAt.codex = Date.now();
     report.codex = {
       account: s.account?.label ?? body.email ?? "default",
       plan: s.plan ?? body.plan_type ?? "plus",
@@ -1114,6 +933,7 @@ async function fetchDetailedReport() {
   })().catch(() => {});
   const agyPromise = (async () => {
     let agyData = null;
+    let agyReadAt = Date.now();
     try {
       let agyPath = AGY_CACHE_FILE;
       if (!existsSync2(agyPath) && existsSync2("/tmp/herdr-agy-usage.json")) {
@@ -1123,6 +943,7 @@ async function fetchDetailedReport() {
         const stat = await Bun.file(agyPath).stat();
         if (Date.now() - stat.mtimeMs < 120000) {
           agyData = JSON.parse(await Bun.file(agyPath).text());
+          agyReadAt = stat.mtimeMs;
         }
       }
     } catch {}
@@ -1149,8 +970,8 @@ async function fetchDetailedReport() {
             if (parsed.command?.data?.groups) {
               agyData = parsed.command.data;
               try {
-                mkdirSync2(CACHE_DIR, { recursive: true });
-                writeFileSync3(AGY_CACHE_FILE, JSON.stringify(agyData));
+                mkdirSync(CACHE_DIR, { recursive: true });
+                writeFileSync2(AGY_CACHE_FILE, JSON.stringify(agyData));
               } catch {}
             }
           }
@@ -1175,6 +996,7 @@ async function fetchDetailedReport() {
           buckets
         };
       });
+      readAt.antigravity = agyReadAt;
       report.antigravity = {
         account,
         groups
@@ -1223,6 +1045,7 @@ async function fetchDetailedReport() {
       })
     }));
     if (groups.length > 0) {
+      readAt.antigravity = Date.now();
       report.antigravity = {
         account,
         groups
@@ -1231,26 +1054,41 @@ async function fetchDetailedReport() {
   })().catch(() => {});
   const othersPromise = fetchOtherProviders().then((others) => {
     report.others = others;
+    const now = Date.now();
+    for (const p of others)
+      readAt[p.id] = now;
   }).catch(() => {});
   await Promise.allSettled([claudePromise, codexPromise, agyPromise, othersPromise]);
-  const fresh = samplesFrom(report);
   try {
     const prevComplete = await getCachedReport(24 * 3600000);
     const prevAny = await getCachedReport(24 * 3600000, { allowPartial: true });
+    const carry = (id, from) => {
+      const t = from?.read_at?.[id];
+      if (t)
+        readAt[id] = t;
+    };
     if (!report.claude) {
-      report.claude = prevAny?.claude ?? prevComplete?.claude;
+      const from = prevAny?.claude ? prevAny : prevComplete;
+      report.claude = from?.claude;
+      carry("claude", from);
     }
     if (!report.codex) {
-      report.codex = prevComplete?.codex ?? prevAny?.codex;
+      const from = prevComplete?.codex ? prevComplete : prevAny;
+      report.codex = from?.codex;
+      carry("codex", from);
     }
     if (!report.antigravity) {
-      report.antigravity = prevComplete?.antigravity ?? prevAny?.antigravity;
+      const from = prevComplete?.antigravity ? prevComplete : prevAny;
+      report.antigravity = from?.antigravity;
+      carry("antigravity", from);
     }
     if (report.others.length === 0) {
-      if (prevComplete?.others?.length)
-        report.others = prevComplete.others;
-      else if (prevAny?.others?.length)
-        report.others = prevAny.others;
+      const from = prevComplete?.others?.length ? prevComplete : prevAny?.others?.length ? prevAny : null;
+      if (from) {
+        report.others = from.others;
+        for (const p of from.others)
+          carry(p.id, from);
+      }
     }
     if (report.codex && report.codex.resets.available > 0 && report.codex.resets.items.length === 0 && prevComplete?.codex?.account === report.codex.account && prevComplete.codex.resets.items.length > 0) {
       const now = Date.now();
@@ -1260,9 +1098,245 @@ async function fetchDetailedReport() {
       }).slice(0, report.codex.resets.available);
     }
   } catch {}
+  report.read_at = readAt;
   saveCachedReport(report);
-  recordHistory(fresh, report.timestamp);
   return report;
+}
+
+// history.ts
+import { appendFileSync, closeSync as closeSync2, fstatSync, mkdirSync as mkdirSync2, openSync as openSync2, readFileSync, readSync as readSync2, renameSync, writeFileSync as writeFileSync3 } from "fs";
+import { homedir as homedir3 } from "os";
+import { dirname, join as join3 } from "path";
+
+// herdr-app/mods/usage-monitor/pace.js
+var HOUR = 3600000;
+var DAY = 24 * HOUR;
+var CREDIT_SOON = 3 * DAY;
+function windowLength(text) {
+  const s = String(text ?? "").toLowerCase();
+  if (/\b5\s*h\b|five[\s-]hour/.test(s))
+    return 5 * HOUR;
+  if (/\b7\s*d\b|week/.test(s))
+    return 7 * DAY;
+  if (/\b24\s*h\b|\bday\b|daily/.test(s))
+    return DAY;
+  if (/month/.test(s))
+    return 30 * DAY;
+  return null;
+}
+
+// history.ts
+var MINUTE = 60000;
+var HOUR2 = 60 * MINUTE;
+var DAY2 = 24 * HOUR2;
+var KEEP_MS = 8 * DAY2;
+var BUCKETS = 180;
+function historyFile() {
+  if (process.env["HERDR_USAGE_HISTORY_FILE"])
+    return process.env["HERDR_USAGE_HISTORY_FILE"];
+  const data = process.env["XDG_DATA_HOME"] || join3(homedir3(), ".local", "share");
+  return join3(data, "herdr-usage-monitor", "history.jsonl");
+}
+var round = (value) => Math.round(value * 10) / 10;
+function samplesFrom(report) {
+  const samples = [];
+  for (const [id, provider] of [["claude", report.claude], ["codex", report.codex]]) {
+    for (const w of provider?.windows ?? []) {
+      samples.push({ p: id, w: w.label, left: round(100 - w.used_percent), reset: w.resets_at ?? null });
+    }
+  }
+  for (const group of report.antigravity?.groups ?? []) {
+    for (const b of group.buckets ?? []) {
+      samples.push({ p: "antigravity", g: group.name, w: b.label, left: round(b.remaining_percent), reset: b.resets_at ?? null });
+    }
+  }
+  for (const provider of report.others ?? []) {
+    for (const w of provider.windows ?? []) {
+      samples.push({
+        p: provider.id,
+        ...w.scope ? { g: w.scope } : {},
+        w: w.kind,
+        left: round(100 - w.used_percent),
+        reset: w.resets_at ?? null
+      });
+    }
+  }
+  return samples.filter((s) => Number.isFinite(s.left));
+}
+function recordHistory(samples, t = Date.now(), file = historyFile()) {
+  if (samples.length === 0)
+    return;
+  try {
+    mkdirSync2(dirname(file), { recursive: true });
+    appendFileSync(file, `${JSON.stringify({ t, s: samples })}
+`);
+    pruneHistory(file, t);
+  } catch {}
+}
+var TAIL_BYTES = 256 * 1024;
+function recentReadings(file = historyFile()) {
+  const last = new Map;
+  let since = -Infinity;
+  let fd;
+  try {
+    fd = openSync2(file, "r");
+  } catch {
+    return { last, since };
+  }
+  try {
+    const size = fstatSync(fd).size;
+    const offset = Math.max(0, size - TAIL_BYTES);
+    const buffer = Buffer.alloc(size - offset);
+    const read = readSync2(fd, buffer, 0, buffer.length, offset);
+    const lines = buffer.subarray(0, read).toString("utf8").split(`
+`);
+    if (offset > 0) {
+      lines.shift();
+      since = Infinity;
+    }
+    for (const line of lines) {
+      try {
+        const entry = JSON.parse(line);
+        if (offset > 0)
+          since = Math.min(since, entry.t);
+        for (const s of entry.s)
+          last.set(s.p, Math.max(last.get(s.p) ?? -Infinity, entry.t));
+      } catch {}
+    }
+  } finally {
+    closeSync2(fd);
+  }
+  return { last, since };
+}
+function recordReport(report, file = historyFile()) {
+  const readAt = report.read_at;
+  if (!readAt)
+    return;
+  const { last, since } = recentReadings(file);
+  const lines = new Map;
+  for (const sample of samplesFrom(report)) {
+    const t = readAt[sample.p];
+    if (!t || t < since || t <= (last.get(sample.p) ?? -Infinity))
+      continue;
+    if (!lines.has(t))
+      lines.set(t, []);
+    lines.get(t).push(sample);
+  }
+  for (const [t, samples] of [...lines].sort((a, b) => a[0] - b[0]))
+    recordHistory(samples, t, file);
+}
+function firstTime(file) {
+  const fd = openSync2(file, "r");
+  try {
+    const buffer = Buffer.alloc(64 * 1024);
+    const read = readSync2(fd, buffer, 0, buffer.length, 0);
+    const line = buffer.subarray(0, read).toString("utf8").split(`
+`)[0];
+    const t = JSON.parse(line ?? "").t;
+    return Number.isFinite(t) ? t : null;
+  } catch {
+    return null;
+  } finally {
+    closeSync2(fd);
+  }
+}
+function pruneHistory(file, now = Date.now()) {
+  const oldest = firstTime(file);
+  if (oldest !== null && now - oldest < KEEP_MS + DAY2)
+    return;
+  const kept = readFileSync(file, "utf8").split(`
+`).filter((line) => {
+    try {
+      return JSON.parse(line).t >= now - KEEP_MS;
+    } catch {
+      return false;
+    }
+  });
+  const temp = `${file}.${process.pid}.tmp`;
+  writeFileSync3(temp, kept.map((line) => `${line}
+`).join(""));
+  renameSync(temp, file);
+}
+function readHistory(file = historyFile()) {
+  let text = "";
+  try {
+    text = readFileSync(file, "utf8");
+  } catch {
+    return [];
+  }
+  const entries = [];
+  for (const line of text.split(`
+`)) {
+    if (!line)
+      continue;
+    try {
+      const entry = JSON.parse(line);
+      if (Number.isFinite(entry.t) && Array.isArray(entry.s))
+        entries.push(entry);
+    } catch {}
+  }
+  return entries.sort((a, b) => a.t - b.t);
+}
+var keyOf = (s) => `${s.p}\x00${s.g ?? ""}\x00${s.w}`;
+var CHARTED = new Set([5 * HOUR2, 7 * DAY2]);
+function burndowns(entries, now = Date.now()) {
+  const series = new Map;
+  for (const entry of entries) {
+    for (const s of entry.s) {
+      const key = keyOf(s);
+      if (!series.has(key))
+        series.set(key, []);
+      series.get(key).push({ t: entry.t, s });
+    }
+  }
+  const result = [];
+  for (const readings of series.values()) {
+    const latest = readings.at(-1);
+    if (now - latest.t > DAY2)
+      continue;
+    const length = windowLength(latest.s.w);
+    if (!length || !CHARTED.has(length))
+      continue;
+    const reset = Date.parse(latest.s.reset ?? "");
+    const end = Number.isFinite(reset) ? reset : now;
+    const start = end - length;
+    const inWindow = readings.filter((r) => r.t >= start && r.t <= end);
+    result.push({
+      provider: latest.s.p,
+      ...latest.s.g ? { group: latest.s.g } : {},
+      label: latest.s.w,
+      length,
+      start,
+      end,
+      left: latest.s.left,
+      reset: latest.s.reset,
+      runs: runs(inWindow.map((r) => [r.t, r.s.left]), length, Math.min(now, end))
+    });
+  }
+  return result;
+}
+function runs(readings, length, until) {
+  const slice = length / BUCKETS;
+  const gap = Math.max(20 * MINUTE, 3 * slice);
+  const thinned = [];
+  for (const reading of readings) {
+    const last = thinned.at(-1);
+    if (last && Math.floor(last[0] / slice) === Math.floor(reading[0] / slice))
+      thinned[thinned.length - 1] = reading;
+    else
+      thinned.push(reading);
+  }
+  const out = [];
+  thinned.forEach(([t, left], i) => {
+    const next = thinned[i + 1]?.[0] ?? until;
+    const to = next - t <= gap ? Math.max(next, t) : t + slice;
+    const prev = out.at(-1);
+    if (prev && prev[1] === t && prev[2] === left)
+      prev[1] = to;
+    else
+      out.push([t, to, left]);
+  });
+  return out;
 }
 
 // usage-summary.ts
@@ -1329,6 +1403,8 @@ if (mode === "--history") {
   process.exit(0);
 }
 var report = mode === "--cached" ? await getCachedReport(DAY_MS) ?? await getCachedReport(DAY_MS, { allowPartial: true }) : (mode === "--refresh" ? null : await getCachedReport(180000)) ?? await fetchDetailedReport();
+if (report)
+  recordReport(report);
 var parts = report ? summaryParts(report) : [];
 console.log(JSON.stringify({
   report,
