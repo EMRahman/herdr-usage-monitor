@@ -29,7 +29,7 @@ bun herdr-app/install.ts --bind-key
 That's it. The readout appears at the bottom left of the sidebar, above Settings.
 
 - **If you don't see it**, switch layouts with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>L</kbd>. The installer prints the layout's name: the personal layout you had open, or its own `herdr-with-usage`.
-- **Open the breakdown** with <kbd>Cmd</kbd>+<kbd>U</kbd> (<kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>U</kbd> on Linux and Windows), or click the readout.
+- **Open the breakdown** with <kbd>Cmd</kbd>+<kbd>U</kbd> (<kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>U</kbd> on Linux and Windows), or click the readout. In it, <kbd>R</kbd> refreshes, <kbd>B</kbd> shows the burndown charts and <kbd>U</kbd> the usage again.
 - **Without a shortcut:** leave out `--bind-key` and click the readout instead. The flag edits Herdr's `keys.json`, and Herdr stops adding new default shortcuts to an edited keys file.
 
 To update, `git pull` and run the installer again.
@@ -48,6 +48,14 @@ Every limit resets on a clock. If you used it evenly, the share left would match
 
 Everything green is listed in the **Untapped allowance** panel at the top, soonest reset first. A white tick on each bar marks where an even pace would be.
 
+## Burndown charts
+
+Switch the breakdown to **Burndown** (press <kbd>B</kbd>, and <kbd>U</kbd> to go back) to see how each 5-hour and weekly limit has drained through its current window, from 100% at the start to the reset. Limits a provider sets per model get their own chart: Claude's 7d Opus and 7d Sonnet, and each Antigravity model group. A dotted line shows an even pace to 0% at the reset, so a line below it is spending faster than the window allows. Hover a chart for the reading at that time.
+
+![The Burndown view: Claude, Codex and Antigravity cards, each with a chart of % left through its 5-hour and weekly windows, against a dotted even-pace line](docs/herdr-app-burndown.png)
+
+The charts come from readings kept on your machine, recorded each time allowances are read (every few minutes while Herdr is open), so they fill in from when you install this version. Time when Herdr was closed or the machine was asleep shows as a gap.
+
 ## What it shows
 
 | Provider | Limits |
@@ -64,6 +72,7 @@ Providers you aren't signed in to are left out.
 - **Sign-ins are only read.** It reads each CLI's existing sign-in on your machine, from its config files or the macOS Keychain, and never changes them. The first time it runs, macOS may ask you to allow Keychain access.
 - **It connects only to the providers themselves:** Anthropic, OpenAI and ChatGPT, GitHub, Cursor, Google, Grok and OpenCode, to read your usage. It has no server of its own and sends nothing anywhere else.
 - **Results are cached** in `~/.cache/herdr-usage-monitor/` and shared by the sidebar and breakdown, so the providers aren't asked on every check.
+- **History stays on your machine**, in `~/.local/share/herdr-usage-monitor/history.jsonl`: the time, each limit's % left and its reset time, nothing else. Readings older than 8 days are dropped. Delete the file to start over.
 
 ## Troubleshooting
 
@@ -96,7 +105,7 @@ bun run build:mod     # rebuild bridge.js
 bun run check:mod     # fail if bridge.js is out of date
 ```
 
-The installer also rebuilds it on every run. Check the mod itself with `herdr-app check herdr-app/mods/usage-monitor`.
+The installer also rebuilds it on every run. Run the tests with `bun test`. Check the mod itself with `herdr-app check herdr-app/mods/usage-monitor`.
 </details>
 
 ## License

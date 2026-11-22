@@ -86,6 +86,10 @@ export interface FullReport {
   codex?: DetailedCodex | null;
   antigravity?: DetailedAgy | null;
   others: GenericProvider[];
+  /** When each provider's figures were read (ms), by id: claude, codex, antigravity, or another
+   *  provider's id. Figures carried over from an older report keep that report's time; ones
+   *  from a report without read_at have none. */
+  read_at?: Record<string, number>;
 }
 
 interface RateLimitState {
@@ -156,6 +160,7 @@ export async function fetchDetailedReport(): Promise<FullReport> {
     timestamp: Date.now(),
     others: [],
   };
+  const readAt: Record<string, number> = {};
 
   // Fetch Claude (discovers its own credentials so slow Keychain never blocks other providers)
   const claudePromise = (async () => {
@@ -230,6 +235,7 @@ export async function fetchDetailedReport(): Promise<FullReport> {
       };
     }
 
+    readAt.claude = Date.now();
     report.claude = {
       account: s.account?.label ?? "default",
       plan: s.plan ?? "pro",
@@ -287,6 +293,7 @@ export async function fetchDetailedReport(): Promise<FullReport> {
       }))
       .sort((a: any, b: any) => Date.parse(a.expires_at) - Date.parse(b.expires_at));
 
+    readAt.codex = Date.now();
     report.codex = {
       account: s.account?.label ?? body.email ?? "default",
       plan: s.plan ?? body.plan_type ?? "plus",
@@ -302,6 +309,8 @@ export async function fetchDetailedReport(): Promise<FullReport> {
   const agyPromise = (async () => {
     // Try reading recent agy cache first before touching Keychain
     let agyData: any = null;
+    // The agy CLI's answer is cached for 2 minutes: its figures are as old as that file.
+    let agyReadAt = Date.now();
     try {
       let agyPath = AGY_CACHE_FILE;
       if (!existsSync(agyPath) && existsSync("/tmp/herdr-agy-usage.json")) {
@@ -311,6 +320,7 @@ export async function fetchDetailedReport(): Promise<FullReport> {
         const stat = await Bun.file(agyPath).stat();
         if (Date.now() - stat.mtimeMs < 120_000) {
           agyData = JSON.parse(await Bun.file(agyPath).text());
+          agyReadAt = stat.mtimeMs;
         }
       }
     } catch {}
@@ -370,6 +380,7 @@ export async function fetchDetailedReport(): Promise<FullReport> {
         };
       });
 
+      readAt.antigravity = agyReadAt;
       report.antigravity = {
         account,
         groups,
@@ -419,6 +430,7 @@ export async function fetchDetailedReport(): Promise<FullReport> {
     }));
 
     if (groups.length > 0) {
+      readAt.antigravity = Date.now();
       report.antigravity = {
         account,
         groups,
@@ -430,6 +442,8 @@ export async function fetchDetailedReport(): Promise<FullReport> {
   const othersPromise = fetchOtherProviders()
     .then((others) => {
       report.others = others;
+      const now = Date.now();
+      for (const p of others) readAt[p.id] = now;
     })
     .catch(() => {});
 
@@ -440,18 +454,32 @@ export async function fetchDetailedReport(): Promise<FullReport> {
     const prevComplete = await getCachedReport(24 * 3600_000);
     const prevAny = await getCachedReport(24 * 3600_000, { allowPartial: true });
 
+    // Carried-over figures keep the time they were read, so they aren't recorded as new.
+    const carry = (id: string, from: FullReport | null) => {
+      const t = from?.read_at?.[id];
+      if (t) readAt[id] = t;
+    };
     if (!report.claude) {
-      report.claude = prevAny?.claude ?? prevComplete?.claude;
+      const from = prevAny?.claude ? prevAny : prevComplete;
+      report.claude = from?.claude;
+      carry("claude", from);
     }
     if (!report.codex) {
-      report.codex = prevComplete?.codex ?? prevAny?.codex;
+      const from = prevComplete?.codex ? prevComplete : prevAny;
+      report.codex = from?.codex;
+      carry("codex", from);
     }
     if (!report.antigravity) {
-      report.antigravity = prevComplete?.antigravity ?? prevAny?.antigravity;
+      const from = prevComplete?.antigravity ? prevComplete : prevAny;
+      report.antigravity = from?.antigravity;
+      carry("antigravity", from);
     }
     if (report.others.length === 0) {
-      if (prevComplete?.others?.length) report.others = prevComplete.others;
-      else if (prevAny?.others?.length) report.others = prevAny.others;
+      const from = prevComplete?.others?.length ? prevComplete : prevAny?.others?.length ? prevAny : null;
+      if (from) {
+        report.others = from.others;
+        for (const p of from.others) carry(p.id, from);
+      }
     }
 
     // Preserve cached Codex reset credits when the provider does not return details.
@@ -472,6 +500,7 @@ export async function fetchDetailedReport(): Promise<FullReport> {
     }
   } catch {}
 
+  report.read_at = readAt;
   saveCachedReport(report);
   return report;
 }

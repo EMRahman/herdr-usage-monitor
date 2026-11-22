@@ -1,39 +1,14 @@
 import { div } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
 import { LIGHT_LABEL, creditLight, light, lightColor, windowLength } from "./pace.js";
+import { burndownCards } from "./burndown.js";
+import { duration, localTime, timed } from "./time.js";
 
 const PROVIDERS = { copilot: "GitHub Copilot", cursor: "Cursor", grok: "Grok", opencode: "OpenCode" };
 const WINDOWS = { session: "Session", day: "Daily", week: "Weekly", month: "Monthly" };
-const PAST = { Resets: "Reset", Expires: "Expired" };
 
 function remaining(used) {
   return 100 - Math.round(used);
-}
-
-const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-
-// Formatted by hand: Herdr's script runtime ignores toLocaleString's options.
-// "3:56 PM" today, "Nov 25, 8:58 AM" on another day.
-function localTime(value) {
-  const date = new Date(value);
-  const hours = date.getHours();
-  const clock = `${hours % 12 || 12}:${String(date.getMinutes()).padStart(2, "0")} ${hours < 12 ? "AM" : "PM"}`;
-  if (date.toDateString() === new Date().toDateString()) return clock;
-  return `${MONTHS[date.getMonth()]} ${date.getDate()}, ${clock}`;
-}
-
-function duration(ms) {
-  const minutes = Math.ceil(ms / 60_000);
-  const hours = Math.floor(minutes / 60);
-  return hours >= 48 ? `${Math.floor(hours / 24)}d ${hours % 24}h`
-    : hours > 0 ? `${hours}h ${minutes % 60}m` : `${minutes}m`;
-}
-
-function timed(label, iso) {
-  if (!iso || !Number.isFinite(Date.parse(iso))) return "";
-  const ms = Date.parse(iso) - Date.now();
-  if (ms <= 0) return `${PAST[label] ?? label} ${localTime(iso)}`;
-  return `${label} in ${duration(ms)} · ${localTime(iso)}`;
 }
 
 function dot(t, level) {
@@ -201,29 +176,65 @@ function untapped(t, spares) {
           .filter(Boolean).join(" · ")))));
 }
 
-function button(t, id, label, onClick, disabled = false) {
-  const el = div().id(id).h(28).px(10).rounded(5).flex().items_center().bg(t.raised);
-  if (disabled) return el.text_color(t.muted).child(label);
-  return el.hover((s) => s.bg(t.hover)).cursor_pointer().on_click(onClick).child(label);
+function button(t, id, label, onClick, disabled = false, key = "") {
+  const el = div().id(id).h(28).px(10).gap(6).rounded(5).flex().items_center().bg(t.raised);
+  const hinted = (e) => (key ? e.child(keyHint(t, key)) : e);
+  if (disabled) return hinted(el.text_color(t.muted).child(label));
+  return hinted(el.hover((s) => s.bg(t.hover)).cursor_pointer().on_click(onClick).child(label));
+}
+
+// A button's shortcut, beside its label.
+function keyHint(t, key) {
+  return div().text_size(10).text_color(t.dim).child(key);
+}
+
+// Allowances | Burndown, switched with U and B.
+function views(t, current, choose) {
+  return h_flex().gap(2).p(2).rounded(6).bg(t.raised).children([["allowances", "Allowances", "U"], ["burndown", "Burndown", "B"]]
+    .map(([view, label, key]) => {
+      const el = div().id(`view-${view}`).h(24).px(10).gap(6).rounded(4).flex().items_center();
+      return (view === current ? el.bg(t.selected).text_color(t.foreground)
+        : el.text_color(t.muted).hover((s) => s.bg(t.hover).text_color(t.foreground)).cursor_pointer()
+          .on_click((_event, cx) => choose(view, cx)))
+        .child(label).child(keyHint(t, key));
+    }));
+}
+
+function burndownView(t, state) {
+  const cards = burndownCards(t, state.history?.burndowns)
+    .map((c) => card(t, c.title, "", c.rows, c.weight));
+  const intro = div().text_size(11).text_color(t.muted)
+    .child("% left through each 5-hour and weekly window, from readings kept on this machine. "
+      + "The dotted line is an even pace to 0% at the reset.");
+  if (cards.length) return v_flex().gap(8).child(intro).child(columns(cards, state.width ?? 0));
+  const note = state.historyError || (state.history
+    ? "No readings yet. They're recorded each time allowances are read, every few minutes while Herdr is open."
+    : "Reading history…");
+  return v_flex().gap(8).child(intro).child(div().text_color(state.historyError ? t.blocked : t.muted).child(note));
 }
 
 export function breakdown(t, report, state) {
   const spares = [];
   const cards = providerCards(t, report, spares);
+  const burndown = state.view === "burndown";
   const message = state.error || (state.pending ? "Refreshing allowances…"
     : report?.partial ? "Partial report"
     : report?.timestamp ? `${state.stale ? "Cached" : "Updated"} · ${localTime(report.timestamp)}` : "");
   return v_flex().id("usage-root").size_full().overflow_hidden().bg(t.popover).text_color(t.foreground).text_size(12)
+    .when(Boolean(state.focus), (el) => el.track_focus(state.focus).on_key_down(state.onKey))
     .on_size_change(state.onSize)
     .child(h_flex().flex_none().justify_between().items_center().gap(8).px(16).py(12)
       .border_b(1).border_color(t.border)
-      .child(div().text_size(16).font_semibold().child("Subscription usage"))
+      .child(h_flex().gap(12).items_center()
+        .child(div().text_size(16).font_semibold().child("Subscription usage"))
+        .child(views(t, burndown ? "burndown" : "allowances", state.setView)))
       .child(h_flex().gap(6)
-        .child(button(t, "refresh-usage", "Refresh", state.refresh, state.pending))
+        .child(button(t, "refresh-usage", "Refresh", state.refresh, state.pending, "R"))
         .child(button(t, "close-usage", "Close", state.close))))
     .child(v_flex().id("usage-scroll").flex_1().min_h(0).overflow_y_scrollbar().p(16).gap(8)
-      .when(cards.length > 0, (el) => el.child(untapped(t, spares)).child(columns(cards, state.width ?? 0)))
-      .when(cards.length === 0, (el) => el.child(div().text_color(t.muted)
+      .when(burndown, (el) => el.child(burndownView(t, state)))
+      .when(!burndown && cards.length > 0, (el) => el.child(untapped(t, spares)).child(columns(cards, state.width ?? 0)))
+      .when(!burndown && cards.length === 0, (el) => el.child(div().text_color(t.muted)
         .child(state.pending ? "Reading provider allowances…" : "No provider allowances available."))))
     .child(div().flex_none().px(16).py(10).border_t(1).border_color(t.border)
       .text_color(state.error ? t.blocked : t.muted).child(message));

@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "build:mod": "bun herdr-app/build.ts",
-    "check:mod": "bun herdr-app/build.ts --check"
+    "check:mod": "bun herdr-app/build.ts --check",
+    "test": "bun test"
   },
   "keywords": [
     "herdr",

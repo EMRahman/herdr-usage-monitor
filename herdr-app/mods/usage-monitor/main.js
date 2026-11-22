@@ -76,6 +76,14 @@ function fail(failure) {
 export default class UsageMonitor extends View {
   init(_props, cx) {
     this.since = 0;
+    this.view = "allowances";
+    this.history = null;
+    this.historyError = "";
+    // The breakdown takes the keyboard for its shortcuts: R refreshes, B and U switch views.
+    if (props()?.overlay) {
+      this.handle = cx.focus_handle();
+      this.handle.focus();
+    }
     if (checking()) return;
 
     cx.spawn(async (cx) => {
@@ -103,6 +111,38 @@ export default class UsageMonitor extends View {
       this.since = 0;
       cx.notify();
     }
+    if (this.view === "burndown") await this.readHistory(cx);
+  }
+
+  setView(view, cx) {
+    this.view = view;
+    if (view === "burndown") cx.spawn((cx) => this.readHistory(cx));
+    cx.notify();
+  }
+
+  refresh(cx) {
+    if (!this.busy()) cx.spawn((cx) => this.read(cx, ["--refresh"]));
+  }
+
+  onKey(event, cx) {
+    const action = { r: "refresh", b: "burndown", u: "allowances" }[event.keystroke];
+    if (!action) return;
+    if (action === "refresh") this.refresh(cx);
+    else if (action !== this.view) this.setView(action, cx);
+    cx.stop_propagation();
+  }
+
+  // The burndown charts' data, read from the local history while they're on screen.
+  async readHistory(cx) {
+    try {
+      const result = await runBridge(["--history"]);
+      if (result.code !== 0) throw new Error(`Couldn’t read the usage history${lastLine(result.stderr) ? `: ${lastLine(result.stderr)}` : "."}`);
+      this.history = JSON.parse(result.stdout);
+      this.historyError = "";
+    } catch (failure) {
+      this.historyError = failure?.message || String(failure);
+    }
+    cx.notify();
   }
 
   render() {
@@ -113,8 +153,14 @@ export default class UsageMonitor extends View {
         pending: this.busy(),
         error,
         stale: snapshot?.report?.partial || Date.now() - snapshot?.report?.timestamp > STALE_MS,
-        refresh: (_event, cx) => cx.spawn((cx) => this.read(cx, ["--refresh"])),
+        refresh: (_event, cx) => this.refresh(cx),
         close: () => closeOverlay(overlay),
+        view: this.view,
+        history: this.history,
+        historyError: this.historyError,
+        setView: (view, cx) => this.setView(view, cx),
+        focus: this.handle,
+        onKey: (event, cx) => this.onKey(event, cx),
         width: this.size?.width,
         onSize: (size, cx) => {
           this.size = size;
