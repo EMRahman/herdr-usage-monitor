@@ -52,6 +52,8 @@ Everything green is listed in the **Untapped allowance** panel at the top, soone
 
 Switch the breakdown to **Burndown** (press <kbd>B</kbd>, and <kbd>U</kbd> to go back) to see how each 5-hour and weekly limit has drained through its current window, from 100% at the start to the reset. Limits a provider sets per model get their own chart: Claude's 7d Opus and 7d Sonnet, and each Antigravity model group. A dotted line shows an even pace to 0% at the reset, so a line below it is spending faster than the window allows. Hover a chart for the reading at that time.
 
+![The Burndown view: Claude, Codex and Antigravity cards, each with a chart of % left through its 5-hour and weekly windows, against a dotted even-pace line](docs/herdr-app-burndown.png)
+
 The charts come from readings kept on your machine, recorded each time allowances are read (every few minutes while Herdr is open), so they fill in from when you install this version. Time when Herdr was closed or the machine was asleep shows as a gap.
 
 ## What it shows

@@ -13,6 +13,8 @@ const NAMES = {
   copilot: "GitHub Copilot", cursor: "Cursor", grok: "Grok", opencode: "OpenCode",
 };
 
+const ORDER = ["claude", "codex", "antigravity"];
+
 const PLOT = 88;
 const GUTTER = 34;
 const PACE_DOTS = 40;
@@ -102,8 +104,20 @@ function chart(t, b, id, now) {
 
 /** Cards for the breakdown's columns: one per provider, a chart per 5-hour and weekly limit. */
 export function burndownCards(t, burndowns, now = Date.now()) {
+  // The Allowances view's order: Claude, Codex, Antigravity, then the rest; within a provider,
+  // each account and model group together, 5-hour before weekly.
+  const first = (list, key) => {
+    const seen = new Map();
+    for (const b of list) if (!seen.has(key(b))) seen.set(key(b), seen.size);
+    return (b) => seen.get(key(b));
+  };
+  const list = burndowns ?? [];
+  const providerAt = first(list, (b) => b.provider);
+  const groupAt = first(list, (b) => `${b.account ?? ""}\u0000${b.group ?? ""}`);
+  const rank = (b) => { const i = ORDER.indexOf(b.provider); return i < 0 ? ORDER.length + providerAt(b) : i; };
+  const sorted = [...list].sort((a, b) => rank(a) - rank(b) || groupAt(a) - groupAt(b) || a.length - b.length);
   const byProvider = new Map();
-  for (const b of burndowns ?? []) {
+  for (const b of sorted) {
     if (!byProvider.has(b.provider)) byProvider.set(b.provider, []);
     byProvider.get(b.provider).push(b);
   }
