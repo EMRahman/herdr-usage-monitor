@@ -43,6 +43,24 @@ unused at your current pace, so you know where there's capacity to spend.
   - A footer: "Updated · 11:20 AM", "Cached · …" when older than 5 minutes,
     "Refreshing allowances…" while reading, or the error in red.
 
+- **Burndown**, the dialog's second view (an `Allowances | Burndown` switch
+  beside the title, the chosen one on `selected`): an intro line, then one card
+  per provider with a chart for each 5-hour and weekly limit, model-specific
+  ones too (Claude's 7d Opus and 7d Sonnet, each Antigravity model group).
+  - Each chart has a header like the breakdown's rows (light dot, name,
+    "N% left") and the reset countdown, then an 88px plot with a 34px gutter
+    of "100% / 50% / 0%" labels and 1px `border` grid lines at those levels.
+  - The x axis is the current window: its reset minus its length, to its
+    reset. With no reset time (Claude's 5-hour limit before a session), it
+    ends now. Under the plot: the start time at left, "Resets <time>" or
+    "Now" at right.
+  - % left is a step line of 2px `accent` bars with `accent` at 14% opacity
+    under it. Time with no readings is a gap. A dotted `muted` diagonal runs
+    from 100% at the start to 0% at the reset: an even pace. A 1px `muted`
+    line marks now.
+  - Hovering the plot shows "3:40 PM · 62% left · even pace 55%" for that
+    48th of the window.
+
 ## How it behaves
 
 - **Traffic lights.** A window's length comes from its label (5h, 7d / weekly,
@@ -65,6 +83,13 @@ unused at your current pace, so you know where there's capacity to spend.
   the readout and breakdown share recent results.
 - On start, the readout shows the last cached report (up to a day old) at once,
   then refreshes.
+- **History.** Every fresh read appends one line to
+  `~/.local/share/herdr-usage-monitor/history.jsonl` (under `$XDG_DATA_HOME`
+  when set): `{"t": ms, "s": [{"p": provider, "g": model group, "w": limit,
+  "left": %, "reset": ISO}]}`. Only providers read just then are recorded, not
+  ones filled in from the cache. Entries older than 8 days are dropped, about
+  once a day. While Burndown is on screen, the dialog reads the history on
+  opening it and after each poll.
 - Hovering the readout shows the full summary, or the error.
 
 ## Built from
@@ -83,10 +108,13 @@ unused at your current pace, so you know where there's capacity to spend.
     so every copy redraws. Uses `exec`, `readTextFile`, `appHome`, `home`,
     `layout` (to tell the rail), `run("mod.open")`, `closeOverlay`, `setShared`,
     `theme`, `checking`, `cx.timer.every`, `.on_size_change`.
-  - `breakdown.js`: the dialog. `pace.js`: the traffic-light rules.
+  - `breakdown.js`: the dialog. `burndown.js`: the charts. `pace.js`: the
+    traffic-light rules. `time.js`: times and durations.
   - `bridge.js`: the provider code, prebuilt by `build.ts`. It
     prints `{report, summary, parts}` as JSON: `--cached` returns whatever's
     cached, no flag refreshes a cache 3 minutes old, `--refresh` asks now.
+    `--history` prints `{burndowns}`: each limit's current window as
+    `[from, to, % left]` runs, from the history file.
   - `gauge.svg`: the icon.
 - **Programs:** Bun runs `bridge.js`. The mod tries `bun` on Herdr's PATH, then
   `config.json`'s `bun` (written by the installer), then `~/.bun/bin/bun`,
@@ -94,7 +122,8 @@ unused at your current pace, so you know where there's capacity to spend.
 - **What it reads:** the bridge reads each provider CLI's local sign-in (Claude
   Code, Codex, Antigravity, Cursor, Copilot, Grok, OpenCode) and asks their
   usage endpoints over the network. It writes its cache to
-  `~/.cache/herdr-usage-monitor/`.
+  `~/.cache/herdr-usage-monitor/` and its history to
+  `~/.local/share/herdr-usage-monitor/`.
 - **`keys.json`:** binds `cmd-u` to `mod.open:usage-monitor` (`global`).
 - **Optional helper:** the repository's `herdr-app/install.ts` copies the mod,
   writes `config.json`, adds the block and binds the key with `--bind-key`. See
@@ -132,3 +161,5 @@ unused at your current pace, so you know where there's capacity to spend.
 - Refresh greys out, the footer says "Refreshing allowances…", then "Updated"
   with the current time.
 - Closing the breakdown during a refresh, then reopening it, still loads.
+- After a few reads, Burndown shows a line in each 5-hour and weekly chart,
+  ending at the now marker, and hovering it shows the reading there.

@@ -76,6 +76,9 @@ function fail(failure) {
 export default class UsageMonitor extends View {
   init(_props, cx) {
     this.since = 0;
+    this.view = "allowances";
+    this.history = null;
+    this.historyError = "";
     if (checking()) return;
 
     cx.spawn(async (cx) => {
@@ -103,6 +106,20 @@ export default class UsageMonitor extends View {
       this.since = 0;
       cx.notify();
     }
+    if (this.view === "burndown") await this.readHistory(cx);
+  }
+
+  // The burndown charts' data, read from the local history while they're on screen.
+  async readHistory(cx) {
+    try {
+      const result = await runBridge(["--history"]);
+      if (result.code !== 0) throw new Error(`Couldn’t read the usage history${lastLine(result.stderr) ? `: ${lastLine(result.stderr)}` : "."}`);
+      this.history = JSON.parse(result.stdout);
+      this.historyError = "";
+    } catch (failure) {
+      this.historyError = failure?.message || String(failure);
+    }
+    cx.notify();
   }
 
   render() {
@@ -115,6 +132,14 @@ export default class UsageMonitor extends View {
         stale: snapshot?.report?.partial || Date.now() - snapshot?.report?.timestamp > STALE_MS,
         refresh: (_event, cx) => cx.spawn((cx) => this.read(cx, ["--refresh"])),
         close: () => closeOverlay(overlay),
+        view: this.view,
+        history: this.history,
+        historyError: this.historyError,
+        setView: (view, cx) => {
+          this.view = view;
+          if (view === "burndown") cx.spawn((cx) => this.readHistory(cx));
+          cx.notify();
+        },
         width: this.size?.width,
         onSize: (size, cx) => {
           this.size = size;

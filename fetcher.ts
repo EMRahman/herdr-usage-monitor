@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
+import { recordHistory, samplesFrom } from "./history.ts";
 import {
   fetchOtherProviders,
   getAntigravitySignIns,
@@ -434,6 +435,8 @@ export async function fetchDetailedReport(): Promise<FullReport> {
     .catch(() => {});
 
   await Promise.allSettled([claudePromise, codexPromise, agyPromise, othersPromise]);
+  // Only what was just read goes into the history, not what the cache fills in below.
+  const fresh = samplesFrom(report);
 
   // Merge preserved details and fallback providers from previous cache
   try {
@@ -473,5 +476,6 @@ export async function fetchDetailedReport(): Promise<FullReport> {
   } catch {}
 
   saveCachedReport(report);
+  recordHistory(fresh, report.timestamp);
   return report;
 }
