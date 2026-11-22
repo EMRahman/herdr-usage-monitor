@@ -5,6 +5,7 @@
 // kept whichever program refreshed the cache. Nothing leaves the machine. Entries older than
 // 8 days are dropped, enough for a full weekly window and the one before it started.
 import { appendFileSync, closeSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, renameSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { FullReport } from "./fetcher.ts";
@@ -18,10 +19,12 @@ export const KEEP_MS = 8 * DAY;
 // Charts draw this many steps across a window at most.
 export const BUCKETS = 180;
 
-/** One limit at one moment. p: provider id; g: model group or scope, when the provider splits a
- *  limit by model; w: the limit's label; left: % left; reset: when it resets, if known. */
+/** One limit at one moment. p: provider id; a: the account, as accountId; g: model group or
+ *  scope, when the provider splits a limit by model; w: the limit's label; left: % left;
+ *  reset: when it resets, if known. */
 export interface Sample {
   p: string;
+  a?: string;
   g?: string;
   w: string;
   left: number;
@@ -37,6 +40,9 @@ export interface Entry {
  *  (from ≠ the previous run's to) is time with no readings, drawn as a gap. */
 export interface Burndown {
   provider: string;
+  account?: string;
+  /** The account's name, added by the bridge when a provider has more than one account. */
+  accountLabel?: string;
   group?: string;
   label: string;
   length: number;
@@ -55,24 +61,56 @@ export function historyFile(): string {
 
 const round = (value: number) => Math.round(value * 10) / 10;
 
+/** A stable stand-in for an account (often an email), so the file keeps each account's
+ *  readings apart without naming it. */
+export function accountId(account: string | null | undefined): string | undefined {
+  return account ? createHash("sha256").update(account).digest("hex").slice(0, 10) : undefined;
+}
+
+/** Each account in a report by its accountId, for naming charts. */
+export function accountNames(report: FullReport | null | undefined): Map<string, string> {
+  const names = new Map<string, string>();
+  for (const provider of [report?.claude, report?.codex, report?.antigravity, ...(report?.others ?? [])]) {
+    const id = accountId(provider?.account);
+    if (id) names.set(id, provider!.account);
+  }
+  return names;
+}
+
+/** Names the accounts of providers that have more than one, so their charts can be told apart. */
+export function labelAccounts(charts: Burndown[], names: Map<string, string>): Burndown[] {
+  const accounts = new Map<string, Set<string | undefined>>();
+  for (const b of charts) {
+    if (!accounts.has(b.provider)) accounts.set(b.provider, new Set());
+    accounts.get(b.provider)!.add(b.account);
+  }
+  return charts.map((b) => {
+    if ((accounts.get(b.provider)?.size ?? 0) < 2) return b;
+    return { ...b, accountLabel: (b.account && names.get(b.account)) || "Another account" };
+  });
+}
+
 /** Every limit in a report, as samples. A report can carry older figures for a provider that
  *  wasn't read this time; recordReport uses read_at to tell them apart. */
 export function samplesFrom(report: FullReport): Sample[] {
   const samples: Sample[] = [];
+  const add = (p: string, account: string | undefined, sample: Omit<Sample, "p" | "a">) => {
+    const a = accountId(account);
+    samples.push({ p, ...(a ? { a } : {}), ...sample });
+  };
   for (const [id, provider] of [["claude", report.claude], ["codex", report.codex]] as const) {
     for (const w of provider?.windows ?? []) {
-      samples.push({ p: id, w: w.label, left: round(100 - w.used_percent), reset: w.resets_at ?? null });
+      add(id, provider!.account, { w: w.label, left: round(100 - w.used_percent), reset: w.resets_at ?? null });
     }
   }
   for (const group of report.antigravity?.groups ?? []) {
     for (const b of group.buckets ?? []) {
-      samples.push({ p: "antigravity", g: group.name, w: b.label, left: round(b.remaining_percent), reset: b.resets_at ?? null });
+      add("antigravity", report.antigravity!.account, { g: group.name, w: b.label, left: round(b.remaining_percent), reset: b.resets_at ?? null });
     }
   }
   for (const provider of report.others ?? []) {
     for (const w of provider.windows ?? []) {
-      samples.push({
-        p: provider.id,
+      add(provider.id, provider.account, {
         ...(w.scope ? { g: w.scope } : {}),
         w: w.kind,
         left: round(100 - w.used_percent),
@@ -200,7 +238,7 @@ export function readHistory(file = historyFile()): Entry[] {
   return entries.sort((a, b) => a.t - b.t);
 }
 
-const keyOf = (s: Sample) => `${s.p}\u0000${s.g ?? ""}\u0000${s.w}`;
+const limitOf = (s: Sample) => `${s.p}\u0000${s.g ?? ""}\u0000${s.w}`;
 const CHARTED = new Set([5 * HOUR, 7 * DAY]);
 
 /**
@@ -209,10 +247,24 @@ const CHARTED = new Set([5 * HOUR, 7 * DAY]);
  * 5-hour limit before a session starts), it's the length up to now.
  */
 export function burndowns(entries: Entry[], now = Date.now()): Burndown[] {
+  // Readings recorded before accounts were kept belong to the limit's account when it has one.
+  const accounts = new Map<string, Set<string>>();
+  for (const entry of entries) {
+    for (const s of entry.s) {
+      if (!s.a) continue;
+      if (!accounts.has(limitOf(s))) accounts.set(limitOf(s), new Set());
+      accounts.get(limitOf(s))!.add(s.a);
+    }
+  }
+  const accountOf = (s: Sample) => {
+    if (s.a) return s.a;
+    const known = accounts.get(limitOf(s));
+    return known?.size === 1 ? [...known][0] : "";
+  };
   const series = new Map<string, Array<{ t: number; s: Sample }>>();
   for (const entry of entries) {
     for (const s of entry.s) {
-      const key = keyOf(s);
+      const key = `${limitOf(s)}\u0000${accountOf(s)}`;
       if (!series.has(key)) series.set(key, []);
       series.get(key)!.push({ t: entry.t, s });
     }
@@ -227,8 +279,10 @@ export function burndowns(entries: Entry[], now = Date.now()): Burndown[] {
     const end = Number.isFinite(reset) ? reset : now;
     const start = end - length;
     const inWindow = readings.filter((r) => r.t >= start && r.t <= end);
+    const account = accountOf(latest.s);
     result.push({
       provider: latest.s.p,
+      ...(account ? { account } : {}),
       ...(latest.s.g ? { group: latest.s.g } : {}),
       label: latest.s.w,
       length,

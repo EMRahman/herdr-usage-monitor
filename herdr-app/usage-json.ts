@@ -1,6 +1,6 @@
 // JSON bridge for the desktop mod.
 import { fetchDetailedReport, getCachedReport } from "../fetcher.ts";
-import { burndowns, readHistory, recordReport } from "../history.ts";
+import { accountNames, burndowns, labelAccounts, readHistory, recordReport } from "../history.ts";
 import { formatSummary, summaryParts } from "../usage-summary.ts";
 
 const DAY_MS = 24 * 60 * 60_000;
@@ -8,7 +8,8 @@ const mode = process.argv[2];
 
 // --history: the current 5-hour and weekly window of each limit, from the local history.
 if (mode === "--history") {
-  console.log(JSON.stringify({ burndowns: burndowns(readHistory()) }));
+  const cached = await getCachedReport(DAY_MS, { allowPartial: true });
+  console.log(JSON.stringify({ burndowns: labelAccounts(burndowns(readHistory()), accountNames(cached)) }));
   process.exit(0);
 }
 

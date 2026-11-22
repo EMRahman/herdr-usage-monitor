@@ -88,8 +88,11 @@ unused at your current pace, so you know where there's capacity to spend.
   then refreshes.
 - **History.** Every fresh read appends one line to
   `~/.local/share/herdr-usage-monitor/history.jsonl` (under `$XDG_DATA_HOME`
-  when set): `{"t": ms, "s": [{"p": provider, "g": model group, "w": limit,
-  "left": %, "reset": ISO}]}`. The report's `read_at` says when each
+  when set): `{"t": ms, "s": [{"p": provider, "a": account, "g": model group,
+  "w": limit, "left": %, "reset": ISO}]}`. `a` is the first 10 hex digits of the
+  account's SHA-256, so each account keeps its own line without the file naming
+  it; when a provider has more than one, the charts add the account's name from
+  the current report. The report's `read_at` says when each
   provider's figures were read; figures carried over from an older report keep
   their time. Every bridge call records each provider whose `read_at` is newer
   than its last line in the history, stamped with that time, so readings are

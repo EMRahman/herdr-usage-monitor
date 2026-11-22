@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { FullReport } from "./fetcher.ts";
-import { BUCKETS, KEEP_MS, burndowns, readHistory, recordHistory, recordReport, recentReadings, runs, samplesFrom, type Entry } from "./history.ts";
+import { BUCKETS, KEEP_MS, accountId, burndowns, labelAccounts, readHistory, recordHistory, recordReport, recentReadings, runs, samplesFrom, type Entry } from "./history.ts";
 
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
@@ -29,13 +29,24 @@ describe("samplesFrom", () => {
       antigravity: { account: "a", groups: [{ name: "Gemini", buckets: [{ label: "5h limit", remaining_percent: 90, resets_at: null }] }] },
       others: [{ id: "cursor", account: "a", plan: null, windows: [{ kind: "month", scope: "gpt", used_percent: 50, resets_at: null }], problem: null }],
     };
+    const a = accountId("a");
     expect(samplesFrom(report)).toEqual([
-      { p: "claude", w: "5h session", left: 80, reset: iso(NOW + HOUR) },
-      { p: "claude", w: "7d Opus", left: 66.7, reset: null },
-      { p: "codex", w: "Weekly", left: 95, reset: null },
-      { p: "antigravity", g: "Gemini", w: "5h limit", left: 90, reset: null },
-      { p: "cursor", g: "gpt", w: "month", left: 50, reset: null },
+      { p: "claude", a, w: "5h session", left: 80, reset: iso(NOW + HOUR) },
+      { p: "claude", a, w: "7d Opus", left: 66.7, reset: null },
+      { p: "codex", a, w: "Weekly", left: 95, reset: null },
+      { p: "antigravity", a, g: "Gemini", w: "5h limit", left: 90, reset: null },
+      { p: "cursor", a, g: "gpt", w: "month", left: 50, reset: null },
     ]);
+  });
+
+  test("names accounts by a hash, not the account itself", () => {
+    const report: FullReport = {
+      timestamp: NOW,
+      others: [{ id: "grok", account: "me@example.com", plan: null, windows: [{ kind: "week", scope: null, used_percent: 10, resets_at: null }], problem: null }],
+    };
+    const [sample] = samplesFrom(report);
+    expect(sample!.a).toMatch(/^[0-9a-f]{10}$/);
+    expect(JSON.stringify(sample)).not.toContain("example.com");
   });
 });
 
@@ -165,6 +176,34 @@ describe("burndowns", () => {
     expect(session!.left).toBe(90);
     // The reading from the previous window is left out.
     expect(session!.runs[0]![2]).toBe(100);
+  });
+
+  test("keeps two accounts of one provider apart and names them", () => {
+    const [one, two] = [accountId("one@example.com")!, accountId("two@example.com")!];
+    const entries = [
+      entry(NOW - 2 * HOUR, { p: "grok", a: one, w: "week", left: 90, reset: null }, { p: "grok", a: two, w: "week", left: 40, reset: null }),
+      entry(NOW - HOUR, { p: "grok", a: one, w: "week", left: 85, reset: null }, { p: "grok", a: two, w: "week", left: 30, reset: null }),
+    ];
+    const charts = burndowns(entries, NOW);
+    expect(charts.map((c) => [c.account, c.left])).toEqual([[one, 85], [two, 30]]);
+    const names = new Map([[one, "one@example.com"]]);
+    expect(labelAccounts(charts, names).map((c) => c.accountLabel)).toEqual(["one@example.com", "Another account"]);
+  });
+
+  test("leaves a provider with one account unnamed", () => {
+    const a = accountId("me")!;
+    const charts = burndowns([entry(NOW - HOUR, { p: "claude", a, w: "5h session", left: 50, reset: null })], NOW);
+    expect(labelAccounts(charts, new Map([[a, "me"]]))[0]!.accountLabel).toBeUndefined();
+  });
+
+  test("joins readings saved before accounts were kept to the limit's only account", () => {
+    const a = accountId("me")!;
+    const charts = burndowns([
+      entry(NOW - 2 * HOUR, { p: "claude", w: "5h session", left: 90, reset: null }),
+      entry(NOW - 2 * HOUR + 3 * MINUTE, { p: "claude", a, w: "5h session", left: 80, reset: null }),
+    ], NOW);
+    expect(charts).toHaveLength(1);
+    expect(charts[0]!.runs.map((r) => r[2])).toEqual([90, 80]);
   });
 
   test("ends a window with no reset time at now", () => {

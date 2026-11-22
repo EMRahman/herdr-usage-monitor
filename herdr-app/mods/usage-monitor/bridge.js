@@ -1105,6 +1105,7 @@ async function fetchDetailedReport() {
 
 // history.ts
 import { appendFileSync, closeSync as closeSync2, fstatSync, mkdirSync as mkdirSync2, openSync as openSync2, readFileSync, readSync as readSync2, renameSync, writeFileSync as writeFileSync3 } from "fs";
+import { createHash as createHash2 } from "crypto";
 import { homedir as homedir3 } from "os";
 import { dirname, join as join3 } from "path";
 
@@ -1138,22 +1139,50 @@ function historyFile() {
   return join3(data, "herdr-usage-monitor", "history.jsonl");
 }
 var round = (value) => Math.round(value * 10) / 10;
+function accountId(account) {
+  return account ? createHash2("sha256").update(account).digest("hex").slice(0, 10) : undefined;
+}
+function accountNames(report) {
+  const names = new Map;
+  for (const provider of [report?.claude, report?.codex, report?.antigravity, ...report?.others ?? []]) {
+    const id = accountId(provider?.account);
+    if (id)
+      names.set(id, provider.account);
+  }
+  return names;
+}
+function labelAccounts(charts, names) {
+  const accounts = new Map;
+  for (const b of charts) {
+    if (!accounts.has(b.provider))
+      accounts.set(b.provider, new Set);
+    accounts.get(b.provider).add(b.account);
+  }
+  return charts.map((b) => {
+    if ((accounts.get(b.provider)?.size ?? 0) < 2)
+      return b;
+    return { ...b, accountLabel: b.account && names.get(b.account) || "Another account" };
+  });
+}
 function samplesFrom(report) {
   const samples = [];
+  const add = (p, account, sample) => {
+    const a = accountId(account);
+    samples.push({ p, ...a ? { a } : {}, ...sample });
+  };
   for (const [id, provider] of [["claude", report.claude], ["codex", report.codex]]) {
     for (const w of provider?.windows ?? []) {
-      samples.push({ p: id, w: w.label, left: round(100 - w.used_percent), reset: w.resets_at ?? null });
+      add(id, provider.account, { w: w.label, left: round(100 - w.used_percent), reset: w.resets_at ?? null });
     }
   }
   for (const group of report.antigravity?.groups ?? []) {
     for (const b of group.buckets ?? []) {
-      samples.push({ p: "antigravity", g: group.name, w: b.label, left: round(b.remaining_percent), reset: b.resets_at ?? null });
+      add("antigravity", report.antigravity.account, { g: group.name, w: b.label, left: round(b.remaining_percent), reset: b.resets_at ?? null });
     }
   }
   for (const provider of report.others ?? []) {
     for (const w of provider.windows ?? []) {
-      samples.push({
-        p: provider.id,
+      add(provider.id, provider.account, {
         ...w.scope ? { g: w.scope } : {},
         w: w.kind,
         left: round(100 - w.used_percent),
@@ -1277,13 +1306,29 @@ function readHistory(file = historyFile()) {
   }
   return entries.sort((a, b) => a.t - b.t);
 }
-var keyOf = (s) => `${s.p}\x00${s.g ?? ""}\x00${s.w}`;
+var limitOf = (s) => `${s.p}\x00${s.g ?? ""}\x00${s.w}`;
 var CHARTED = new Set([5 * HOUR2, 7 * DAY2]);
 function burndowns(entries, now = Date.now()) {
+  const accounts = new Map;
+  for (const entry of entries) {
+    for (const s of entry.s) {
+      if (!s.a)
+        continue;
+      if (!accounts.has(limitOf(s)))
+        accounts.set(limitOf(s), new Set);
+      accounts.get(limitOf(s)).add(s.a);
+    }
+  }
+  const accountOf = (s) => {
+    if (s.a)
+      return s.a;
+    const known = accounts.get(limitOf(s));
+    return known?.size === 1 ? [...known][0] : "";
+  };
   const series = new Map;
   for (const entry of entries) {
     for (const s of entry.s) {
-      const key = keyOf(s);
+      const key = `${limitOf(s)}\x00${accountOf(s)}`;
       if (!series.has(key))
         series.set(key, []);
       series.get(key).push({ t: entry.t, s });
@@ -1301,8 +1346,10 @@ function burndowns(entries, now = Date.now()) {
     const end = Number.isFinite(reset) ? reset : now;
     const start = end - length;
     const inWindow = readings.filter((r) => r.t >= start && r.t <= end);
+    const account = accountOf(latest.s);
     result.push({
       provider: latest.s.p,
+      ...account ? { account } : {},
       ...latest.s.g ? { group: latest.s.g } : {},
       label: latest.s.w,
       length,
@@ -1399,7 +1446,8 @@ function formatSummary(parts) {
 var DAY_MS = 24 * 60 * 60000;
 var mode = process.argv[2];
 if (mode === "--history") {
-  console.log(JSON.stringify({ burndowns: burndowns(readHistory()) }));
+  const cached = await getCachedReport(DAY_MS, { allowPartial: true });
+  console.log(JSON.stringify({ burndowns: labelAccounts(burndowns(readHistory()), accountNames(cached)) }));
   process.exit(0);
 }
 var report = mode === "--cached" ? await getCachedReport(DAY_MS) ?? await getCachedReport(DAY_MS, { allowPartial: true }) : (mode === "--refresh" ? null : await getCachedReport(180000)) ?? await fetchDetailedReport();

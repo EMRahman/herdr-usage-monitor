@@ -82,7 +82,7 @@ function plot(t, b, id, now) {
 function chart(t, b, id, now) {
   const lit = light({ remaining: b.left, resetsAt: b.reset, length: b.length, now });
   const color = lit.level ? lightColor(t, lit.level) : t.foreground;
-  const title = [b.group, b.label].filter(Boolean).join(" · ");
+  const title = [b.accountLabel, b.group, b.label].filter(Boolean).join(" · ");
   const end = b.reset && Number.isFinite(Date.parse(b.reset)) ? `Resets ${localTime(b.end)}` : "Now";
   const caption = timed("Resets", b.reset) || "No window running: it starts with the next request";
   return v_flex().gap(6).py(6)
