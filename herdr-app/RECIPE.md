@@ -82,8 +82,9 @@ unused at your current pace, so you know where there's capacity to spend.
   Esc, Close or a click outside closes it.
 - **Refresh** asks every provider now. It's greyed out while a read is running.
 - **Keys in the breakdown:** it takes the keyboard when it opens. R refreshes,
-  B switches to Burndown and U back to Allowances; each button shows its key
-  in `dim` 10px text. Cmd+U and Esc still close it.
+  B switches to Burndown and U back to Allowances, and Space toggles between
+  them; each button shows its key in `dim` 10px text, with a Space hint beside
+  the view switch. Cmd+U and Esc still close it.
 - **Polling.** Each copy of the mod checks every 60s. The bridge answers from a
   shared cache and only asks the providers when the cache is 3 minutes old, so
   the readout and breakdown share recent results.

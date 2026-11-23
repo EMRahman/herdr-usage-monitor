@@ -188,9 +188,9 @@ function keyHint(t, key) {
   return div().text_size(10).text_color(t.dim).child(key);
 }
 
-// Allowances | Burndown, switched with U and B.
+// Allowances | Burndown, switched with U and B, or toggled with Space.
 function views(t, current, choose) {
-  return h_flex().gap(2).p(2).rounded(6).bg(t.raised).children([["allowances", "Allowances", "U"], ["burndown", "Burndown", "B"]]
+  const pill = h_flex().gap(2).p(2).rounded(6).bg(t.raised).children([["allowances", "Allowances", "U"], ["burndown", "Burndown", "B"]]
     .map(([view, label, key]) => {
       const el = div().id(`view-${view}`).h(24).px(10).gap(6).rounded(4).flex().items_center();
       return (view === current ? el.bg(t.selected).text_color(t.foreground)
@@ -198,6 +198,7 @@ function views(t, current, choose) {
           .on_click((_event, cx) => choose(view, cx)))
         .child(label).child(keyHint(t, key));
     }));
+  return h_flex().gap(6).items_center().child(pill).child(keyHint(t, "Space"));
 }
 
 function burndownView(t, state) {

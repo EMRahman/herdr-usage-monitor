@@ -79,7 +79,8 @@ export default class UsageMonitor extends View {
     this.view = "allowances";
     this.history = null;
     this.historyError = "";
-    // The breakdown takes the keyboard for its shortcuts: R refreshes, B and U switch views.
+    // The breakdown takes the keyboard for its shortcuts: R refreshes, B and U switch views,
+    // Space toggles between them.
     if (props()?.overlay) {
       this.handle = cx.focus_handle();
       this.handle.focus();
@@ -125,7 +126,8 @@ export default class UsageMonitor extends View {
   }
 
   onKey(event, cx) {
-    const action = { r: "refresh", b: "burndown", u: "allowances" }[event.keystroke];
+    const toggled = this.view === "burndown" ? "allowances" : "burndown";
+    const action = { r: "refresh", b: "burndown", u: "allowances", space: toggled }[event.keystroke];
     if (!action) return;
     if (action === "refresh") this.refresh(cx);
     else if (action !== this.view) this.setView(action, cx);
