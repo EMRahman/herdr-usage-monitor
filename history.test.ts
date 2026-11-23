@@ -1,9 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { openHistoryDatabase } from "./history-db.ts";
 import type { FullReport } from "./fetcher.ts";
-import { BUCKETS, KEEP_MS, accountId, burndowns, labelAccounts, readHistory, recordHistory, recordReport, recentReadings, runs, samplesFrom, type Entry } from "./history.ts";
+import { BUCKETS, accountId, burndowns, labelAccounts, readBurndowns, readHistory, recordReport, runs, samplesFrom, type Entry } from "./history.ts";
 
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
@@ -11,7 +12,7 @@ const DAY = 24 * HOUR;
 const NOW = Date.parse("2026-11-22T12:00:00Z");
 const iso = (ms: number) => new Date(ms).toISOString();
 
-const tempFile = () => join(mkdtempSync(join(tmpdir(), "usage-history-")), "history.jsonl");
+const tempFile = () => join(mkdtempSync(join(tmpdir(), "usage-history-")), "history.sqlite");
 
 describe("samplesFrom", () => {
   test("records every provider's limits as % left", () => {
@@ -50,37 +51,6 @@ describe("samplesFrom", () => {
   });
 });
 
-describe("recordHistory", () => {
-  test("appends one line per read and reads them back in order", () => {
-    const file = tempFile();
-    recordHistory([{ p: "claude", w: "5h session", left: 90, reset: null }], NOW, file);
-    recordHistory([{ p: "claude", w: "5h session", left: 80, reset: null }], NOW + MINUTE, file);
-    recordHistory([], NOW + 2 * MINUTE, file);
-    expect(readHistory(file).map((e) => e.s[0]!.left)).toEqual([90, 80]);
-  });
-
-  test("drops entries past the keeping period once the oldest is a day beyond it", () => {
-    const file = tempFile();
-    const sample = { p: "claude", w: "5h session", left: 50, reset: null };
-    writeFileSync(file, [
-      JSON.stringify({ t: NOW - KEEP_MS - 2 * DAY, s: [sample] }),
-      "not json",
-      JSON.stringify({ t: NOW - DAY, s: [sample] }),
-    ].join("\n") + "\n");
-    recordHistory([sample], NOW, file);
-    expect(readHistory(file).map((e) => e.t)).toEqual([NOW - DAY, NOW]);
-    expect(readFileSync(file, "utf8").split("\n").filter(Boolean)).toHaveLength(2);
-  });
-
-  test("leaves the file alone while the oldest entry is within a day of the limit", () => {
-    const file = tempFile();
-    const sample = { p: "claude", w: "5h session", left: 50, reset: null };
-    writeFileSync(file, JSON.stringify({ t: NOW - KEEP_MS - HOUR, s: [sample] }) + "\n");
-    recordHistory([sample], NOW, file);
-    expect(readHistory(file)).toHaveLength(2);
-  });
-});
-
 describe("recordReport", () => {
   const report = (readAt: FullReport["read_at"], claude = 80, codex = 60): FullReport => ({
     timestamp: NOW,
@@ -92,9 +62,10 @@ describe("recordReport", () => {
 
   test("stamps each provider with when it was read", () => {
     const file = tempFile();
-    recordReport(report({ claude: NOW - 2 * MINUTE, codex: NOW }), file);
+    const last = NOW - 0.25;
+    recordReport(report({ claude: NOW - 2 * MINUTE, codex: last }), file);
     expect(readHistory(file).map((e) => [e.t, e.s.map((s) => s.p)]))
-      .toEqual([[NOW - 2 * MINUTE, ["claude"]], [NOW, ["codex"]]]);
+      .toEqual([[NOW - 2 * MINUTE, ["claude"]], [last, ["codex"]]]);
   });
 
   test("records a reading once, however many times the report is seen", () => {
@@ -120,13 +91,48 @@ describe("recordReport", () => {
     expect(readHistory(file)).toEqual([]);
   });
 
-  test("leaves readings older than the end of a long file alone", () => {
+  test("retains old readings across subsequent writes", () => {
     const file = tempFile();
-    const line = JSON.stringify({ t: NOW, s: [{ p: "codex", w: "Weekly", left: 50, reset: null }] });
-    writeFileSync(file, `${line}\n`.repeat(4000));
-    expect(recentReadings(file).since).toBe(NOW);
-    recordReport(report({ claude: NOW - HOUR }), file);
-    expect(readHistory(file)).toHaveLength(4000);
+    const old = NOW - 400 * DAY;
+    recordReport(report({ claude: old }), file);
+    recordReport(report({ codex: NOW }), file);
+    expect(readHistory(file).map((entry) => entry.t)).toEqual([old, NOW]);
+    expect(readHistory(file, NOW).map((entry) => entry.t)).toEqual([NOW]);
+  });
+
+  test("deduplicates readings from overlapping bridge processes", async () => {
+    const file = tempFile();
+    const writer = `import { recordReport } from ${JSON.stringify(new URL("./history.ts", import.meta.url).href)};
+      const [file, payload] = process.argv.slice(1);
+      recordReport(JSON.parse(payload), file);`;
+    const results = await Promise.all([
+      report({ claude: NOW - 1, codex: NOW }),
+      report({ claude: NOW, codex: NOW }),
+    ].map((value) => Bun.spawn([process.execPath, "-e", writer, file, JSON.stringify(value)]).exited));
+    expect(results).toEqual([0, 0]);
+    const stored = readHistory(file);
+    expect(stored.map((entry) => entry.t)).toEqual([NOW - 1, NOW]);
+    expect(stored[0]!.s.map((sample) => sample.p)).toEqual(["claude"]);
+    expect(stored[1]!.s.map((sample) => sample.p).sort()).toEqual(["claude", "codex"]);
+    const db = openHistoryDatabase(file, true);
+    try {
+      expect(db.query("PRAGMA integrity_check").get()).toEqual({ integrity_check: "ok" });
+    } finally {
+      db.close();
+    }
+  });
+
+  test("reads the entire weekly window when its latest reading is a day old", () => {
+    const file = tempFile();
+    const reset = NOW - DAY;
+    const start = reset - 7 * DAY;
+    recordReport(report({ codex: start - 1 }, 80, 77), file);
+    recordReport(report({ codex: start }, 80, 68), file);
+    const latest = report({ codex: reset }, 80, 48);
+    latest.codex!.windows[0]!.resets_at = iso(reset);
+    recordReport(latest, file);
+    const [chart] = readBurndowns(file, NOW);
+    expect(chart?.runs.map(([from, , left]) => [from, left])).toEqual([[start, 68], [reset, 48]]);
   });
 });
 

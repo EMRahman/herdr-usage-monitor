@@ -2,9 +2,9 @@
 //
 // GPUI has no paths, so the chart is boxes: a step line of 2px bars with a faint fill under it,
 // a dotted diagonal for an even pace from 100% at the window's start to 0% at its reset, and a
-// row of invisible columns that show the reading under the pointer.
+// row of invisible columns that show the reading and model activity under the pointer.
 import { div } from "gpui-kit";
-import { h_flex, v_flex } from "gpui-base";
+import { h_flex, HoverCard, v_flex } from "gpui-base";
 import { light, lightColor } from "./pace.js";
 import { localTime, timed } from "./time.js";
 
@@ -41,7 +41,41 @@ function readingAt(b, time) {
   return `${localTime(time)} · ${Math.round(run[2])}% left · even pace ${Math.round(pace(b, time))}%`;
 }
 
-function plot(t, b, id, now) {
+function hoverColumns(t, b, activity, id, now) {
+  const through = Math.min(now, b.end);
+  const span = b.end - b.start;
+  if (span <= 0 || through <= b.start) return [];
+
+  const slice = span / COLUMNS;
+  const count = Math.min(COLUMNS, Math.ceil((through - b.start) / slice));
+  const labels = Array.from({ length: count }, () => new Set());
+  for (const { at, model, effort } of activity) {
+    if (at < b.start || at > through) continue;
+    const index = Math.min(count - 1, Math.floor((at - b.start) / slice));
+    labels[index].add(`${model} · ${effort ? `${effort} effort` : "effort unavailable"}`);
+  }
+
+  return labels.map((models, i) => {
+    const from = b.start + i * slice;
+    const to = Math.min(from + slice, through);
+    const time = to === now ? now : (from + to) / 2;
+    const tip = v_flex().gap(3).max_w(320).px(9).py(7).rounded(6)
+      .border_1().border_color(t.border).bg(t.popover).shadow_sm()
+      .text_size(11).text_color(t.foreground).child(readingAt(b, time));
+    if (models.size) {
+      const first = localTime(from);
+      const last = localTime(to);
+      const range = first === last ? first : `${first}–${last}`;
+      tip.child(div().text_color(t.muted).child(`Local activity · ${range}`)).children(models);
+    }
+    return div().absolute().top(0).h(PLOT)
+      .left(`${(i / COLUMNS) * 100}%`).w(`${((to - from) / span) * 100}%`)
+      .child(HoverCard.new(`${id}-at-${i}`).open_delay(0).close_delay(0)
+        .trigger(div().w_full().h(PLOT)).content(tip));
+  });
+}
+
+function plot(t, b, activity, id, now) {
   const { x, y } = scale(b);
   const line = t.accent;
   const marks = [];
@@ -75,19 +109,13 @@ function plot(t, b, id, now) {
     marks.push(div().absolute().left(at).top(top).h(PLOT - top).w(2).ml(-1).bg("#ffffff"));
     if (paceY > top) marks.push(div().absolute().left(at).top(top).h(paceY - top).w(2).ml(-1).bg(lightColor(t, "untapped")));
   }
-  const span = b.end - b.start;
-  for (let i = 0; i < COLUMNS; i += 1) {
-    const middle = b.start + ((i + 0.5) / COLUMNS) * span;
-    if (middle > now) break;
-    marks.push(div().id(`${id}-at-${i}`).absolute().top(0).h(PLOT)
-      .left(`${(i / COLUMNS) * 100}%`).w(`${100 / COLUMNS}%`).tooltip(readingAt(b, middle)));
-  }
+  marks.push(...hoverColumns(t, b, activity, id, now));
   return div().relative().flex_1().min_w(0).h(PLOT).children(marks)
     .when(b.runs.length === 0, (el) => el.child(div().absolute().top(PLOT / 2 - 16).left(0).w_full()
       .flex().justify_center().text_size(11).text_color(t.muted).child("No readings in this window yet")));
 }
 
-function chart(t, b, id, now) {
+function chart(t, b, activity, id, now) {
   const lit = light({ remaining: b.left, resetsAt: b.reset, length: b.length, now });
   const color = lit.level ? lightColor(t, lit.level) : t.foreground;
   const title = [b.accountLabel, b.group, b.label].filter(Boolean).join(" · ");
@@ -103,13 +131,13 @@ function chart(t, b, id, now) {
     .child(h_flex().items_start()
       .child(v_flex().flex_none().w(GUTTER).h(PLOT).justify_between().text_size(10).text_color(t.muted)
         .children(["100%", "50%", "0%"].map((label) => div().mt(-6).child(label))))
-      .child(plot(t, b, id, now)))
+      .child(plot(t, b, activity, id, now)))
     .child(h_flex().ml(GUTTER).justify_between().text_size(10).text_color(t.muted)
       .child(localTime(b.start)).child(end));
 }
 
 /** Cards for the breakdown's columns: one per provider, a chart per 5-hour and weekly limit. */
-export function burndownCards(t, burndowns, now = Date.now()) {
+export function burndownCards(t, burndowns, modelUsage = [], now = Date.now()) {
   // The Allowances view's order: Claude, Codex, Antigravity, then the rest; within a provider,
   // each account and model group together, 5-hour before weekly.
   const first = (list, key) => {
@@ -127,9 +155,14 @@ export function burndownCards(t, burndowns, now = Date.now()) {
     if (!byProvider.has(b.provider)) byProvider.set(b.provider, []);
     byProvider.get(b.provider).push(b);
   }
+  const activityByProvider = new Map();
+  for (const event of modelUsage) {
+    if (!activityByProvider.has(event.provider)) activityByProvider.set(event.provider, []);
+    activityByProvider.get(event.provider).push(event);
+  }
   return [...byProvider].map(([provider, list]) => ({
     title: NAMES[provider] ?? provider,
-    rows: list.map((b, i) => chart(t, b, `burndown-${provider}-${i}`, now)),
+    rows: list.map((b, i) => chart(t, b, activityByProvider.get(provider) ?? [], `burndown-${provider}-${i}`, now)),
     weight: list.length * 6,
   }));
 }

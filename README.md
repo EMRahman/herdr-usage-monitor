@@ -54,9 +54,11 @@ Everything green is listed in the **Untapped allowance** panel at the top, soone
 
 ## Burndown charts
 
-Switch the breakdown to **Burndown** (press <kbd>B</kbd>, and <kbd>U</kbd> to go back) to see how each 5-hour and weekly limit has drained through its current window, from 100% at the start to the reset. Limits a provider sets per model get their own chart: Claude's 7d Opus and 7d Sonnet, and each Antigravity model group. A dotted line shows an even pace to 0% at the reset. The vertical marker shows the current time. Its green segment shows how much allowance is above the even pace and would go unused at the current pace. Hover a chart for the reading at that time.
+Switch the breakdown to **Burndown** (press <kbd>B</kbd>, and <kbd>U</kbd> to go back) to see how each 5-hour and weekly limit has drained through its current window, from 100% at the start to the reset. Limits a provider sets per model get their own chart: Claude's 7d Opus and 7d Sonnet, and each Antigravity model group. A dotted line shows an even pace to 0% at the reset. The vertical marker shows the current time. Its green segment shows how much allowance is above the even pace and would go unused at the current pace. Hover a chart for the allowance reading. On Claude and Codex charts, the tooltip also lists models and reasoning efforts logged in that part of the timeline.
 
 The charts come from readings kept on your machine, recorded each time allowances are read (every few minutes while Herdr is open), so they fill in from when you install this version. Time when Herdr was closed or the machine was asleep shows as a gap.
+
+Upgrading from the JSONL version starts a fresh chart history in `history.sqlite`. Your previous readings remain available in `history.jsonl` in the same directory.
 
 ## What it shows
 
@@ -74,7 +76,8 @@ Providers you aren't signed in to are left out.
 - **Sign-ins are only read.** It reads each CLI's existing sign-in on your machine, from its config files or the macOS Keychain, and never changes them. The first time it runs, macOS may ask you to allow Keychain access.
 - **It connects only to the providers themselves:** Anthropic, OpenAI and ChatGPT, GitHub, Cursor, Google, Grok and OpenCode, to read your usage. It has no server of its own and sends nothing anywhere else.
 - **Results are cached** in `~/.cache/herdr-usage-monitor/` and shared by the sidebar and breakdown, so the providers aren't asked on every check.
-- **History stays on your machine**, in `~/.local/share/herdr-usage-monitor/history.jsonl`: the time, each limit's % left and its reset time, nothing else. Readings older than 8 days are dropped. Delete the file to start over.
+- **History stays on your machine** in `~/.local/share/herdr-usage-monitor/history.sqlite` (under `$XDG_DATA_HOME` when set). Allowance readings and collected model activity are kept indefinitely. Allowance readings include the time, remaining percentage, reset time, and a hashed account identifier when available.
+- **Model activity** is recorded from local Codex and Claude Code session logs. SQLite stores the reported model ID, timestamp, reasoning effort when available, and a hashed event ID. The collector picks up events written in the last eight days. Deleting `history.sqlite` while Herdr is closed clears the database. The next poll can pick up recent model activity again from the logs.
 
 ## Troubleshooting
 

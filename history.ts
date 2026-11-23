@@ -1,21 +1,15 @@
-// Allowance history, kept on this machine only, for the burndown charts.
-//
-// Each provider's figures go into history.jsonl once, stamped with when they were read: each
-// limit's % left with its reset time. Any report the bridge handles is checked, so readings are
-// kept whichever program refreshed the cache. Nothing leaves the machine. Entries older than
-// 8 days are dropped, enough for a full weekly window and the one before it started.
-import { appendFileSync, closeSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, renameSync, writeFileSync } from "node:fs";
+// Allowance history kept on this machine for the burndown charts.
+import { existsSync } from "node:fs";
 import { createHash } from "node:crypto";
-import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { historyFile, openHistoryDatabase } from "./history-db.ts";
 import type { FullReport } from "./fetcher.ts";
 import { windowLength } from "./herdr-app/mods/usage-monitor/pace.js";
 
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
 const DAY = 24 * HOUR;
+const WEEK = 7 * DAY;
 
-export const KEEP_MS = 8 * DAY;
 // Charts draw this many steps across a window at most.
 export const BUCKETS = 180;
 
@@ -53,15 +47,9 @@ export interface Burndown {
   runs: Array<[number, number, number]>;
 }
 
-export function historyFile(): string {
-  if (process.env["HERDR_USAGE_HISTORY_FILE"]) return process.env["HERDR_USAGE_HISTORY_FILE"];
-  const data = process.env["XDG_DATA_HOME"] || join(homedir(), ".local", "share");
-  return join(data, "herdr-usage-monitor", "history.jsonl");
-}
-
 const round = (value: number) => Math.round(value * 10) / 10;
 
-/** A stable stand-in for an account (often an email), so the file keeps each account's
+/** A stable stand-in for an account (often an email), so the history keeps each account's
  *  readings apart without naming it. */
 export function accountId(account: string | null | undefined): string | undefined {
   return account ? createHash("sha256").update(account).digest("hex").slice(0, 10) : undefined;
@@ -121,125 +109,65 @@ export function samplesFrom(report: FullReport): Sample[] {
   return samples.filter((s) => Number.isFinite(s.left));
 }
 
-export function recordHistory(samples: Sample[], t = Date.now(), file = historyFile()): void {
-  if (samples.length === 0) return;
-  try {
-    mkdirSync(dirname(file), { recursive: true });
-    appendFileSync(file, `${JSON.stringify({ t, s: samples })}\n`);
-    pruneHistory(file, t);
-  } catch {}
-}
-
-// How far back recordReport looks for each provider's last recorded reading.
-const TAIL_BYTES = 256 * 1024;
-
-/** Each provider's latest recorded reading in the end of the file, and the oldest reading that
- *  part reaches back to (-Infinity when it's the whole file). */
-export function recentReadings(file = historyFile()): { last: Map<string, number>; since: number } {
-  const last = new Map<string, number>();
-  let since = -Infinity;
-  let fd: number;
-  try {
-    fd = openSync(file, "r");
-  } catch {
-    return { last, since };
-  }
-  try {
-    const size = fstatSync(fd).size;
-    const offset = Math.max(0, size - TAIL_BYTES);
-    const buffer = Buffer.alloc(size - offset);
-    const read = readSync(fd, buffer, 0, buffer.length, offset);
-    const lines = buffer.subarray(0, read).toString("utf8").split("\n");
-    if (offset > 0) {
-      lines.shift(); // starts mid-line
-      since = Infinity;
-    }
-    for (const line of lines) {
-      try {
-        const entry = JSON.parse(line) as Entry;
-        if (offset > 0) since = Math.min(since, entry.t);
-        for (const s of entry.s) last.set(s.p, Math.max(last.get(s.p) ?? -Infinity, entry.t));
-      } catch {}
-    }
-  } finally {
-    closeSync(fd);
-  }
-  return { last, since };
-}
-
-/**
- * Records a report's figures that aren't in the history yet: each provider whose read_at is
- * newer than its last recorded reading, as a line stamped with that time. A report without
- * read_at (from an older version) records nothing, since fresh figures can't be told from
- * carried-over ones. Two bridges handling the same report at once can both record it; equal
- * readings at the same time draw as one.
- */
+/** Store each provider read time once. */
 export function recordReport(report: FullReport, file = historyFile()): void {
   const readAt = report.read_at;
   if (!readAt) return;
-  const { last, since } = recentReadings(file);
-  const lines = new Map<number, Sample[]>();
+  const providers = new Map<string, Sample[]>();
   for (const sample of samplesFrom(report)) {
     const t = readAt[sample.p];
-    if (!t || t < since || t <= (last.get(sample.p) ?? -Infinity)) continue;
-    if (!lines.has(t)) lines.set(t, []);
-    lines.get(t)!.push(sample);
+    if (typeof t !== "number" || !Number.isFinite(t) || t <= 0) continue;
+    const samples = providers.get(sample.p);
+    if (samples) samples.push(sample);
+    else providers.set(sample.p, [sample]);
   }
-  for (const [t, samples] of [...lines].sort((a, b) => a[0] - b[0])) recordHistory(samples, t, file);
-}
+  if (!providers.size) return;
 
-function firstTime(file: string): number | null {
-  const fd = openSync(file, "r");
+  const db = openHistoryDatabase(file);
   try {
-    const buffer = Buffer.alloc(64 * 1024);
-    const read = readSync(fd, buffer, 0, buffer.length, 0);
-    const line = buffer.subarray(0, read).toString("utf8").split("\n")[0];
-    const t = JSON.parse(line ?? "").t;
-    return Number.isFinite(t) ? t : null;
-  } catch {
-    return null;
+    const insert = db.query(`
+      INSERT INTO allowance_readings (provider, read_at, samples) VALUES (?, ?, ?)
+      ON CONFLICT (provider, read_at) DO NOTHING
+    `);
+    db.transaction(() => {
+      for (const [provider, samples] of providers) {
+        insert.run(provider, readAt[provider]!, JSON.stringify(samples));
+      }
+    }).immediate();
   } finally {
-    closeSync(fd);
+    db.close();
   }
 }
 
-/** Drops entries older than KEEP_MS. It rewrites the file only once the oldest entry is a day
- *  past that, so about once a day rather than on every read. */
-export function pruneHistory(file: string, now = Date.now()): void {
-  const oldest = firstTime(file);
-  if (oldest !== null && now - oldest < KEEP_MS + DAY) return;
-  const kept = readFileSync(file, "utf8").split("\n").filter((line) => {
-    try {
-      return JSON.parse(line).t >= now - KEEP_MS;
-    } catch {
-      return false;
-    }
-  });
-  const temp = `${file}.${process.pid}.tmp`;
-  writeFileSync(temp, kept.map((line) => `${line}\n`).join(""));
-  renameSync(temp, file);
-}
-
-export function readHistory(file = historyFile()): Entry[] {
-  let text = "";
+export function readHistory(file = historyFile(), since = 0): Entry[] {
+  if (!existsSync(file)) return [];
+  const db = openHistoryDatabase(file, true);
   try {
-    text = readFileSync(file, "utf8");
-  } catch {
-    return [];
+    // A new file may be visible before the first writer commits the schema.
+    if (!db.query("SELECT 1 FROM sqlite_schema WHERE name = 'allowance_readings'").get()) return [];
+    const rows = db.query<{ t: number; samples: string }, [number]>(
+      "SELECT read_at AS t, samples FROM allowance_readings WHERE read_at >= ? ORDER BY read_at, rowid",
+    ).all(since);
+    const entries: Entry[] = [];
+    for (const { t, samples } of rows) {
+      const parsed = JSON.parse(samples) as Sample[];
+      const last = entries.at(-1);
+      if (last?.t === t) last.s.push(...parsed);
+      else entries.push({ t, s: parsed });
+    }
+    return entries;
+  } finally {
+    db.close();
   }
-  const entries: Entry[] = [];
-  for (const line of text.split("\n")) {
-    if (!line) continue;
-    try {
-      const entry = JSON.parse(line);
-      if (Number.isFinite(entry.t) && Array.isArray(entry.s)) entries.push(entry);
-    } catch {}
-  }
-  return entries.sort((a, b) => a.t - b.t);
 }
 
 const limitOf = (s: Sample) => `${s.p}\u0000${s.g ?? ""}\u0000${s.w}`;
-const CHARTED = new Set([5 * HOUR, 7 * DAY]);
+const CHARTED = new Set([5 * HOUR, WEEK]);
+
+export function readBurndowns(file = historyFile(), now = Date.now()): Burndown[] {
+  // The longest window is one week, and a chart's latest reading can be a day old.
+  return burndowns(readHistory(file, now - WEEK - DAY), now);
+}
 
 /**
  * The current 5-hour and weekly window of every limit read in the last day, oldest reading
