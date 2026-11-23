@@ -61,3 +61,45 @@ test("collects model and effort once and retries an incomplete log line", async 
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("collects antigravity model and thinking effort from brain transcripts", async () => {
+  const root = mkdtempSync(join(tmpdir(), "model-usage-agy-"));
+  try {
+    const file = join(root, "history.sqlite");
+    const brain = join(root, "brain");
+    const convA = join(brain, "conv-a", ".system_generated", "logs");
+    const convB = join(brain, "conv-b", ".system_generated", "logs");
+    mkdirSync(convA, { recursive: true });
+    mkdirSync(convB, { recursive: true });
+    const now = Date.now();
+    const createdAt = new Date(now).toISOString();
+    const logA = join(convA, "transcript.jsonl");
+    const fullLogA = join(convA, "transcript_full.jsonl");
+    const logB = join(convB, "transcript.jsonl");
+
+    const step1 = { step_index: 1, type: "PLANNER_RESPONSE", created_at: createdAt, model: "gemini-4-neon-medium" };
+    const step2 = { step_index: 2, type: "PLANNER_RESPONSE", created_at: createdAt, model: "gemini-flash-worker-agy" };
+    const ignored = { step_index: 3, type: "USER_INPUT", created_at: createdAt, model: "gemini-4-neon-high" };
+    writeFileSync(logA, `${[step1, step2, ignored].map((e) => JSON.stringify(e)).join("\n")}\n`);
+    writeFileSync(fullLogA, `${JSON.stringify({ step_index: 99, type: "PLANNER_RESPONSE", created_at: createdAt, model: "gemini-4-neon-xhigh" })}\n`);
+    // Same step_index in a second conversation should not collide with conv-a.
+    writeFileSync(logB, `${JSON.stringify({ step_index: 1, type: "PLANNER_RESPONSE", created_at: createdAt, model: "gemini-4-hydrogen-xhigh" })}\n`);
+
+    await syncModelUsage(file, [{ provider: "antigravity", path: brain }], now);
+    await syncModelUsage(file, [{ provider: "antigravity", path: brain }], now);
+
+    const db = openHistoryDatabase(file, true);
+    try {
+      const rows = db.query("SELECT provider, observed_at, model, effort FROM model_usage ORDER BY model, effort").all();
+      expect(rows).toEqual([
+        { provider: "antigravity", observed_at: now, model: "gemini-4-hydrogen", effort: "xhigh" },
+        { provider: "antigravity", observed_at: now, model: "gemini-4-neon", effort: "medium" },
+        { provider: "antigravity", observed_at: now, model: "gemini-flash-worker-agy", effort: null },
+      ]);
+    } finally {
+      db.close();
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
