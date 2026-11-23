@@ -1621,7 +1621,11 @@ if (mode === "--history") {
   console.log(JSON.stringify({ burndowns, modelUsage: readModelUsage(start, now) }));
   process.exit(0);
 }
-var report = mode === "--cached" ? await getCachedReport(DAY_MS) ?? await getCachedReport(DAY_MS, { allowPartial: true }) : (mode === "--refresh" ? null : await getCachedReport(180000)) ?? await fetchDetailedReport();
+var recent = async () => {
+  const cached = await getCachedReport(180000);
+  return cached?.read_at && Object.keys(cached.read_at).length ? cached : null;
+};
+var report = mode === "--cached" ? await getCachedReport(DAY_MS) ?? await getCachedReport(DAY_MS, { allowPartial: true }) : (mode === "--refresh" ? null : await recent()) ?? await fetchDetailedReport();
 try {
   if (report)
     recordReport(report);

@@ -17,9 +17,17 @@ if (mode === "--history") {
   process.exit(0);
 }
 
+// A recent cache stands in for a fetch only if it says when each provider was read. A writer
+// that leaves read_at out (an older build still running) would otherwise keep the cache fresh
+// while nothing reaches the history.
+const recent = async () => {
+  const cached = await getCachedReport(180_000);
+  return cached?.read_at && Object.keys(cached.read_at).length ? cached : null;
+};
+
 const report = mode === "--cached"
   ? (await getCachedReport(DAY_MS)) ?? (await getCachedReport(DAY_MS, { allowPartial: true }))
-  : (mode === "--refresh" ? null : await getCachedReport(180_000)) ?? await fetchDetailedReport();
+  : (mode === "--refresh" ? null : await recent()) ?? await fetchDetailedReport();
 try {
   // Whoever refreshed the cache, its new figures go into the history once.
   if (report) recordReport(report);
