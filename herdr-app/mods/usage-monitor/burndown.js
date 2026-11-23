@@ -67,7 +67,13 @@ function plot(t, b, id, now) {
     }
   });
   if (now < b.end) {
-    marks.push(div().absolute().left(`${x(now)}%`).top(0).h(PLOT).w(1).bg(t.muted).opacity(0.6));
+    // A white line at the present, from the current % left down to the bottom of the plot.
+    const top = y(b.left);
+    // The part above the even-pace line is allowance that would go unused at this pace: green.
+    const paceY = clamp(y(pace(b, now)), top, PLOT);
+    const at = `${x(now)}%`;
+    marks.push(div().absolute().left(at).top(top).h(PLOT - top).w(2).ml(-1).bg("#ffffff"));
+    if (paceY > top) marks.push(div().absolute().left(at).top(top).h(paceY - top).w(2).ml(-1).bg(lightColor(t, "untapped")));
   }
   const span = b.end - b.start;
   for (let i = 0; i < COLUMNS; i += 1) {
