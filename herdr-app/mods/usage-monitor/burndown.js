@@ -119,7 +119,10 @@ function chart(t, b, activity, id, now) {
   const lit = light({ remaining: b.left, resetsAt: b.reset, length: b.length, now });
   const color = lit.level ? lightColor(t, lit.level) : t.foreground;
   const title = [b.accountLabel, b.group, b.label].filter(Boolean).join(" · ");
-  const end = b.reset && Number.isFinite(Date.parse(b.reset)) ? `Resets ${localTime(b.end)}` : "Now";
+  const hasReset = Boolean(b.reset && Number.isFinite(Date.parse(b.reset)));
+  const unstarted = !hasReset && b.end > now;
+  const startLabel = unstarted ? "Now" : localTime(b.start);
+  const end = hasReset ? `Resets ${localTime(b.end)}` : unstarted ? localTime(b.end) : "Now";
   const caption = timed("Resets", b.reset) || "No window running: it starts with the next request";
   return v_flex().gap(6).py(6)
     .child(h_flex().justify_between().gap(12)
@@ -133,7 +136,7 @@ function chart(t, b, activity, id, now) {
         .children(["100%", "50%", "0%"].map((label) => div().mt(-6).child(label))))
       .child(plot(t, b, activity, id, now)))
     .child(h_flex().ml(GUTTER).justify_between().text_size(10).text_color(t.muted)
-      .child(localTime(b.start)).child(end));
+      .child(startLabel).child(end));
 }
 
 /** Cards for the breakdown's columns: one per provider, a chart per 5-hour and weekly limit. */

@@ -7,7 +7,7 @@ import { historyFile, openHistoryDatabase } from "./history-db.ts";
 
 const LOG_LOOKBACK_MS = 8 * 24 * 60 * 60_000;
 
-type Provider = "claude" | "codex";
+type Provider = "claude" | "codex" | "antigravity";
 type LogRoot = { provider: Provider; path: string };
 type LogOffset = { byte_offset: number; modified_at: number };
 type ModelUse = { id: string; at: number; model: string; effort: string | null };
@@ -16,11 +16,17 @@ type ModelActivity = Omit<ModelUse, "id"> & { provider: Provider };
 function localLogs(): LogRoot[] {
   const codex = process.env.CODEX_HOME || join(homedir(), ".codex");
   const claude = process.env.CLAUDE_CONFIG_DIR || join(homedir(), ".claude");
-  return [
+  const antigravity = process.env.ANTIGRAVITY_APP_DATA_DIR || join(homedir(), ".gemini", "antigravity-cli");
+  const roots: LogRoot[] = [
     { provider: "codex", path: join(codex, "sessions") },
     { provider: "codex", path: join(codex, "archived_sessions") },
     { provider: "claude", path: join(claude, "projects") },
+    { provider: "antigravity", path: join(antigravity, "brain") },
   ];
+  if (!process.env.ANTIGRAVITY_APP_DATA_DIR) {
+    roots.push({ provider: "antigravity", path: join(homedir(), ".gemini", "antigravity", "brain") });
+  }
+  return roots;
 }
 
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
@@ -28,10 +34,20 @@ const object = (value: unknown): Record<string, unknown> | undefined =>
   value !== null && typeof value === "object" ? value as Record<string, unknown> : undefined;
 const label = (value: unknown): string | null =>
   typeof value === "string" && /^[a-z0-9][a-z0-9._:@/+\-]{0,199}$/i.test(value) ? value : null;
+const EFFORT_SUFFIX = /^(.+)-(minimal|low|medium|high|xhigh|max)$/i;
 
-function usageFromLine(line: string, provider: Provider, cutoff: number): ModelUse | undefined {
+function splitModelEffort(raw: string): { model: string; effort: string | null } {
+  const match = EFFORT_SUFFIX.exec(raw);
+  return match ? { model: match[1]!, effort: match[2]!.toLowerCase() } : { model: raw, effort: null };
+}
+
+function usageFromLine(line: string, provider: Provider, cutoff: number, logId = ""): ModelUse | undefined {
   // Most lines are message bodies or tool results. Only decode the event types we use.
-  const type = provider === "codex" ? /"type"\s*:\s*"turn_context"/ : /"type"\s*:\s*"assistant"/;
+  const type = provider === "codex"
+    ? /"type"\s*:\s*"turn_context"/
+    : provider === "claude"
+      ? /"type"\s*:\s*"assistant"/
+      : /"type"\s*:\s*"PLANNER_RESPONSE"/;
   if (!type.test(line)) return;
   let event: Record<string, unknown> | undefined;
   try {
@@ -39,7 +55,8 @@ function usageFromLine(line: string, provider: Provider, cutoff: number): ModelU
   } catch {
     return;
   }
-  const at = typeof event?.timestamp === "string" ? Date.parse(event.timestamp) : NaN;
+  const rawAt = provider === "antigravity" ? (event?.created_at ?? event?.timestamp) : event?.timestamp;
+  const at = typeof rawAt === "string" ? Date.parse(rawAt) : NaN;
   if (!Number.isFinite(at) || at < cutoff) return;
 
   if (provider === "codex" && event?.type === "turn_context") {
@@ -56,9 +73,20 @@ function usageFromLine(line: string, provider: Provider, cutoff: number): ModelU
       return { id: hash(id), at, model, effort: label(event.perTurnEffort) ?? label(event.effort) };
     }
   }
+  if (provider === "antigravity" && event?.type === "PLANNER_RESPONSE") {
+    const rawModel = label(event.model);
+    const step = typeof event.step_index === "number" && Number.isFinite(event.step_index)
+      ? String(event.step_index)
+      : label(event.step_index);
+    if (rawModel && step !== null) {
+      const parsed = splitModelEffort(rawModel);
+      const explicitEffort = label(event.effort) ?? label(event.thinking_level);
+      return { id: hash(`${logId}:${step}`), at, model: parsed.model, effort: explicitEffort ?? parsed.effort };
+    }
+  }
 }
 
-async function readLog(path: string, start: number, end: number, provider: Provider, cutoff: number) {
+async function readLog(path: string, start: number, end: number, provider: Provider, cutoff: number, logId: string) {
   const usage: ModelUse[] = [];
   let offset = start;
   let pending = Buffer.alloc(0);
@@ -66,7 +94,7 @@ async function readLog(path: string, start: number, end: number, provider: Provi
     const bytes = pending.length ? Buffer.concat([pending, chunk]) : Buffer.from(chunk);
     let lineStart = 0;
     for (let newline = bytes.indexOf(10); newline >= 0; newline = bytes.indexOf(10, lineStart)) {
-      const entry = usageFromLine(bytes.toString("utf8", lineStart, newline), provider, cutoff);
+      const entry = usageFromLine(bytes.toString("utf8", lineStart, newline), provider, cutoff, logId);
       if (entry) usage.push(entry);
       lineStart = newline + 1;
     }
@@ -79,6 +107,25 @@ async function readLog(path: string, start: number, end: number, provider: Provi
 
 function unavailable(error: unknown): boolean {
   return ["ENOENT", "EACCES", "EPERM", "ENOTDIR"].includes((error as NodeJS.ErrnoException)?.code ?? "");
+}
+
+async function logFiles({ provider, path }: LogRoot): Promise<string[]> {
+  const root = resolve(path);
+  const entries = await readdir(root, { recursive: provider !== "antigravity", withFileTypes: true }).catch((error) => {
+    if (!unavailable(error)) throw error;
+    return [];
+  });
+  if (provider === "antigravity") {
+    const logs: string[] = [];
+    for (const entry of entries) {
+      if (entry.isFile() && entry.name === "transcript.jsonl") logs.push(join(entry.parentPath, entry.name));
+      else if (entry.isDirectory()) logs.push(join(entry.parentPath, entry.name, ".system_generated", "logs", "transcript.jsonl"));
+    }
+    return logs;
+  }
+  return entries
+    .filter((entry) => entry.isFile() && entry.name.endsWith(".jsonl"))
+    .map((entry) => join(entry.parentPath, entry.name));
 }
 
 export function readModelUsage(from: number, through: number, file = historyFile()): ModelActivity[] {
@@ -120,14 +167,9 @@ export async function syncModelUsage(file = historyFile(), roots = localLogs(), 
       save.run(id, delta.offset, modifiedAt);
     });
 
-    for (const { provider, path } of roots) {
-      const entries = await readdir(resolve(path), { recursive: true, withFileTypes: true }).catch((error) => {
-        if (!unavailable(error)) throw error;
-        return [];
-      });
-      for (const entry of entries) {
-        if (!entry.isFile() || !entry.name.endsWith(".jsonl")) continue;
-        const log = join(entry.parentPath, entry.name);
+    for (const root of roots) {
+      const { provider } = root;
+      for (const log of await logFiles(root)) {
         try {
           const info = await stat(log);
           if (!info.isFile() || info.mtimeMs < cutoff) continue;
@@ -136,7 +178,7 @@ export async function syncModelUsage(file = historyFile(), roots = localLogs(), 
           if (previous?.byte_offset === info.size && previous.modified_at === info.mtimeMs) continue;
           const start = previous && previous.byte_offset < info.size ? previous.byte_offset : 0;
           if (start === info.size) continue;
-          const delta = await readLog(log, start, info.size, provider, cutoff);
+          const delta = await readLog(log, start, info.size, provider, cutoff, id);
           if (delta.offset > start) commit.immediate(provider, id, info.mtimeMs, delta);
         } catch (error) {
           if (!unavailable(error)) throw error;

@@ -212,8 +212,18 @@ describe("burndowns", () => {
     expect(charts[0]!.runs.map((r) => r[2])).toEqual([90, 80]);
   });
 
-  test("ends a window with no reset time at now", () => {
-    const charts = burndowns([entry(NOW - HOUR, { p: "claude", w: "5h session", left: 100, reset: null })], NOW);
+  test("pins a full (100%) window with no reset time to the left starting at now", () => {
+    const charts = burndowns([
+      entry(NOW - 2 * HOUR, { p: "claude", w: "5h session", left: 40, reset: iso(NOW - HOUR) }),
+      entry(NOW - 5 * MINUTE, { p: "claude", w: "5h session", left: 100, reset: null }),
+    ], NOW);
+    expect(charts[0]!.start).toBe(NOW);
+    expect(charts[0]!.end).toBe(NOW + 5 * HOUR);
+    expect(charts[0]!.runs).toEqual([[NOW, NOW, 100]]);
+  });
+
+  test("ends a partially used window with no reset time at now", () => {
+    const charts = burndowns([entry(NOW - HOUR, { p: "claude", w: "5h session", left: 80, reset: null })], NOW);
     expect(charts[0]!.end).toBe(NOW);
     expect(charts[0]!.start).toBe(NOW - 5 * HOUR);
   });

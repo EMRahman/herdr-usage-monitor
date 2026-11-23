@@ -171,8 +171,9 @@ export function readBurndowns(file = historyFile(), now = Date.now()): Burndown[
 
 /**
  * The current 5-hour and weekly window of every limit read in the last day, oldest reading
- * first. A window runs from its reset minus its length to its reset; with no reset (Claude's
- * 5-hour limit before a session starts), it's the length up to now.
+ * first. A window runs from its reset minus its length to its reset; with no reset, a full
+ * (100%) limit starts at now so it stays pinned to the left, while a partially used one runs
+ * for its length up to now.
  */
 export function burndowns(entries: Entry[], now = Date.now()): Burndown[] {
   // Readings recorded before accounts were kept belong to the limit's account when it has one.
@@ -204,9 +205,10 @@ export function burndowns(entries: Entry[], now = Date.now()): Burndown[] {
     const length = windowLength(latest.s.w);
     if (!length || !CHARTED.has(length)) continue;
     const reset = Date.parse(latest.s.reset ?? "");
-    const end = Number.isFinite(reset) ? reset : now;
+    const unstarted = !Number.isFinite(reset) && latest.s.left >= 100;
+    const end = Number.isFinite(reset) ? reset : unstarted ? now + length : now;
     const start = end - length;
-    const inWindow = readings.filter((r) => r.t >= start && r.t <= end);
+    const inWindow = unstarted ? [] : readings.filter((r) => r.t >= start && r.t <= end);
     const account = accountOf(latest.s);
     result.push({
       provider: latest.s.p,
@@ -218,7 +220,9 @@ export function burndowns(entries: Entry[], now = Date.now()): Burndown[] {
       end,
       left: latest.s.left,
       reset: latest.s.reset,
-      runs: runs(inWindow.map((r) => [r.t, r.s.left]), length, Math.min(now, end)),
+      runs: unstarted
+        ? [[start, start, latest.s.left]]
+        : runs(inWindow.map((r) => [r.t, r.s.left]), length, Math.min(now, end)),
     });
   }
   return result;

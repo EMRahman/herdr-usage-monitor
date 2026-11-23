@@ -74,3 +74,17 @@ test("hover opens immediately and lists provider activity through the current pa
   expect(last).toContain("model-b · effort unavailable");
   expect(tips.join("\n")).not.toMatch(/outside|other-provider|future/);
 });
+
+test("labels an unstarted 100% window with Now on the left", () => {
+  const now = Date.parse("2026-11-23T12:00:00Z");
+  const end = now + 5 * 60 * 60_000;
+  const series = {
+    provider: "claude", label: "5h session", length: end - now, start: now, end,
+    left: 100, reset: null, runs: [[now, now, 100]],
+  };
+  const [card] = burndownCards({}, [series], [], now);
+  const text = labels(card!.rows[0]);
+  expect(text).toContain("100% left");
+  expect(text[text.length - 2]).toBe("Now");
+  expect(text[text.length - 1]).not.toBe("Now");
+});
