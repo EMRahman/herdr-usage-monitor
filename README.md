@@ -58,6 +58,8 @@ Switch the breakdown to **Burndown** (press <kbd>B</kbd>, and <kbd>U</kbd> to go
 
 The charts come from readings kept on your machine, recorded each time allowances are read (every few minutes while Herdr is open), so they fill in from when you install this version. Time when Herdr was closed or the machine was asleep shows as a gap.
 
+Upgrading from the JSONL version starts a fresh chart history in `history.sqlite`. Your previous readings remain available in `history.jsonl` in the same directory.
+
 ## What it shows
 
 | Provider | Limits |
