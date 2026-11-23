@@ -61,7 +61,8 @@ unused at your current pace, so you know where there's capacity to spend.
     bottom of the plot. The part above the dotted line is green (`#2fbf71`)
     to show allowance that would go unused at this pace.
   - Hovering the plot shows "3:40 PM · 62% left · even pace 55%" for that
-    48th of the window.
+    48th of the window. Claude and Codex tooltips also show the local model
+    and reasoning effort combinations logged in that time slice.
 
 ## How it behaves
 
@@ -88,19 +89,23 @@ unused at your current pace, so you know where there's capacity to spend.
   the readout and breakdown share recent results.
 - On start, the readout shows the last cached report (up to a day old) at once,
   then refreshes.
-- **History.** Every fresh read appends one line to
-  `~/.local/share/herdr-usage-monitor/history.jsonl` (under `$XDG_DATA_HOME`
-  when set): `{"t": ms, "s": [{"p": provider, "a": account, "g": model group,
-  "w": limit, "left": %, "reset": ISO}]}`. `a` is the first 10 hex digits of the
+- **History.** Fresh readings go into `allowance_readings` in
+  `~/.local/share/herdr-usage-monitor/history.sqlite` (under `$XDG_DATA_HOME`
+  when set). Each row holds a provider, its read time in milliseconds, and
+  the limit samples as JSON. Each sample's optional account ID is the first 10 hex digits of the
   account's SHA-256, so each account keeps its own line without the file naming
   it; when a provider has more than one, the charts add the account's name from
   the current report. The report's `read_at` says when each
   provider's figures were read; figures carried over from an older report keep
-  their time. Every bridge call records each provider whose `read_at` is newer
-  than its last line in the history, stamped with that time, so readings are
-  kept whichever program refreshed the cache, and carried-over figures aren't
-  recorded twice. Entries older than 8 days are dropped, about once a day. While Burndown is on screen, the dialog reads the history on
-  opening it and after each poll.
+  their time. A transaction records each provider read time once, and the
+  database keeps those readings indefinitely. While Burndown is on screen,
+  the dialog reads the last eight days on opening it and after each poll.
+- **Model activity.** Normal bridge polls collect recent metadata from the
+  local Codex and Claude Code logs. `model_usage` holds the model ID and reasoning
+  effort per recorded Codex turn or Claude API response, with a timestamp in
+  milliseconds and a hashed event ID. Effort is empty when the log omits it.
+  The table is indexed by time and by provider, model, and effort. These rows
+  are kept for later analysis. Session log content stays in the source logs.
 - Hovering the readout shows the full summary, or the error.
 
 ## Built from
@@ -124,8 +129,8 @@ unused at your current pace, so you know where there's capacity to spend.
   - `bridge.js`: the provider code, prebuilt by `build.ts`. It
     prints `{report, summary, parts}` as JSON: `--cached` returns whatever's
     cached, no flag refreshes a cache 3 minutes old, `--refresh` asks now.
-    `--history` prints `{burndowns}`: each limit's current window as
-    `[from, to, % left]` runs, from the history file.
+    `--history` prints `{burndowns, modelUsage}` with allowance runs for each
+    limit's current window and timestamped model activity from SQLite.
   - `gauge.svg`: the icon.
 - **Programs:** Bun runs `bridge.js`. The mod tries `bun` on Herdr's PATH, then
   `config.json`'s `bun` (written by the installer), then `~/.bun/bin/bun`,

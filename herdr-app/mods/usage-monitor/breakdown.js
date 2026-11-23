@@ -201,7 +201,7 @@ function views(t, current, choose) {
 }
 
 function burndownView(t, state) {
-  const cards = burndownCards(t, state.history?.burndowns)
+  const cards = burndownCards(t, state.history?.burndowns, state.history?.modelUsage)
     .map((c) => card(t, c.title, "", c.rows, c.weight));
   const intro = div().text_size(11).text_color(t.muted)
     .child("% left through each 5-hour and weekly window, from readings kept on this machine. "

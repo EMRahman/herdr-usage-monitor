@@ -1104,10 +1104,63 @@ async function fetchDetailedReport() {
 }
 
 // history.ts
-import { appendFileSync, closeSync as closeSync2, fstatSync, mkdirSync as mkdirSync2, openSync as openSync2, readFileSync, readSync as readSync2, renameSync, writeFileSync as writeFileSync3 } from "fs";
+import { existsSync as existsSync3 } from "fs";
 import { createHash as createHash2 } from "crypto";
+
+// history-db.ts
+import { Database as Database2 } from "bun:sqlite";
+import { closeSync as closeSync2, mkdirSync as mkdirSync2, openSync as openSync2 } from "fs";
 import { homedir as homedir3 } from "os";
 import { dirname, join as join3 } from "path";
+function historyFile() {
+  if (process.env.HERDR_USAGE_HISTORY_FILE)
+    return process.env.HERDR_USAGE_HISTORY_FILE;
+  const data = process.env.XDG_DATA_HOME || join3(homedir3(), ".local", "share");
+  return join3(data, "herdr-usage-monitor", "history.sqlite");
+}
+function openHistoryDatabase(file, readonly = false) {
+  if (!readonly) {
+    mkdirSync2(dirname(file), { recursive: true, mode: 448 });
+    closeSync2(openSync2(file, "a", 384));
+  }
+  const db = new Database2(file, readonly ? { readonly: true } : { readwrite: true });
+  try {
+    db.run("PRAGMA busy_timeout = 2000");
+    if (!readonly && db.query("PRAGMA user_version").get()?.user_version === 0) {
+      db.transaction(() => db.exec(`
+        CREATE TABLE IF NOT EXISTS allowance_readings (
+          provider TEXT NOT NULL,
+          read_at NUMERIC NOT NULL,
+          samples TEXT NOT NULL,
+          PRIMARY KEY (provider, read_at)
+        );
+        CREATE INDEX IF NOT EXISTS allowance_readings_time ON allowance_readings (read_at);
+
+        CREATE TABLE IF NOT EXISTS model_usage (
+          provider TEXT NOT NULL,
+          event_id TEXT NOT NULL,
+          observed_at INTEGER NOT NULL,
+          model TEXT NOT NULL,
+          effort TEXT,
+          PRIMARY KEY (provider, event_id)
+        );
+        CREATE INDEX IF NOT EXISTS model_usage_time ON model_usage (observed_at);
+        CREATE INDEX IF NOT EXISTS model_usage_model ON model_usage (provider, model, effort, observed_at);
+
+        CREATE TABLE IF NOT EXISTS model_log_offsets (
+          log_id TEXT PRIMARY KEY NOT NULL,
+          byte_offset INTEGER NOT NULL,
+          modified_at REAL NOT NULL
+        );
+        PRAGMA user_version = 1;
+      `)).immediate();
+    }
+    return db;
+  } catch (error) {
+    db.close();
+    throw error;
+  }
+}
 
 // herdr-app/mods/usage-monitor/pace.js
 var HOUR = 3600000;
@@ -1130,14 +1183,8 @@ function windowLength(text) {
 var MINUTE = 60000;
 var HOUR2 = 60 * MINUTE;
 var DAY2 = 24 * HOUR2;
-var KEEP_MS = 8 * DAY2;
+var WEEK = 7 * DAY2;
 var BUCKETS = 180;
-function historyFile() {
-  if (process.env["HERDR_USAGE_HISTORY_FILE"])
-    return process.env["HERDR_USAGE_HISTORY_FILE"];
-  const data = process.env["XDG_DATA_HOME"] || join3(homedir3(), ".local", "share");
-  return join3(data, "herdr-usage-monitor", "history.jsonl");
-}
 var round = (value) => Math.round(value * 10) / 10;
 function accountId(account) {
   return account ? createHash2("sha256").update(account).digest("hex").slice(0, 10) : undefined;
@@ -1192,122 +1239,65 @@ function samplesFrom(report) {
   }
   return samples.filter((s) => Number.isFinite(s.left));
 }
-function recordHistory(samples, t = Date.now(), file = historyFile()) {
-  if (samples.length === 0)
-    return;
-  try {
-    mkdirSync2(dirname(file), { recursive: true });
-    appendFileSync(file, `${JSON.stringify({ t, s: samples })}
-`);
-    pruneHistory(file, t);
-  } catch {}
-}
-var TAIL_BYTES = 256 * 1024;
-function recentReadings(file = historyFile()) {
-  const last = new Map;
-  let since = -Infinity;
-  let fd;
-  try {
-    fd = openSync2(file, "r");
-  } catch {
-    return { last, since };
-  }
-  try {
-    const size = fstatSync(fd).size;
-    const offset = Math.max(0, size - TAIL_BYTES);
-    const buffer = Buffer.alloc(size - offset);
-    const read = readSync2(fd, buffer, 0, buffer.length, offset);
-    const lines = buffer.subarray(0, read).toString("utf8").split(`
-`);
-    if (offset > 0) {
-      lines.shift();
-      since = Infinity;
-    }
-    for (const line of lines) {
-      try {
-        const entry = JSON.parse(line);
-        if (offset > 0)
-          since = Math.min(since, entry.t);
-        for (const s of entry.s)
-          last.set(s.p, Math.max(last.get(s.p) ?? -Infinity, entry.t));
-      } catch {}
-    }
-  } finally {
-    closeSync2(fd);
-  }
-  return { last, since };
-}
 function recordReport(report, file = historyFile()) {
   const readAt = report.read_at;
   if (!readAt)
     return;
-  const { last, since } = recentReadings(file);
-  const lines = new Map;
+  const providers = new Map;
   for (const sample of samplesFrom(report)) {
     const t = readAt[sample.p];
-    if (!t || t < since || t <= (last.get(sample.p) ?? -Infinity))
+    if (typeof t !== "number" || !Number.isFinite(t) || t <= 0)
       continue;
-    if (!lines.has(t))
-      lines.set(t, []);
-    lines.get(t).push(sample);
+    const samples = providers.get(sample.p);
+    if (samples)
+      samples.push(sample);
+    else
+      providers.set(sample.p, [sample]);
   }
-  for (const [t, samples] of [...lines].sort((a, b) => a[0] - b[0]))
-    recordHistory(samples, t, file);
-}
-function firstTime(file) {
-  const fd = openSync2(file, "r");
-  try {
-    const buffer = Buffer.alloc(64 * 1024);
-    const read = readSync2(fd, buffer, 0, buffer.length, 0);
-    const line = buffer.subarray(0, read).toString("utf8").split(`
-`)[0];
-    const t = JSON.parse(line ?? "").t;
-    return Number.isFinite(t) ? t : null;
-  } catch {
-    return null;
-  } finally {
-    closeSync2(fd);
-  }
-}
-function pruneHistory(file, now = Date.now()) {
-  const oldest = firstTime(file);
-  if (oldest !== null && now - oldest < KEEP_MS + DAY2)
+  if (!providers.size)
     return;
-  const kept = readFileSync(file, "utf8").split(`
-`).filter((line) => {
-    try {
-      return JSON.parse(line).t >= now - KEEP_MS;
-    } catch {
-      return false;
-    }
-  });
-  const temp = `${file}.${process.pid}.tmp`;
-  writeFileSync3(temp, kept.map((line) => `${line}
-`).join(""));
-  renameSync(temp, file);
-}
-function readHistory(file = historyFile()) {
-  let text = "";
+  const db = openHistoryDatabase(file);
   try {
-    text = readFileSync(file, "utf8");
-  } catch {
+    const insert = db.query(`
+      INSERT INTO allowance_readings (provider, read_at, samples) VALUES (?, ?, ?)
+      ON CONFLICT (provider, read_at) DO NOTHING
+    `);
+    db.transaction(() => {
+      for (const [provider, samples] of providers) {
+        insert.run(provider, readAt[provider], JSON.stringify(samples));
+      }
+    }).immediate();
+  } finally {
+    db.close();
+  }
+}
+function readHistory(file = historyFile(), since = 0) {
+  if (!existsSync3(file))
     return [];
+  const db = openHistoryDatabase(file, true);
+  try {
+    if (!db.query("SELECT 1 FROM sqlite_schema WHERE name = 'allowance_readings'").get())
+      return [];
+    const rows = db.query("SELECT read_at AS t, samples FROM allowance_readings WHERE read_at >= ? ORDER BY read_at, rowid").all(since);
+    const entries = [];
+    for (const { t, samples } of rows) {
+      const parsed = JSON.parse(samples);
+      const last = entries.at(-1);
+      if (last?.t === t)
+        last.s.push(...parsed);
+      else
+        entries.push({ t, s: parsed });
+    }
+    return entries;
+  } finally {
+    db.close();
   }
-  const entries = [];
-  for (const line of text.split(`
-`)) {
-    if (!line)
-      continue;
-    try {
-      const entry = JSON.parse(line);
-      if (Number.isFinite(entry.t) && Array.isArray(entry.s))
-        entries.push(entry);
-    } catch {}
-  }
-  return entries.sort((a, b) => a.t - b.t);
 }
 var limitOf = (s) => `${s.p}\x00${s.g ?? ""}\x00${s.w}`;
-var CHARTED = new Set([5 * HOUR2, 7 * DAY2]);
+var CHARTED = new Set([5 * HOUR2, WEEK]);
+function readBurndowns(file = historyFile(), now = Date.now()) {
+  return burndowns(readHistory(file, now - WEEK - DAY2), now);
+}
 function burndowns(entries, now = Date.now()) {
   const accounts = new Map;
   for (const entry of entries) {
@@ -1386,6 +1376,150 @@ function runs(readings, length, until) {
   return out;
 }
 
+// model-usage.ts
+import { createHash as createHash3 } from "crypto";
+import { existsSync as existsSync4 } from "fs";
+import { readdir, stat } from "fs/promises";
+import { homedir as homedir4 } from "os";
+import { join as join4, resolve } from "path";
+var LOG_LOOKBACK_MS = 8 * 24 * 60 * 60000;
+function localLogs() {
+  const codex = process.env.CODEX_HOME || join4(homedir4(), ".codex");
+  const claude = process.env.CLAUDE_CONFIG_DIR || join4(homedir4(), ".claude");
+  return [
+    { provider: "codex", path: join4(codex, "sessions") },
+    { provider: "codex", path: join4(codex, "archived_sessions") },
+    { provider: "claude", path: join4(claude, "projects") }
+  ];
+}
+var hash = (value) => createHash3("sha256").update(value).digest("hex");
+var object = (value) => value !== null && typeof value === "object" ? value : undefined;
+var label = (value) => typeof value === "string" && /^[a-z0-9][a-z0-9._:@/+\-]{0,199}$/i.test(value) ? value : null;
+function usageFromLine(line, provider, cutoff) {
+  const type = provider === "codex" ? /"type"\s*:\s*"turn_context"/ : /"type"\s*:\s*"assistant"/;
+  if (!type.test(line))
+    return;
+  let event;
+  try {
+    event = object(JSON.parse(line));
+  } catch {
+    return;
+  }
+  const at = typeof event?.timestamp === "string" ? Date.parse(event.timestamp) : NaN;
+  if (!Number.isFinite(at) || at < cutoff)
+    return;
+  if (provider === "codex" && event?.type === "turn_context") {
+    const turn = object(event.payload);
+    const id = label(turn?.turn_id);
+    const model = label(turn?.model);
+    if (id && model)
+      return { id: hash(id), at, model, effort: label(turn?.effort) };
+  }
+  if (provider === "claude" && event?.type === "assistant") {
+    const message = object(event.message);
+    const id = label(message?.id);
+    const model = label(message?.model);
+    if (id && model) {
+      return { id: hash(id), at, model, effort: label(event.perTurnEffort) ?? label(event.effort) };
+    }
+  }
+}
+async function readLog(path, start, end, provider, cutoff) {
+  const usage = [];
+  let offset = start;
+  let pending = Buffer.alloc(0);
+  for await (const chunk of Bun.file(path).slice(start, end).stream()) {
+    const bytes = pending.length ? Buffer.concat([pending, chunk]) : Buffer.from(chunk);
+    let lineStart = 0;
+    for (let newline = bytes.indexOf(10);newline >= 0; newline = bytes.indexOf(10, lineStart)) {
+      const entry = usageFromLine(bytes.toString("utf8", lineStart, newline), provider, cutoff);
+      if (entry)
+        usage.push(entry);
+      lineStart = newline + 1;
+    }
+    offset += lineStart;
+    pending = bytes.subarray(lineStart);
+  }
+  return { usage, offset };
+}
+function unavailable(error) {
+  return ["ENOENT", "EACCES", "EPERM", "ENOTDIR"].includes(error?.code ?? "");
+}
+function readModelUsage(from, through, file = historyFile()) {
+  if (from > through || !existsSync4(file))
+    return [];
+  const db = openHistoryDatabase(file, true);
+  try {
+    if (!db.query("SELECT 1 FROM sqlite_schema WHERE name = 'model_usage'").get())
+      return [];
+    return db.query(`
+      SELECT provider, observed_at AS at, model, effort FROM model_usage
+      WHERE observed_at BETWEEN ? AND ? ORDER BY observed_at
+    `).all(from, through);
+  } finally {
+    db.close();
+  }
+}
+async function syncModelUsage(file = historyFile(), roots = localLogs(), now = Date.now()) {
+  const cutoff = now - LOG_LOOKBACK_MS;
+  const db = openHistoryDatabase(file);
+  try {
+    const lookup = db.query("SELECT byte_offset, modified_at FROM model_log_offsets WHERE log_id = ?");
+    const insert = db.query(`
+      INSERT INTO model_usage (provider, event_id, observed_at, model, effort) VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT (provider, event_id) DO UPDATE SET
+        observed_at = min(model_usage.observed_at, excluded.observed_at),
+        effort = coalesce(model_usage.effort, excluded.effort)
+      WHERE excluded.observed_at < model_usage.observed_at
+         OR (model_usage.effort IS NULL AND excluded.effort IS NOT NULL)
+    `);
+    const save = db.query(`
+      INSERT INTO model_log_offsets (log_id, byte_offset, modified_at) VALUES (?, ?, ?)
+      ON CONFLICT (log_id) DO UPDATE SET byte_offset = excluded.byte_offset, modified_at = excluded.modified_at
+      WHERE excluded.modified_at > model_log_offsets.modified_at
+         OR (excluded.modified_at = model_log_offsets.modified_at AND excluded.byte_offset > model_log_offsets.byte_offset)
+    `);
+    const commit = db.transaction((provider, id, modifiedAt, delta) => {
+      for (const row of delta.usage)
+        insert.run(provider, row.id, row.at, row.model, row.effort);
+      save.run(id, delta.offset, modifiedAt);
+    });
+    for (const { provider, path } of roots) {
+      const entries = await readdir(resolve(path), { recursive: true, withFileTypes: true }).catch((error) => {
+        if (!unavailable(error))
+          throw error;
+        return [];
+      });
+      for (const entry of entries) {
+        if (!entry.isFile() || !entry.name.endsWith(".jsonl"))
+          continue;
+        const log = join4(entry.parentPath, entry.name);
+        try {
+          const info = await stat(log);
+          if (!info.isFile() || info.mtimeMs < cutoff)
+            continue;
+          const id = hash(`${provider}:${log}:${info.dev}:${info.ino}:${info.birthtimeMs}`);
+          const previous = lookup.get(id);
+          if (previous?.byte_offset === info.size && previous.modified_at === info.mtimeMs)
+            continue;
+          const start = previous && previous.byte_offset < info.size ? previous.byte_offset : 0;
+          if (start === info.size)
+            continue;
+          const delta = await readLog(log, start, info.size, provider, cutoff);
+          if (delta.offset > start)
+            commit.immediate(provider, id, info.mtimeMs, delta);
+        } catch (error) {
+          if (!unavailable(error))
+            throw error;
+        }
+      }
+    }
+    db.query("DELETE FROM model_log_offsets WHERE modified_at < ?").run(cutoff);
+  } finally {
+    db.close();
+  }
+}
+
 // usage-summary.ts
 var SHORT_NAMES = {
   claude: "Claude",
@@ -1447,12 +1581,24 @@ var DAY_MS = 24 * 60 * 60000;
 var mode = process.argv[2];
 if (mode === "--history") {
   const cached = await getCachedReport(DAY_MS, { allowPartial: true });
-  console.log(JSON.stringify({ burndowns: labelAccounts(burndowns(readHistory()), accountNames(cached)) }));
+  const now = Date.now();
+  const burndowns = labelAccounts(readBurndowns(undefined, now), accountNames(cached));
+  const start = Math.min(...burndowns.map((chart) => chart.start));
+  console.log(JSON.stringify({ burndowns, modelUsage: readModelUsage(start, now) }));
   process.exit(0);
 }
 var report = mode === "--cached" ? await getCachedReport(DAY_MS) ?? await getCachedReport(DAY_MS, { allowPartial: true }) : (mode === "--refresh" ? null : await getCachedReport(180000)) ?? await fetchDetailedReport();
-if (report)
-  recordReport(report);
+try {
+  if (report)
+    recordReport(report);
+} catch (error) {
+  console.warn("Couldn't record allowance history:", error instanceof Error ? error.message : error);
+}
+if (mode !== "--cached") {
+  await syncModelUsage().catch((error) => {
+    console.warn("Couldn't sync model usage:", error instanceof Error ? error.message : error);
+  });
+}
 var parts = report ? summaryParts(report) : [];
 console.log(JSON.stringify({
   report,
