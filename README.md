@@ -18,7 +18,7 @@ Claude Code · Codex · Antigravity · Cursor · GitHub Copilot · Grok · OpenC
 
 Press <kbd>B</kbd> to switch to the **Burndown** view, which charts how each limit has drained through its current window against an even pace (see [Burndown charts](#burndown-charts)):
 
-![The Burndown view: Claude, Codex and Antigravity cards, each with a chart of % left through its 5-hour and weekly windows, against a dotted even-pace line](docs/herdr-app-burndown.png)
+![Burndown charts for Claude, Codex and Antigravity. White markers show the current time, with a green segment above the dotted even-pace line where allowance is going unused.](docs/herdr-app-burndown.png)
 
 ## Quick start
 
@@ -54,7 +54,7 @@ Everything green is listed in the **Untapped allowance** panel at the top, soone
 
 ## Burndown charts
 
-Switch the breakdown to **Burndown** (press <kbd>B</kbd>, and <kbd>U</kbd> to go back) to see how each 5-hour and weekly limit has drained through its current window, from 100% at the start to the reset. Limits a provider sets per model get their own chart: Claude's 7d Opus and 7d Sonnet, and each Antigravity model group. A dotted line shows an even pace to 0% at the reset, so a line below it is spending faster than the window allows. Hover a chart for the reading at that time.
+Switch the breakdown to **Burndown** (press <kbd>B</kbd>, and <kbd>U</kbd> to go back) to see how each 5-hour and weekly limit has drained through its current window, from 100% at the start to the reset. Limits a provider sets per model get their own chart: Claude's 7d Opus and 7d Sonnet, and each Antigravity model group. A dotted line shows an even pace to 0% at the reset. The vertical marker shows the current time. Its green segment shows how much allowance is above the even pace and would go unused at the current pace. Hover a chart for the reading at that time.
 
 The charts come from readings kept on your machine, recorded each time allowances are read (every few minutes while Herdr is open), so they fill in from when you install this version. Time when Herdr was closed or the machine was asleep shows as a gap.
 
