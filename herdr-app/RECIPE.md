@@ -56,7 +56,10 @@ unused at your current pace, so you know where there's capacity to spend.
     "Now" at right.
   - % left is a step line of 2px `accent` bars with `accent` at 14% opacity
     under it. Time with no readings is a gap. A dotted `muted` diagonal runs
-    from 100% at the start to 0% at the reset: an even pace. At the current
+    from 100% at the start to 0% at the reset: an even pace. The time already
+    gone in the window (start to now) has a faint `foreground` tint at 3.5%
+    opacity behind everything, so how far through it you are shows at a
+    glance; the time still to come stays clear. At the current
     time, a 2px white marker extends from the remaining allowance to the
     bottom of the plot. The part above the dotted line is green (`#2fbf71`)
     to show allowance that would go unused at this pace.

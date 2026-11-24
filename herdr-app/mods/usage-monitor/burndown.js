@@ -1,8 +1,9 @@
 // Burndown charts: % left over each 5-hour and weekly window, from the local history.
 //
 // GPUI has no paths, so the chart is boxes: a step line of 2px bars with a faint fill under it,
-// a dotted diagonal for an even pace from 100% at the window's start to 0% at its reset, and a
-// row of invisible columns that show the reading and model activity under the pointer.
+// a dotted diagonal for an even pace from 100% at the window's start to 0% at its reset, a faint
+// tint over the time already gone, and a row of invisible columns that show the reading
+// and model activity under the pointer.
 import { div } from "gpui-kit";
 import { h_flex, HoverCard, v_flex } from "gpui-base";
 import { light, lightColor } from "./pace.js";
@@ -79,6 +80,10 @@ function plot(t, b, activity, id, now) {
   const { x, y } = scale(b);
   const line = t.accent;
   const marks = [];
+  if (now > b.start && now < b.end) {
+    // A faint tint over the time already gone, so how far through the window we are reads at a glance.
+    marks.push(div().absolute().left(0).top(0).h(PLOT).w(`${x(now)}%`).bg(t.foreground).opacity(0.035));
+  }
   for (const level of [0, 50, 100]) {
     marks.push(div().absolute().left(0).w_full().h(1).top(Math.min(PLOT - 1, y(level))).bg(t.border));
   }
