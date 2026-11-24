@@ -1,10 +1,9 @@
 # Subscription Usage
 
-How much of each AI subscription allowance is left, at the bottom left of the
-window: `Claude 47%  Codex 20%  AGY 100%` above Settings. Clicking it, or Cmd+U,
-opens a large breakdown of every limit for Claude, Codex, Antigravity, Cursor,
-Copilot, Grok and OpenCode. Traffic lights show where allowance will reset
-unused at your current pace, so you know where there's capacity to spend.
+See which AI subscription is running tight and which will reset with quota to
+spare. Compare limits for Claude Code, Codex, Antigravity, Cursor, GitHub
+Copilot, Grok, and OpenCode. Click the sidebar readout for reset times and
+burndown charts that show how fast each allowance is draining.
 
 ![Subscription Usage](preview.png)
 
