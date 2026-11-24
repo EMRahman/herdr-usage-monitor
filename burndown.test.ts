@@ -105,6 +105,29 @@ test("labels an unstarted 100% window with Now on the left", () => {
   expect(text[text.length - 1]).not.toBe("Now");
 });
 
+test("the endpoint dot stays on the last allowance step when readings stop before now", () => {
+  const start = Date.parse("2026-11-23T12:00:00Z");
+  const hour = 3_600_000;
+  const end = start + 5 * hour;
+  const now = start + 3 * hour;
+  const series = {
+    provider: "codex", label: "5h session", length: end - start, start, end,
+    left: 75, reset: new Date(end).toISOString(),
+  };
+  const theme = { accent: "#88aaff" };
+  const dotsFor = (runs: number[][]) => {
+    const [card] = burndownCards(theme, [{ ...series, runs }], [], now);
+    return elements(card!.rows[0]).filter((el) => style(el, "bg") === theme.accent
+      && el.calls.some(([key]) => key === "rounded_full"));
+  };
+  const dots = dotsFor([[start, start + hour, 90], [start + hour, start + 2 * hour, 75]]);
+  expect(dots).toHaveLength(1);
+  const dot = dots[0]!;
+  expect(style(dot, "left")).toBe("40%");
+  expect(Number(style(dot, "top")) + Number(style(dot, "size")) / 2).toBe(22);
+  expect(dotsFor([])).toHaveLength(0);
+});
+
 test("shades the gap to an even pace: green ahead, yellow a little behind, red well behind", () => {
   const hour = 60 * 60_000;
   const start = Date.parse("2026-11-23T00:00:00Z");

@@ -231,9 +231,9 @@ function burndownView(t, state) {
   const cards = burndownCards(t, state.history?.burndowns, state.history?.modelUsage)
     .map((c) => card(t, c.title, "", c.rows, c.weight));
   const intro = div().text_size(11).text_color(t.muted)
-    .child("% left through each 5-hour and weekly window, from readings kept on this machine. "
-      + "The dotted line is an even pace to 0% at the reset. The shading between it and the line is "
-      + "green ahead of that pace, yellow a little behind and red 20 or more points behind.");
+    .child("The dot marks the latest allowance reading. The faint background tint shows elapsed time. "
+      + "The dotted diagonal shows an even pace to reset. The band is green ahead of pace, "
+      + "yellow a little behind and red 20 or more points behind.");
   if (cards.length) return v_flex().gap(8).child(intro).child(columns(cards, state.width ?? 0));
   const note = state.historyError || (state.history
     ? "No readings yet. They're recorded each time allowances are read, every few minutes while Herdr is open."

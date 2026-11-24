@@ -1,6 +1,6 @@
 // Burndown charts: % left over each 5-hour and weekly window, from the local history.
 //
-// GPUI has no paths, so the chart is boxes: a step line of 2px bars with a faint fill under it,
+// The chart uses a step line of 2px bars with a faint fill under it and a dot at the last reading,
 // a dotted diagonal for an even pace from 100% at the window's start to 0% at its reset, a band
 // between the two that shades how far ahead or behind that pace each reading was, a faint tint
 // over the time already gone, and a row of invisible columns that show the reading and model
@@ -134,10 +134,11 @@ function plot(t, b, activity, id, now) {
         .h(Math.abs(a - top) + 2).bg(line));
     }
   });
-  if (now < b.end) {
-    // A white line at the present, from the current % left down to the bottom of the plot.
-    const top = y(b.left);
-    marks.push(div().absolute().left(`${x(now)}%`).top(top).h(PLOT - top).w(2).ml(-1).bg("#ffffff"));
+  const last = b.runs.at(-1);
+  if (last) {
+    const [, to, left] = last;
+    marks.push(div().absolute().size(5).rounded_full().bg(line)
+      .left(`${x(to)}%`).ml(-2.5).top(clamp(y(left), 1, PLOT - 1) - 2.5));
   }
   marks.push(...hoverColumns(t, b, activity, id, now));
   return div().relative().flex_1().min_w(0).h(PLOT).children(marks)
