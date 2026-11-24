@@ -107,7 +107,7 @@ Providers you aren't signed in to are left out.
 
 **Updating.** Like other Herdr mods, this one doesn't update itself. Run the installer again after `git pull` or a Herdr update. It only writes what changed. It rebuilds `herdr-with-usage` from Herdr's current main layout unless you've edited that layout, and it keeps other mods' blocks in place.
 
-**Refresh timing.** While the readout shows, the mod checks the cache every minute and asks the providers when the cache is 3 minutes old. The breakdown shows sample age in minutes or hours. If providers differ, it shows the oldest known sample. Hover for individual times. During a refresh, the button counts elapsed seconds.
+**Refresh timing.** While the readout shows, the mod checks the cache every minute and asks the providers when the cache is 3 minutes old. The breakdown shows sample age in minutes or hours. If providers differ, it shows the oldest known sample. Hover for individual times. The refresh button shows elapsed time in tenths of a second. After a manual refresh, the result shows the total time to the same precision.
 </details>
 
 <details>

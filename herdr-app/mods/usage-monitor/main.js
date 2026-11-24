@@ -165,7 +165,7 @@ export default class UsageMonitor extends View {
       this.resultTimer?.cancel();
       this.resultTimer = null;
       this.refreshResult = null;
-      this.refreshTimer = cx.timer.every(1000, (timerCx) => timerCx.notify());
+      this.refreshTimer = cx.timer.every(100, (timerCx) => timerCx.notify());
     }
     cx.notify();
     let outcome = "failed";

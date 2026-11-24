@@ -66,6 +66,11 @@ export function localTime(value, seconds = false) {
   return `${MONTHS[date.getMonth()]} ${date.getDate()}, ${clock}`;
 }
 
+export function refreshDuration(ms) {
+  const tenths = Math.round(Math.max(0, ms) / 100);
+  return `${(tenths / 10).toFixed(1)}s`;
+}
+
 export function duration(ms) {
   const minutes = Math.ceil(ms / 60_000);
   const hours = Math.floor(minutes / 60);
