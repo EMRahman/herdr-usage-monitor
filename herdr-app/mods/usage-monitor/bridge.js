@@ -1293,7 +1293,8 @@ function readHistory(file = historyFile(), since = 0) {
     db.close();
   }
 }
-var limitOf = (s) => `${s.p}\x00${s.g ?? ""}\x00${windowLength(s.w) ?? s.w}`;
+var windowOf = (s) => s.p === "antigravity" ? windowLength(s.w) ?? s.w : s.w;
+var limitOf = (s) => `${s.p}\x00${s.g ?? ""}\x00${windowOf(s)}`;
 var ROLLING = MINUTE;
 var CHARTED = new Set([5 * HOUR2, WEEK]);
 function readBurndowns(file = historyFile(), now = Date.now()) {

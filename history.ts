@@ -161,9 +161,12 @@ export function readHistory(file = historyFile(), since = 0): Entry[] {
   }
 }
 
-// A limit is known by its window length rather than its label, so the same limit read two ways
-// ("Five Hour Limit Remaining" from the agy CLI, "5h limit" from the API fallback) is one chart.
-const limitOf = (s: Sample) => `${s.p}\u0000${s.g ?? ""}\u0000${windowLength(s.w) ?? s.w}`;
+// An Antigravity limit is known by its window length rather than its label, so the same limit
+// read two ways ("Five Hour Limit Remaining" from the agy CLI, "5h limit" from the API fallback)
+// is one chart. Other providers keep their labels: Claude's "7d weekly", "7d Opus" and
+// "7d Sonnet" are separate limits of one length.
+const windowOf = (s: Sample) => (s.p === "antigravity" ? windowLength(s.w) ?? s.w : s.w);
+const limitOf = (s: Sample) => `${s.p}\u0000${s.g ?? ""}\u0000${windowOf(s)}`;
 // A full limit whose reset is a whole window after the reading hasn't started: the provider
 // quotes a reset that rolls forward with every read until the first request.
 const ROLLING = MINUTE;

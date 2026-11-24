@@ -249,6 +249,13 @@ describe("burndowns", () => {
     expect(burndowns(entries, NOW).map((c) => [c.provider, c.group])).toEqual([["antigravity", "Gemini"], ["codex", undefined]]);
   });
 
+  test("keeps a provider's separate limits of one length apart", () => {
+    const charts = burndowns([entry(NOW - HOUR,
+      { p: "claude", w: "7d weekly", left: 10, reset: null },
+      { p: "claude", w: "7d Sonnet", left: 80, reset: null })], NOW);
+    expect(charts.map((c) => [c.label, c.left])).toEqual([["7d weekly", 10], ["7d Sonnet", 80]]);
+  });
+
   test("charts one limit read under two labels as one window", () => {
     const reset = new Date(NOW + 4 * HOUR).toISOString();
     const entries = [
