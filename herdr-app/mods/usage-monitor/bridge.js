@@ -1293,7 +1293,8 @@ function readHistory(file = historyFile(), since = 0) {
     db.close();
   }
 }
-var limitOf = (s) => `${s.p}\x00${s.g ?? ""}\x00${s.w}`;
+var limitOf = (s) => `${s.p}\x00${s.g ?? ""}\x00${windowLength(s.w) ?? s.w}`;
+var ROLLING = MINUTE;
 var CHARTED = new Set([5 * HOUR2, WEEK]);
 function readBurndowns(file = historyFile(), now = Date.now()) {
   return burndowns(readHistory(file, now - WEEK - DAY2), now);
@@ -1325,14 +1326,24 @@ function burndowns(entries, now = Date.now()) {
     }
   }
   const result = [];
+  const latestRead = new Map;
+  for (const readings of series.values()) {
+    const { t, s } = readings.at(-1);
+    const key = `${s.p}\x00${accountOf(s)}`;
+    latestRead.set(key, Math.max(latestRead.get(key) ?? 0, t));
+  }
   for (const readings of series.values()) {
     const latest = readings.at(-1);
     if (now - latest.t > DAY2)
       continue;
+    if (latest.t < latestRead.get(`${latest.s.p}\x00${accountOf(latest.s)}`))
+      continue;
     const length = windowLength(latest.s.w);
     if (!length || !CHARTED.has(length))
       continue;
-    const reset = Date.parse(latest.s.reset ?? "");
+    const quoted = Date.parse(latest.s.reset ?? "");
+    const rolling = latest.s.left >= 100 && quoted >= latest.t + length - ROLLING;
+    const reset = rolling ? NaN : quoted;
     const unstarted = !Number.isFinite(reset) && latest.s.left >= 100;
     const end = Number.isFinite(reset) ? reset : unstarted ? now + length : now;
     const start = end - length;
@@ -1347,7 +1358,7 @@ function burndowns(entries, now = Date.now()) {
       start,
       end,
       left: latest.s.left,
-      reset: latest.s.reset,
+      reset: rolling ? null : latest.s.reset,
       runs: unstarted ? [[start, start, latest.s.left]] : runs(inWindow.map((r) => [r.t, r.s.left]), length, Math.min(now, end))
     });
   }

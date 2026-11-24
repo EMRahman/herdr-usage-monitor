@@ -237,4 +237,36 @@ describe("burndowns", () => {
     ];
     expect(burndowns(entries, NOW).map((c) => [c.group, c.left])).toEqual([["Gemini", 80], ["Claude & GPT", 40]]);
   });
+
+  test("drops a model group its provider no longer reports", () => {
+    const entries = [
+      entry(NOW - 3 * HOUR,
+        { p: "antigravity", g: "Gemini", w: "Weekly Limit Remaining", left: 90, reset: null },
+        { p: "antigravity", g: "Gemini 4 Argon", w: "Gemini 4 Argon Weekly Limit", left: 60, reset: null }),
+      entry(NOW - HOUR, { p: "antigravity", g: "Gemini", w: "Weekly Limit Remaining", left: 85, reset: null }),
+      entry(NOW - 2 * HOUR, { p: "codex", w: "Weekly", left: 50, reset: null }),
+    ];
+    expect(burndowns(entries, NOW).map((c) => [c.provider, c.group])).toEqual([["antigravity", "Gemini"], ["codex", undefined]]);
+  });
+
+  test("charts one limit read under two labels as one window", () => {
+    const reset = new Date(NOW + 4 * HOUR).toISOString();
+    const entries = [
+      entry(NOW - 4 * HOUR, { p: "antigravity", g: "Claude", w: "5h limit", left: 100, reset: new Date(NOW + HOUR).toISOString() }),
+      entry(NOW - 2 * HOUR, { p: "antigravity", g: "Claude", w: "Weekly limit", left: 60, reset: null }),
+      entry(NOW - 30 * MINUTE, { p: "antigravity", g: "Claude", w: "Five Hour Limit Remaining", left: 90, reset }),
+      entry(NOW - 10 * MINUTE, { p: "antigravity", g: "Claude", w: "Five Hour Limit Remaining", left: 70, reset },
+        { p: "antigravity", g: "Claude", w: "Weekly Limit Remaining", left: 55, reset: null }),
+    ];
+    const charts = burndowns(entries, NOW);
+    expect(charts.map((c) => [c.label, c.left])).toEqual([["Five Hour Limit Remaining", 70], ["Weekly Limit Remaining", 55]]);
+    expect(charts[0]!.end).toBe(NOW + 4 * HOUR);
+  });
+
+  test("treats a full limit with a reset rolling a window ahead as not started", () => {
+    const reset = new Date(NOW - 10 * MINUTE + 5 * HOUR + 3_000).toISOString();
+    const [chart] = burndowns([entry(NOW - 10 * MINUTE, { p: "antigravity", g: "Claude", w: "5h limit", left: 100, reset })], NOW);
+    expect(chart!.reset).toBeNull();
+    expect(chart!.start).toBe(NOW);
+  });
 });
