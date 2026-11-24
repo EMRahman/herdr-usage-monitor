@@ -86,6 +86,33 @@ function migrateV1ToV2(db: Database): void {
   `);
 }
 
+const BUSY_TIMEOUT_MS = 2000;
+
+const isBusy = (error: unknown) =>
+  typeof (error as { code?: unknown })?.code === "string" && (error as { code: string }).code.startsWith("SQLITE_BUSY");
+
+// Switching a new file to WAL needs an exclusive lock, and SQLite reports SQLITE_BUSY at once
+// rather than waiting out busy_timeout, so two bridge processes opening a fresh history
+// together would fail one of them. Retry within the same timeout; once any process has made
+// the switch, the file stays in WAL and the check needs no lock.
+function enableWal(db: Database): void {
+  const deadline = Date.now() + BUSY_TIMEOUT_MS;
+  for (let delay = 5; ; delay = Math.min(delay * 2, 50)) {
+    try {
+      const mode = db.query<{ journal_mode: string }, []>("PRAGMA journal_mode").get()?.journal_mode;
+      if (mode === "wal") return;
+      db.run("PRAGMA journal_mode = WAL");
+      return;
+    } catch (error) {
+      if (!isBusy(error) || Date.now() >= deadline) throw error;
+      Bun.sleepSync(delay);
+    }
+  }
+}
+
+const schemaVersion = (db: Database) =>
+  db.query<{ user_version: number }, []>("PRAGMA user_version").get()?.user_version ?? 0;
+
 export function openHistoryDatabase(file: string, readonly = false): Database {
   if (!readonly) {
     mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
@@ -93,14 +120,16 @@ export function openHistoryDatabase(file: string, readonly = false): Database {
   }
   const db = new Database(file, readonly ? { readonly: true } : { readwrite: true });
   try {
-    db.run("PRAGMA busy_timeout = 2000");
+    db.run(`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS}`);
     if (!readonly) {
-      db.run("PRAGMA journal_mode = WAL");
-      const version = db.query<{ user_version: number }, []>("PRAGMA user_version").get()?.user_version ?? 0;
-      if (version === 0) {
-        db.transaction(() => createV2Schema(db)).immediate();
-      } else if (version === 1) {
-        db.transaction(() => migrateV1ToV2(db)).immediate();
+      enableWal(db);
+      if (schemaVersion(db) < SCHEMA_VERSION) {
+        // Another process may have created or migrated the schema since the check above.
+        db.transaction(() => {
+          const version = schemaVersion(db);
+          if (version === 0) createV2Schema(db);
+          else if (version === 1) migrateV1ToV2(db);
+        }).immediate();
       }
     }
     return db;

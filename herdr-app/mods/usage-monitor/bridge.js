@@ -1188,6 +1188,25 @@ function migrateV1ToV2(db) {
     PRAGMA user_version = ${SCHEMA_VERSION};
   `);
 }
+var BUSY_TIMEOUT_MS = 2000;
+var isBusy = (error) => typeof error?.code === "string" && error.code.startsWith("SQLITE_BUSY");
+function enableWal(db) {
+  const deadline = Date.now() + BUSY_TIMEOUT_MS;
+  for (let delay = 5;; delay = Math.min(delay * 2, 50)) {
+    try {
+      const mode = db.query("PRAGMA journal_mode").get()?.journal_mode;
+      if (mode === "wal")
+        return;
+      db.run("PRAGMA journal_mode = WAL");
+      return;
+    } catch (error) {
+      if (!isBusy(error) || Date.now() >= deadline)
+        throw error;
+      Bun.sleepSync(delay);
+    }
+  }
+}
+var schemaVersion = (db) => db.query("PRAGMA user_version").get()?.user_version ?? 0;
 function openHistoryDatabase(file, readonly = false) {
   if (!readonly) {
     mkdirSync2(dirname(file), { recursive: true, mode: 448 });
@@ -1195,14 +1214,17 @@ function openHistoryDatabase(file, readonly = false) {
   }
   const db = new Database2(file, readonly ? { readonly: true } : { readwrite: true });
   try {
-    db.run("PRAGMA busy_timeout = 2000");
+    db.run(`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS}`);
     if (!readonly) {
-      db.run("PRAGMA journal_mode = WAL");
-      const version = db.query("PRAGMA user_version").get()?.user_version ?? 0;
-      if (version === 0) {
-        db.transaction(() => createV2Schema(db)).immediate();
-      } else if (version === 1) {
-        db.transaction(() => migrateV1ToV2(db)).immediate();
+      enableWal(db);
+      if (schemaVersion(db) < SCHEMA_VERSION) {
+        db.transaction(() => {
+          const version = schemaVersion(db);
+          if (version === 0)
+            createV2Schema(db);
+          else if (version === 1)
+            migrateV1ToV2(db);
+        }).immediate();
       }
     }
     return db;
