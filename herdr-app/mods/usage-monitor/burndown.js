@@ -170,6 +170,25 @@ function chart(t, b, activity, id, now) {
       .child(startLabel).child(end));
 }
 
+function activityForChart(b, activity) {
+  if (b.provider !== "antigravity" || !b.group) return activity;
+
+  const words = (name) => name.toLowerCase().match(/[a-z0-9]+/g) ?? [];
+  const group = words(b.group);
+  if (group[0] === "gemini" && /^\d/.test(group[1] ?? "")) {
+    // A quota can cover a single Gemini model, including variants with a suffix in the log.
+    const modelName = `-${group.join("-")}-`;
+    return activity.filter(({ model }) => `-${words(model).join("-")}-`.includes(modelName));
+  }
+
+  const families = group.filter((word) => word === "gemini" || word === "claude" || word === "gpt");
+  if (!families.length) return activity;
+  return activity.filter(({ model }) => {
+    const modelWords = words(model);
+    return families.some((family) => modelWords.includes(family));
+  });
+}
+
 /** Cards for the breakdown's columns: one per provider, a chart per 5-hour and weekly limit. */
 export function burndownCards(t, burndowns, modelUsage = [], now = Date.now()) {
   // The Allowances view's order: Claude, Codex, Antigravity, then the rest; within a provider,
@@ -194,9 +213,12 @@ export function burndownCards(t, burndowns, modelUsage = [], now = Date.now()) {
     if (!activityByProvider.has(event.provider)) activityByProvider.set(event.provider, []);
     activityByProvider.get(event.provider).push(event);
   }
-  return [...byProvider].map(([provider, list]) => ({
-    title: NAMES[provider] ?? provider,
-    rows: list.map((b, i) => chart(t, b, activityByProvider.get(provider) ?? [], `burndown-${provider}-${i}`, now)),
-    weight: list.length * 6,
-  }));
+  return [...byProvider].map(([provider, list]) => {
+    const activity = activityByProvider.get(provider) ?? [];
+    return {
+      title: NAMES[provider] ?? provider,
+      rows: list.map((b, i) => chart(t, b, activityForChart(b, activity), `burndown-${provider}-${i}`, now)),
+      weight: list.length * 6,
+    };
+  });
 }
