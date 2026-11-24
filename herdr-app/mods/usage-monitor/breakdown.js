@@ -3,7 +3,7 @@ import { h_flex, v_flex } from "gpui-base";
 import { LIGHT_LABEL, creditLight, light, lightColor, windowLength } from "./pace.js";
 import { burndownCards } from "./burndown.js";
 import { historicalView } from "./historical.js";
-import { duration, localTime, timed } from "./time.js";
+import { duration, sampleStatus, timed } from "./time.js";
 
 const PROVIDERS = { copilot: "GitHub Copilot", cursor: "Cursor", grok: "Grok", opencode: "OpenCode" };
 const WINDOWS = { session: "Session", day: "Daily", week: "Weekly", month: "Monthly" };
@@ -189,24 +189,25 @@ function keyHint(t, key) {
   return div().text_size(10).text_color(t.dim).child(key);
 }
 
-function refreshStatus(t, { manualRefresh, lastRefreshedAt }) {
-  const status = v_flex().flex_none().gap(1).text_size(11);
-  if (manualRefresh) {
-    const running = manualRefresh.elapsedMs === null;
-    const elapsed = manualRefresh.elapsedMs ?? Math.max(0, Date.now() - manualRefresh.startedAt);
-    const seconds = `${(elapsed / 1000).toFixed(1)}s`;
-    const label = manualRefresh.outcome === "failed" ? "Failed"
-      : manualRefresh.outcome === "unchanged" ? "No new readings" : "✓ Done";
-    const color = manualRefresh.outcome === "failed" ? t.blocked
-      : manualRefresh.outcome === "unchanged" ? t.muted : t.accent;
-    status.child(h_flex().gap(5).items_center().font_semibold()
-      .text_color(color)
-      .when(running, (el) => el.child(svg("mods/usage-monitor/refresh-spinner.svg")
-        .size(11).flex_none().text_color(t.accent).spin(750)))
-      .child(running ? seconds : `${label} · ${seconds}`));
+function refreshControls(t, report, state) {
+  const now = Date.now();
+  const sample = sampleStatus(report, now);
+  const status = v_flex().id("sample-age").h(28).justify_center().text_size(11)
+    .when(Boolean(sample.detail), (el) => el.tooltip(sample.detail))
+    .child(div().text_color(sample.stale ? t.ansi3 : t.foreground).child(sample.label));
+  if (state.refreshResult) {
+    const { outcome, elapsedMs } = state.refreshResult;
+    const label = outcome === "failed" ? "Refresh failed" : outcome === "unchanged" ? "No new readings" : "✓ Refreshed";
+    status.child(div().text_color(outcome === "failed" ? t.blocked : t.muted)
+      .child(`${label} · ${(elapsedMs / 1000).toFixed(1)}s`));
   }
-  const time = lastRefreshedAt ? localTime(lastRefreshedAt, true) : "—";
-  return status.child(div().text_color(t.muted).child(`Last refreshed ${time}`));
+  const label = state.pending ? h_flex().gap(5).items_center()
+    .child(svg("mods/usage-monitor/refresh-spinner.svg").size(11).flex_none().text_color(t.accent).spin(750))
+    .child(`Refreshing ${Math.max(0, Math.floor((now - state.startedAt) / 1000))}s`) : "Refresh";
+  return h_flex().items_center().gap(8)
+    .child(status)
+    .child(button(t, "refresh-usage", label, state.refresh, state.pending, state.pending ? "" : "R")
+      .w(114).justify_center());
 }
 
 // Allowances | Burndown | History, switched with A, B and H (U aliases A), or cycled with Space.
@@ -248,11 +249,9 @@ export function breakdown(t, report, state) {
   const spares = [];
   const cards = !burndown && !historical ? providerCards(t, report, spares) : [];
   const backfillPending = state.historical?.backfill?.pendingFiles > 0;
-  const message = state.error || (state.pending ? "Refreshing allowances…"
-    : historical && backfillPending ? `Indexing older logs (${state.historical.backfill.totalFiles - state.historical.backfill.pendingFiles}/${state.historical.backfill.totalFiles})…`
+  const message = state.error || (historical && backfillPending ? `Indexing older logs (${state.historical.backfill.totalFiles - state.historical.backfill.pendingFiles}/${state.historical.backfill.totalFiles})…`
     : historical && state.historicalPending ? "Loading usage history…"
-    : report?.partial ? "Partial report"
-    : state.stale ? "Cached allowances" : "");
+    : report?.partial ? "Partial report" : "");
   return v_flex().id("usage-root").size_full().overflow_hidden().bg(t.popover).text_color(t.foreground).text_size(12)
     .when(Boolean(state.focus), (el) => el.track_focus(state.focus).on_key_down(state.onKey))
     .on_size_change(state.onSize)
@@ -262,8 +261,7 @@ export function breakdown(t, report, state) {
         .child(div().text_size(16).font_semibold().child("Usage Monitor"))
         .child(views(t, view, state.setView)))
       .child(h_flex().flex_none().items_center().gap(8)
-        .child(button(t, "refresh-usage", "Refresh", state.refresh, state.pending, "R"))
-        .child(refreshStatus(t, state))
+        .child(refreshControls(t, report, state))
         .child(button(t, "close-usage", "Close", state.close))))
     .child(v_flex().id("usage-scroll").flex_1().min_h(0).overflow_y_scrollbar().p(16).gap(8)
       .when(historical, (el) => el.child(historicalView(t, state)))

@@ -5,14 +5,54 @@ const PAST = { Resets: "Reset", Expires: "Expired" };
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
-export function latestAllowanceReadAt(report) {
-  const readAt = report?.read_at;
-  if (!readAt) return 0;
-  const providers = ["claude", "codex", "antigravity"];
-  for (const provider of report.others ?? []) {
-    if (!provider.problem) providers.push(provider.id);
+// Only include providers whose allowances appear in this report.
+function allowanceSamples(report) {
+  const ids = ["claude", "codex", "antigravity"].filter((id) => report?.[id]);
+  for (const provider of report?.others ?? []) {
+    if (!provider.problem) ids.push(provider.id);
   }
-  return Math.max(0, ...providers.map((id) => readAt[id]).filter(Number.isFinite));
+  return ids.map((id) => {
+    const time = report.read_at?.[id];
+    return { id, at: Number.isFinite(time) && time > 0 ? time : 0 };
+  });
+}
+
+export function hasFreshAllowance(report) {
+  return allowanceSamples(report).some(({ at }) => at > 0 && at >= report.timestamp);
+}
+
+function sampleAge(at, now) {
+  const minutes = Math.max(0, Math.floor((now - at) / 60_000));
+  if (!minutes) return "just now";
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours >= 24) return `${Math.floor(hours / 24)}d${hours % 24 ? ` ${hours % 24}h` : ""} ago`;
+  return `${hours}h${minutes % 60 ? ` ${minutes % 60}m` : ""} ago`;
+}
+
+const SAMPLE_NAMES = { claude: "Claude", codex: "Codex", antigravity: "Antigravity",
+  cursor: "Cursor", copilot: "GitHub Copilot", grok: "Grok", opencode: "OpenCode" };
+const STALE_MS = 5 * 60_000;
+
+export function sampleStatus(report, now = Date.now()) {
+  const samples = allowanceSamples(report);
+  if (!samples.length) return { label: "No samples yet" };
+  if (!report.read_at && Number.isFinite(report.timestamp) && report.timestamp > 0) {
+    return {
+      label: `Cached report ${sampleAge(report.timestamp, now)}`,
+      detail: `Report saved ${localTime(report.timestamp, true)}. Individual sample times are unknown.`,
+      stale: now - report.timestamp >= STALE_MS,
+    };
+  }
+  const times = samples.map((s) => s.at).filter(Boolean);
+  const detail = samples.map(({ id, at }) => `${SAMPLE_NAMES[id] ?? id} · ${at
+    ? `${sampleAge(at, now)} (${localTime(at, true)})` : "sample age unknown"}`).join("\n");
+  if (!times.length) return { label: "Sample age unknown", detail };
+  const oldest = Math.min(...times);
+  const age = sampleAge(oldest, now);
+  const label = times.length < samples.length ? "Oldest known sample"
+    : age !== sampleAge(Math.max(...times), now) ? "Oldest sample" : "Sampled";
+  return { label: `${label} ${age}`, detail, stale: now - oldest >= STALE_MS };
 }
 
 // "3:56 PM" today, "Nov 25, 8:58 AM" on another day.

@@ -3,14 +3,13 @@ import { h_flex, v_flex } from "gpui-base";
 import { appHome, checking, closeOverlay, exec, home, layout, props, readTextFile, run, setShared, shared, theme } from "herdr";
 import { breakdown } from "./breakdown.js";
 import { normalizeChartPrefs, offsetForTimestamp } from "./historical.js";
-import { latestAllowanceReadAt } from "./time.js";
+import { hasFreshAllowance } from "./time.js";
 
 const ID = "usage-monitor";
 const REVISION = `${ID}.revision`;
 const CHART_PREFS = `${ID}.chartPrefs`;
-const LAST_MANUAL_REFRESH = `${ID}.lastManualRefresh`;
 const POLL_MS = 60_000;
-const STALE_MS = 5 * 60_000;
+const RESULT_MS = 5_000;
 const BACKFILL_DELAY_MS = 300;
 const VIEWS = ["allowances", "burndown", "historical"];
 const CHART_MODES = ["both", "bars", "line"];
@@ -20,7 +19,6 @@ const CHART_MODES = ["both", "bars", "line"];
 // copy's own: Herdr cancels a copy's pending calls when it closes or reloads, and a request
 // shared with other copies could then never settle and block them all.
 let snapshot = null;
-let latestReadAt = 0;
 let config = null;
 let bun = null;
 let error = "";
@@ -66,11 +64,11 @@ async function readUsage(args) {
   return JSON.parse(result.stdout);
 }
 
-function apply(next, readAt) {
-  const changed = Boolean(error) || readAt > latestReadAt
-    || (next.report && next.report.timestamp !== snapshot?.report?.timestamp);
-  if (next.report) snapshot = next;
-  latestReadAt = Math.max(latestReadAt, readAt);
+function apply(next) {
+  const previous = snapshot?.report;
+  // A sidebar poll and an overlay refresh can finish in either order.
+  if (next.report && (!previous || next.report.timestamp >= previous.timestamp)) snapshot = next;
+  const changed = Boolean(error) || previous?.timestamp !== snapshot?.report?.timestamp;
   error = "";
   if (changed) setShared(REVISION, Date.now());
 }
@@ -83,15 +81,11 @@ function fail(failure) {
   }
 }
 
-function lastRefreshedAt() {
-  const manual = shared(LAST_MANUAL_REFRESH);
-  return Math.max(latestReadAt, Number.isFinite(manual) ? manual : 0);
-}
-
 export default class UsageMonitor extends View {
   init(_props, cx) {
     this.since = 0;
-    this.manualRefresh = null;
+    this.refreshResult = null;
+    this.resultTimer = null;
     this.refreshTimer = null;
     this.view = "allowances";
     this.history = null;
@@ -136,6 +130,7 @@ export default class UsageMonitor extends View {
 
   close() {
     this.refreshTimer?.cancel();
+    this.resultTimer?.cancel();
     this.cancelBackfill();
   }
 
@@ -166,25 +161,23 @@ export default class UsageMonitor extends View {
     const startedAt = Date.now();
     const manual = args[0] === "--refresh";
     this.since = startedAt;
-    if (manual) {
-      this.manualRefresh = { startedAt, elapsedMs: null, previousRefreshAt: lastRefreshedAt() };
-      this.refreshTimer = cx.timer.every(100, (timerCx) => timerCx.notify());
+    if (this.handle) {
+      this.resultTimer?.cancel();
+      this.resultTimer = null;
+      this.refreshResult = null;
+      this.refreshTimer = cx.timer.every(1000, (timerCx) => timerCx.notify());
     }
     cx.notify();
     let outcome = "failed";
     try {
       try {
         const next = await readUsage(args);
-        const readAt = latestAllowanceReadAt(next.report);
-        // A legacy cache has only the report timestamp. New reports also record the age of each reading.
-        const legacyTime = args[0] === "--cached" && !next.report?.read_at ? next.report?.timestamp : 0;
-        apply(next, readAt || legacyTime || 0);
-        if (next.report) outcome = readAt > 0 && readAt >= next.report.timestamp ? "done" : "unchanged";
+        apply(next);
+        if (manual && next.report) {
+          outcome = hasFreshAllowance(next.report) ? "done" : "unchanged";
+        }
       } catch (failure) {
         fail(failure);
-      } finally {
-        this.since = 0;
-        cx.notify();
       }
       if (this.view === "burndown") {
         await this.readHistory(cx);
@@ -194,14 +187,18 @@ export default class UsageMonitor extends View {
         if (this.historicalError) outcome = "failed";
       }
     } finally {
+      this.since = 0;
+      this.refreshTimer?.cancel();
+      this.refreshTimer = null;
       if (manual) {
-        const finishedAt = Date.now();
-        this.refreshTimer.cancel();
-        this.refreshTimer = null;
-        this.manualRefresh = { elapsedMs: Math.max(0, finishedAt - startedAt), outcome };
-        if (outcome === "done") setShared(LAST_MANUAL_REFRESH, finishedAt);
-        cx.notify();
+        this.refreshResult = { elapsedMs: Math.max(0, Date.now() - startedAt), outcome };
+        this.resultTimer = cx.timer.after(RESULT_MS, (timerCx) => {
+          this.resultTimer = null;
+          this.refreshResult = null;
+          timerCx.notify();
+        });
       }
+      cx.notify();
     }
   }
 
@@ -443,10 +440,9 @@ export default class UsageMonitor extends View {
     if (overlay) {
       return breakdown(t, snapshot?.report, {
         pending: this.busy(),
-        manualRefresh: this.manualRefresh,
-        lastRefreshedAt: this.manualRefresh?.previousRefreshAt ?? lastRefreshedAt(),
+        startedAt: this.since,
+        refreshResult: this.refreshResult,
         error,
-        stale: snapshot?.report?.partial || (latestReadAt > 0 && Date.now() - latestReadAt > STALE_MS),
         refresh: (_event, cx) => this.refresh(cx),
         close: () => closeOverlay(overlay),
         view: this.view,

@@ -54,8 +54,8 @@ const buckets = (group) => burndowns.filter((b) => b.group === group)
   .map((b) => ({ label: b.label, remaining_percent: b.left, resets_at: b.reset }));
 
 const report = {
-  timestamp: now,
-  read_at: { claude: now, codex: now, antigravity: now },
+  timestamp: now - 120_000,
+  read_at: { claude: now - 120_000, codex: now - 120_000, antigravity: now - 120_000 },
   claude: {
     plan: "Pro", windows: windows("claude"),
     extra_usage: { used: "£8.16", limit: "£15.39", balance_left: "£7.23", used_percent: 53 },

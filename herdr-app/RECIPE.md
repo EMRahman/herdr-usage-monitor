@@ -23,9 +23,10 @@ history across models.
 - **The breakdown** is a dialog covering 90% of the window, `popover`
   background, 12px text:
   - A header with "Usage Monitor" (16px semibold), the `Allowances A | Burndown B | History H` view switcher, and Refresh and Close buttons (28px high, `raised`).
-    Beside Refresh, an 11px spinner and elapsed seconds appear during a manual
-    refresh. The final duration stays visible with Done, No new readings, or
-    Failed. The last refreshed time is always shown, down to the second.
+    The header shows the age of the allowance samples. When ages differ, it
+    shows the oldest. Hover for individual sample times. A sample at least five
+    minutes old is shown in yellow. During a refresh the button shows a
+    spinner and elapsed seconds.
   - An **Untapped allowance** panel across the full width (a card with a green
     border when anything is listed): every untapped window, soonest reset
     first, as `● Claude  5h session ··· 47% left · ≈27% spare · resets in 1h 0m`.
@@ -42,7 +43,7 @@ history across models.
   - Antigravity groups its limits under each model group's name and models.
     Codex lists its reset credits with their expiry. Claude's Extra usage shows
     the spend and balance with a grey bar and no light.
-  - A footer shows loading, cached or partial data, and error messages as needed.
+  - A footer shows history loading progress, partial reports, and errors as needed.
 
 - **Burndown**, the dialog's second view (in the `Allowances | Burndown | History`
   switch beside the title, the chosen one on `selected`): an intro line, then one card
@@ -192,10 +193,10 @@ history across models.
 - Cmd+U and clicking the readout open the breakdown; Cmd+U again closes it.
 - A window with much more allowance left than time left shows green and appears
   in Untapped allowance; the tick on its bar sits left of the fill.
-- Pressing R or clicking Refresh starts the spinner and stopwatch. A successful
-  refresh replaces the spinner with "✓ Done", freezes the elapsed seconds,
-  and advances the last refreshed time. If providers only return cached readings,
-  the stopwatch ends with "No new readings" and keeps the previous time.
+- Pressing R or clicking Refresh starts the spinner and stopwatch. The sample
+  age stays visible. A manual refresh shows its outcome and duration for five
+  seconds. A cached-only refresh shows “No new readings” and the age continues
+  from the original sample.
 - Closing the breakdown during a refresh, then reopening it, still loads.
 - After a few reads, each Burndown line ends with a dot at the last recorded
   allowance level. Hovering the chart shows the reading for that time slice.
