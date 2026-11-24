@@ -32,7 +32,7 @@ const layoutArg = layoutFlag === -1 ? undefined : process.argv[layoutFlag + 1];
 const BLOCK: LayoutNode = { id: MOD, type: "block", size: { px: 36 }, content: { mod: MOD } };
 
 // Everything the mod needs. bridge.js is the provider code, prebuilt by build.ts.
-const FILES = ["mod.json", "main.js", "breakdown.js", "burndown.js", "historical.js", "pace.js", "time.js", "gauge.svg", "bridge.js"];
+const FILES = ["mod.json", "main.js", "breakdown.js", "burndown.js", "historical.js", "pace.js", "time.js", "gauge.svg", "refresh-spinner.svg", "bridge.js"];
 
 // Optional: the mod also works without it, finding Bun on the PATH.
 interface Config {

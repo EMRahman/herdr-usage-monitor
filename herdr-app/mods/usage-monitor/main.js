@@ -7,6 +7,7 @@ import { normalizeChartPrefs, offsetForTimestamp } from "./historical.js";
 const ID = "usage-monitor";
 const REVISION = `${ID}.revision`;
 const CHART_PREFS = `${ID}.chartPrefs`;
+const LAST_MANUAL_REFRESH = `${ID}.lastManualRefresh`;
 const POLL_MS = 60_000;
 const STALE_MS = 5 * 60_000;
 const BACKFILL_DELAY_MS = 300;
@@ -78,9 +79,16 @@ function fail(failure) {
   }
 }
 
+function lastRefreshedAt() {
+  const manual = shared(LAST_MANUAL_REFRESH);
+  return Math.max(snapshot?.report?.timestamp ?? 0, Number.isFinite(manual) ? manual : 0);
+}
+
 export default class UsageMonitor extends View {
   init(_props, cx) {
     this.since = 0;
+    this.manualRefresh = null;
+    this.refreshTimer = null;
     this.view = "allowances";
     this.history = null;
     this.historyError = "";
@@ -123,6 +131,7 @@ export default class UsageMonitor extends View {
   }
 
   close() {
+    this.refreshTimer?.cancel();
     this.cancelBackfill();
   }
 
@@ -143,25 +152,50 @@ export default class UsageMonitor extends View {
   }
 
   busy() {
-    return Date.now() - this.since < BUSY_MS;
+    return this.refreshTimer !== null || Date.now() - this.since < BUSY_MS;
   }
 
   // --cached: whatever is cached, at once. No flag: refreshes when the cache is 3 minutes old.
   // --refresh: asks the providers now.
   async read(cx, args) {
     if (this.busy()) return;
-    this.since = Date.now();
-    cx.notify();
-    try {
-      apply(await readUsage(args));
-    } catch (failure) {
-      fail(failure);
-    } finally {
-      this.since = 0;
-      cx.notify();
+    const startedAt = Date.now();
+    const manual = args[0] === "--refresh";
+    this.since = startedAt;
+    if (manual) {
+      this.manualRefresh = { startedAt, elapsedMs: null, previousRefreshAt: lastRefreshedAt() };
+      this.refreshTimer = cx.timer.every(100, (timerCx) => timerCx.notify());
     }
-    if (this.view === "burndown") await this.readHistory(cx);
-    else if (this.view === "historical") await this.readHistorical(cx, { sync: this.backfill.pendingFiles > 0 });
+    cx.notify();
+    let succeeded = false;
+    try {
+      try {
+        const next = await readUsage(args);
+        apply(next);
+        succeeded = Boolean(next.report);
+      } catch (failure) {
+        fail(failure);
+      } finally {
+        this.since = 0;
+        cx.notify();
+      }
+      if (this.view === "burndown") {
+        await this.readHistory(cx);
+        succeeded &&= !this.historyError;
+      } else if (this.view === "historical") {
+        await this.readHistorical(cx, { sync: this.backfill.pendingFiles > 0 });
+        succeeded &&= !this.historicalError;
+      }
+    } finally {
+      if (manual) {
+        const finishedAt = Date.now();
+        this.refreshTimer.cancel();
+        this.refreshTimer = null;
+        this.manualRefresh = { elapsedMs: Math.max(0, finishedAt - startedAt), failed: !succeeded };
+        if (succeeded) setShared(LAST_MANUAL_REFRESH, finishedAt);
+        cx.notify();
+      }
+    }
   }
 
   setView(view, cx) {
@@ -402,6 +436,8 @@ export default class UsageMonitor extends View {
     if (overlay) {
       return breakdown(t, snapshot?.report, {
         pending: this.busy(),
+        manualRefresh: this.manualRefresh,
+        lastRefreshedAt: this.manualRefresh?.previousRefreshAt ?? lastRefreshedAt(),
         error,
         stale: snapshot?.report?.partial || Date.now() - snapshot?.report?.timestamp > STALE_MS,
         refresh: (_event, cx) => this.refresh(cx),

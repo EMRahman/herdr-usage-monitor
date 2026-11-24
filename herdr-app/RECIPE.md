@@ -23,6 +23,9 @@ history across models.
 - **The breakdown** is a dialog covering 90% of the window, `popover`
   background, 12px text:
   - A header with "Usage Monitor" (16px semibold), the `Allowances A | Burndown B | History H` view switcher, and Refresh and Close buttons (28px high, `raised`).
+    Beside Refresh, an 11px spinner and elapsed seconds appear during a manual
+    refresh. A Done or Failed label leaves the final duration visible. The
+    last refreshed time is always shown, down to the second.
   - An **Untapped allowance** panel across the full width (a card with a green
     border when anything is listed): every untapped window, soonest reset
     first, as `● Claude  5h session ··· 47% left · ≈27% spare · resets in 1h 0m`.
@@ -39,8 +42,7 @@ history across models.
   - Antigravity groups its limits under each model group's name and models.
     Codex lists its reset credits with their expiry. Claude's Extra usage shows
     the spend and balance with a grey bar and no light.
-  - A footer: "Updated · 11:20 AM", "Cached · …" when older than 5 minutes,
-    "Refreshing allowances…" while reading, or the error in red.
+  - A footer shows loading, cached or partial data, and error messages as needed.
 
 - **Burndown**, the dialog's second view (in the `Allowances | Burndown | History`
   switch beside the title, the chosen one on `selected`): an intro line, then one card
@@ -192,8 +194,9 @@ history across models.
 - Cmd+U and clicking the readout open the breakdown; Cmd+U again closes it.
 - A window with much more allowance left than time left shows green and appears
   in Untapped allowance; the tick on its bar sits left of the fill.
-- Refresh greys out, the footer says "Refreshing allowances…", then "Updated"
-  with the current time.
+- Pressing R or clicking Refresh starts the spinner and stopwatch. A successful
+  refresh replaces the spinner with "✓ Done", freezes the elapsed seconds,
+  and advances the last refreshed time.
 - Closing the breakdown during a refresh, then reopening it, still loads.
 - After a few reads, Burndown shows a line in each 5-hour and weekly chart,
   ending at the now marker, and hovering it shows the reading there.
