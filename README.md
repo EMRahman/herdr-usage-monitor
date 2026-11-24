@@ -113,6 +113,8 @@ bun run check:mod     # fail if bridge.js is out of date
 ```
 
 The installer also rebuilds it on every run. Run the tests with `bun test`. Check the mod itself with `herdr-app check herdr-app/mods/usage-monitor`.
+
+After changing how the breakdown looks, refresh the screenshots with `bun run screenshots` (macOS, with the Herdr app installed). It renders sample readings in a throwaway Herdr window, rewrites `docs/herdr-app-*.png` and the cards in `herdr-app/preview.png`, and doesn't touch your own Herdr, terminals or usage history.
 </details>
 
 ## License
