@@ -24,7 +24,7 @@ Press <kbd>B</kbd> for **Burndown** (or <kbd>H</kbd> for **History**, and <kbd>S
 
 Press <kbd>H</kbd> to switch to **History**, which graphs local model usage and token counts with both a stacked bar chart and a line graph across `D/W/M/Y` horizons (see [Usage history](#usage-history)):
 
-![Usage history panel in the Herdr app, showing D/W/M/Y horizon controls, KPI summary strip, stacked bar chart by model, multi-line usage graph over time with dashed total line, and Top models breakdown](docs/herdr-app-historical.png)
+![Usage history in Herdr with daily bars split into input, output, and prompt cache. The line graph shows each running count and a dashed combined total.](docs/herdr-app-historical.png)
 
 ## Quick start
 
@@ -68,7 +68,9 @@ Upgrading from the JSONL version starts a fresh chart history in `history.sqlite
 
 ## Usage history
 
-Switch to **History** (press <kbd>H</kbd>, or cycle with <kbd>Space</kbd>) to inspect local model usage and token consumption across **Day (`D`, hourly)**, **Week (`W`, daily)**, **Month (`M`, daily)**, and **Year (`Y`, 52 weekly buckets)** calendar horizons. Use <kbd>[</kbd> and <kbd>]</kbd> to step backward and forward through past periods (<kbd>T</kbd> returns to the current period), <kbd>G</kbd> to toggle between **Both**, **Bars**, and **Line** views, and <kbd>C</kbd> to include or exclude prompt cache tokens. Click any model in the legend or **Top models** list to filter both charts.
+Switch to **History** (press <kbd>H</kbd>, or cycle with <kbd>Space</kbd>) to inspect local model usage and token consumption across **Day (`D`, hourly)**, **Week (`W`, daily)**, **Month (`M`, daily)**, and **Year (`Y`, 52 weekly buckets)** calendar horizons. Use <kbd>[</kbd> and <kbd>]</kbd> to step backward and forward through past periods (<kbd>T</kbd> returns to the current period). Press <kbd>G</kbd> to cycle between **Both**, **Bars**, and **Line** views.
+
+Choose **Input & output** (or press <kbd>I</kbd> to switch from **By model**) to split both graphs by token type. Each bar stacks uncached input and output for one interval. With **Cache** on (<kbd>C</kbd>), prompt cache reads and writes form a third segment. Output includes reported reasoning tokens. On the line graph, choose **Cumulative** to see each type’s running count since the start of the period. The dashed line shows their combined total. Hover either graph for exact counts, or select a model in **Top models** to narrow both graphs.
 
 ## What it shows
 

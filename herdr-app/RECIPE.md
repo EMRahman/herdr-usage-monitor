@@ -72,7 +72,9 @@ history across models.
     48th of the window. Claude and Codex tooltips also show the local model
     and reasoning effort combinations logged in that time slice.
 
-- **History**, the dialog's third view (shortcut <kbd>H</kbd>; `Allowances A | Burndown B | History H`, cycled with <kbd>Space</kbd>): local model usage and token counts from `history.sqlite` across calendar-aligned **D** (24 hourly), **W** (7 daily), **M** (daily), and **Y** (52 weekly) horizons, with `[` / `]` period stepping, Provider and Model filter popovers, a `Cache: On/Off` toggle (`C`), a 5-stat summary strip, both a categorical **Tokens by model** stacked bar chart (top 7 models + `Other`) and a native GPUI `PathBuilder` **Usage over time** line graph (`Per model` / `Cumulative`, toggled via `G` between `Both | Bars | Line`), and a clickable 2-column **Top models** breakdown with period-over-period Δ% and reasoning effort mix. Chart selections (horizon, chart/line mode, cache toggle, and filters) persist across overlay closes and restarts via Herdr's `shared("usage-monitor.chartPrefs")`.
+- **History** (<kbd>H</kbd>) charts local usage from `history.sqlite` across day, week, month, and year horizons (`D/W/M/Y`). Use `[` / `]` to step through periods and filter by provider or model. A five-stat summary and clickable **Top models** list show totals, period-over-period changes, and reasoning effort mix.
+  - Press `G` to cycle between **Both**, **Bars**, and **Line**. Press `I` to switch both graphs between **By model** (top seven models plus **Other**) and **Input & output**. In the split view, `C` includes or excludes the **Prompt cache** series for cache reads and writes.
+  - The stacked bars show tokens per interval. The **Usage over time** line graph supports **Per interval** and **Cumulative**. In the split view, the dashed line shows the combined total. Herdr saves the chart selections and filters in `shared("usage-monitor.chartPrefs")`.
 
 ## How it behaves
 

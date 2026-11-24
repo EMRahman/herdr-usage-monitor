@@ -101,6 +101,7 @@ export default class UsageMonitor extends View {
     this.modelFilter = saved.modelFilter;
     this.includeCache = saved.includeCache;
     this.chartMode = saved.chartMode;
+    this.groupBy = saved.groupBy;
     this.lineMode = saved.lineMode;
     this.openFilter = null;
     this.historical = null;
@@ -112,7 +113,7 @@ export default class UsageMonitor extends View {
     this.backfillTimer = null;
 
     // The breakdown takes the keyboard for its shortcuts: R refreshes, A/B/H switch views
-    // (U aliases A), Space cycles them, and D/W/M/Y/[/]/T/G/C control History.
+    // (U aliases A), Space cycles them, and D/W/M/Y/[/]/T/G/I/C control History.
     if (props()?.overlay) {
       this.handle = cx.focus_handle();
       this.handle.focus();
@@ -221,6 +222,7 @@ export default class UsageMonitor extends View {
       setShared(CHART_PREFS, {
         horizon: this.horizon,
         chartMode: this.chartMode,
+        groupBy: this.groupBy,
         lineMode: this.lineMode,
         includeCache: this.includeCache,
         providerFilter: this.providerFilter,
@@ -314,6 +316,13 @@ export default class UsageMonitor extends View {
     cx.notify();
   }
 
+  setGroupBy(groupBy, cx) {
+    if (this.groupBy === groupBy) return;
+    this.groupBy = groupBy;
+    this.saveChartPrefs();
+    cx.notify();
+  }
+
   onKey(event, cx) {
     const key = event.keystroke;
     if (key === "escape" && this.openFilter) {
@@ -355,6 +364,9 @@ export default class UsageMonitor extends View {
       cx.stop_propagation();
     } else if (key === "g") {
       this.cycleChartMode(cx);
+      cx.stop_propagation();
+    } else if (key === "i") {
+      this.setGroupBy(this.groupBy === "model" ? "type" : "model", cx);
       cx.stop_propagation();
     } else if (key === "c") {
       this.toggleCache(cx);
@@ -458,6 +470,7 @@ export default class UsageMonitor extends View {
         modelFilter: this.modelFilter,
         includeCache: this.includeCache,
         chartMode: this.chartMode,
+        groupBy: this.groupBy,
         lineMode: this.lineMode,
         openFilter: this.openFilter,
         setOpenFilter: (id, cx) => {
@@ -473,6 +486,7 @@ export default class UsageMonitor extends View {
         clearFilters: (cx) => this.clearFilters(cx),
         toggleCache: (cx) => this.toggleCache(cx),
         setChartMode: (mode, cx) => this.setChartMode(mode, cx),
+        setGroupBy: (groupBy, cx) => this.setGroupBy(groupBy, cx),
         setLineMode: (mode, cx) => this.setLineMode(mode, cx),
         retryHistorical: (cx) => cx.spawn((nextCx) => this.readHistorical(nextCx, { sync: true })),
         focus: this.handle,

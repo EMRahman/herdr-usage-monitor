@@ -42,13 +42,25 @@ const CHART_MODES = [
 ];
 
 const LINE_MODES = [
-  { key: "models", label: "Per model" },
+  { key: "models", label: "Per interval" },
   { key: "cumulative", label: "Cumulative" },
 ];
+
+const GROUPINGS = [
+  { key: "model", label: "By model", tip: "Group tokens by model (I)" },
+  { key: "type", label: "Input & output", tip: "Split tokens by type (I)" },
+];
+
+const TOKEN_COLORS = new Map([
+  ["Input", "#3b82f6"],
+  ["Output", "#ea7a2e"],
+  ["Prompt cache", "#14b8a6"],
+]);
 
 export const DEFAULT_CHART_PREFS = {
   horizon: "m",
   chartMode: "both",
+  groupBy: "model",
   lineMode: "models",
   includeCache: true,
   providerFilter: "all",
@@ -73,6 +85,7 @@ export function normalizeChartPrefs(raw) {
   return {
     horizon: VALID_HORIZONS.has(obj.horizon) ? obj.horizon : DEFAULT_CHART_PREFS.horizon,
     chartMode: VALID_CHART_MODES.has(obj.chartMode) ? obj.chartMode : DEFAULT_CHART_PREFS.chartMode,
+    groupBy: obj.groupBy === "type" ? "type" : DEFAULT_CHART_PREFS.groupBy,
     lineMode: VALID_LINE_MODES.has(obj.lineMode) ? obj.lineMode : DEFAULT_CHART_PREFS.lineMode,
     includeCache: typeof obj.includeCache === "boolean" ? obj.includeCache : DEFAULT_CHART_PREFS.includeCache,
     providerFilter: cleanFilter(obj.providerFilter),
@@ -275,6 +288,7 @@ function controlsBar(t, data, state) {
         .child("Clear filters"))))
     .child(h_flex().flex_wrap().items_center().gap(8)
       .child(cacheBtn)
+      .child(segmentedPill(t, "hist-group", GROUPINGS, state.groupBy, state.setGroupBy, "I"))
       .child(segmentedPill(t, "hist-chart-mode", CHART_MODES, state.chartMode, state.setChartMode, "G")));
 }
 
@@ -365,21 +379,44 @@ function kpiStrip(t, data, colors, width) {
   return surfaceCard(t, rows, 10);
 }
 
-function seriesLegend(t, models, colors, activeModel, onPickModel) {
-  if (!models.length) return null;
+function chartSeries(data, modelColors, groupBy) {
+  const byType = groupBy === "type";
+  const colors = byType ? TOKEN_COLORS : modelColors;
+  const names = byType
+    ? [...TOKEN_COLORS.keys()].filter((name) => data.includeCache || name !== "Prompt cache")
+    : data.series.models;
+  const running = {};
+  const buckets = data.series.buckets.map((bucket) => {
+    if (!byType) return { ...bucket, values: bucket.byModel, cumulative: bucket.cumulativeByModel };
+    const values = { Input: bucket.input, Output: bucket.output };
+    if (data.includeCache) values["Prompt cache"] = bucket.cacheRead + bucket.cacheWrite;
+    const cumulative = {};
+    if (!bucket.future) {
+      for (const name of names) {
+        running[name] = (running[name] ?? 0) + values[name];
+        cumulative[name] = running[name];
+      }
+    }
+    return { ...bucket, values, cumulative };
+  });
+  return { names, colors, buckets, byType };
+}
+
+function seriesLegend(t, { names, colors, byType }, state) {
+  if (!names.length) return null;
   return h_flex().w_full().flex_wrap().gap(6).items_center()
-    .children(models.map((name) => {
-      const clickable = name !== "Other";
-      const selected = clickable && activeModel === name;
+    .children(names.map((name) => {
+      const clickable = !byType && name !== "Other";
+      const selected = clickable && state.modelFilter === name;
       const chip = h_flex().px(6).py(2).gap(5).items_center().rounded(4)
         .when(selected, (el) => el.bg(t.selected))
         .when(clickable && !selected, (el) => el.hover((s) => s.bg(t.hover)).cursor_pointer())
         .when(clickable, (el) => el.cursor_pointer().on_click((_event, cx) =>
-          onPickModel(selected ? "all" : name, cx)))
+          state.setModelFilter(selected ? "all" : name, cx)))
         .child(div().size(8).flex_none().rounded_full().bg(colors.get(name) ?? OTHER_COLOR))
         .child(div().max_w(190).truncate().text_size(10.5)
           .text_color(selected ? t.foreground : t.muted)
-          .tooltip(clickable ? `${name} · click to ${selected ? "clear filter" : "filter"}` : "All remaining models")
+          .when(!byType, (el) => el.tooltip(clickable ? `${name} · click to ${selected ? "clear filter" : "filter"}` : "All remaining models"))
           .child(name));
       return chip;
     }));
@@ -417,9 +454,9 @@ function gridLines(t, plotH) {
     div().absolute().left(0).w_full().h(1).top(top).bg(t.border));
 }
 
-function bucketTooltip(t, bucket, models, colors, includeCache, cumulative = false) {
+function bucketTooltip(t, bucket, { names, colors, byType }, includeCache, cumulative = false) {
   const valueTotal = cumulative ? bucket.cumulativeTotal : bucket.total;
-  const map = cumulative ? bucket.cumulativeByModel : bucket.byModel;
+  const values = cumulative ? bucket.cumulative : bucket.values;
   const rows = [];
   rows.push(div().font_semibold().text_color(t.foreground).child(bucket.label));
   if (bucket.future) {
@@ -432,7 +469,7 @@ function bucketTooltip(t, bucket, models, colors, includeCache, cumulative = fal
         ? `${formatInt(valueTotal)} cumulative tokens`
         : `${formatInt(valueTotal)} tokens · ${formatInt(bucket.events)} ${bucket.events === 1 ? "call" : "calls"}`,
     ));
-    if (!cumulative) {
+    if (!cumulative && !byType) {
       const parts = [
         `In ${formatCompact(bucket.input)}`,
         `Out ${formatCompact(bucket.output)}`,
@@ -442,17 +479,16 @@ function bucketTooltip(t, bucket, models, colors, includeCache, cumulative = fal
       }
       rows.push(div().text_size(10.5).text_color(t.muted).child(parts.join(" · ")));
     }
-    const activeModels = models
-      .map((name) => ({ name, tokens: map?.[name] ?? 0 }))
-      .filter((entry) => entry.tokens > 0)
-      .sort((a, b) => b.tokens - a.tokens);
-    for (const entry of activeModels) {
+    const entries = names.map((name) => ({ name, tokens: values?.[name] ?? 0 }));
+    if (!byType) entries.sort((a, b) => b.tokens - a.tokens);
+    for (const entry of entries) {
+      if (!byType && entry.tokens === 0) continue;
       const share = valueTotal > 0 ? Math.round((entry.tokens / valueTotal) * 1000) / 10 : 0;
       rows.push(h_flex().justify_between().items_center().gap(12)
         .child(h_flex().min_w(0).gap(5).items_center()
           .child(div().size(7).flex_none().rounded_full().bg(colors.get(entry.name) ?? OTHER_COLOR))
           .child(div().max_w(170).truncate().text_color(t.foreground).child(entry.name)))
-        .child(div().flex_none().text_color(t.muted).child(`${formatCompact(entry.tokens)} (${share}%)`)));
+        .child(div().flex_none().text_color(t.muted).child(`${byType ? formatInt(entry.tokens) : formatCompact(entry.tokens)} (${share}%)`)));
     }
   }
   return v_flex().gap(3).min_w(210).max_w(320).px(9).py(7).rounded(6)
@@ -461,15 +497,16 @@ function bucketTooltip(t, bucket, models, colors, includeCache, cumulative = fal
 }
 
 /** Stacked bar chart card (inspired by herdr-insights, native to usage-monitor). */
-export function stackedBarCard(t, data, colors, state) {
-  const { buckets, models, maxBucketTotal } = data.series;
+export function stackedBarCard(t, data, modelColors, state) {
+  const series = chartSeries(data, modelColors, state.groupBy);
+  const { buckets, names, colors, byType } = series;
   const plotH = state.chartMode === "bars" ? PLOT_SINGLE : PLOT_BOTH;
-  const yMax = niceMax(maxBucketTotal);
+  const yMax = niceMax(data.series.maxBucketTotal);
   const gap = buckets.length > 36 ? 1 : 2;
 
   const children = [
     h_flex().w_full().flex_wrap().justify_between().items_center().gap(8)
-      .child(div().font_semibold().text_size(14).child("Tokens by model"))
+      .child(div().font_semibold().text_size(14).child(byType ? "Tokens by type" : "Tokens by model"))
       .child(div().text_size(11).text_color(t.muted)
         .child(`${data.range.label} · ${data.range.subtitle} · ${formatCompact(data.summary.totalTokens)} tokens`)),
   ];
@@ -478,12 +515,12 @@ export function stackedBarCard(t, data, colors, state) {
     children.push(div().py(24).text_center().text_size(12).text_color(t.muted)
       .child("No token usage recorded in this period."));
   } else {
-    const reverseOrder = [...models].reverse();
+    const reverseOrder = [...names].reverse();
     const columns = buckets.map((bucket, idx) => {
       const segments = [];
       if (!bucket.future && bucket.total > 0) {
         for (const name of reverseOrder) {
-          const tokens = bucket.byModel[name] ?? 0;
+          const tokens = bucket.values[name] ?? 0;
           if (tokens > 0) segments.push({ name, tokens });
         }
       }
@@ -505,7 +542,7 @@ export function stackedBarCard(t, data, colors, state) {
         HoverCard.new(`hist-bar-${data.horizon}-${data.offset}-${idx}`)
           .open_delay(0).close_delay(0)
           .trigger(trigger)
-          .content(bucketTooltip(t, bucket, models, colors, data.includeCache, false)),
+          .content(bucketTooltip(t, bucket, series, data.includeCache)),
       );
     });
 
@@ -517,7 +554,7 @@ export function stackedBarCard(t, data, colors, state) {
           .child(h_flex().relative().size_full().gap(gap).items_end().children(columns))),
       xAxisLabels(t, buckets),
     );
-    const legend = seriesLegend(t, models, colors, state.modelFilter, state.setModelFilter);
+    const legend = seriesLegend(t, series, state);
     if (legend) children.push(legend);
   }
 
@@ -584,31 +621,26 @@ function paintLineSeries(points, color, plotH, options = {}) {
 }
 
 /** Line graph over time card (native GPUI PathBuilder polylines + interactive crosshair hover). */
-export function lineGraphCard(t, data, colors, state) {
-  const { buckets, models, maxBucketTotal, maxCumulativeTotal } = data.series;
+export function lineGraphCard(t, data, modelColors, state) {
+  const series = chartSeries(data, modelColors, state.groupBy);
+  const { buckets, names, colors, byType } = series;
   const cumulative = state.lineMode === "cumulative";
   const plotH = state.chartMode === "line" ? PLOT_SINGLE : PLOT_BOTH;
   const count = buckets.length;
 
-  // In per-model mode, include the Total dashed line when >1 model is visible so overall trajectory is clear.
-  const showTotalLine = !cumulative && models.length > 1;
-  const rawMax = cumulative
-    ? maxCumulativeTotal
-    : (showTotalLine ? maxBucketTotal : data.series.maxModelBucket || maxBucketTotal);
-  const yMax = niceMax(rawMax);
+  const filledTotal = cumulative && !byType;
+  const multiple = names.length > 1;
+  const yMax = niceMax(cumulative ? data.series.maxCumulativeTotal : data.series.maxBucketTotal);
 
   const lineModeToggle = segmentedPill(t, "hist-line-mode", LINE_MODES, state.lineMode, state.setLineMode);
-  const subtitle = cumulative
-    ? `Cumulative tokens · ${data.range.label}`
-    : showTotalLine
-      ? "Per-model token trajectory (dashed line = total)"
-      : `Token trajectory · ${data.range.label}`;
+  const subtitle = cumulative ? "Cumulative tokens" : "Tokens per interval";
+  const detail = multiple && !filledTotal ? "dashed line = total" : data.range.label;
 
   const children = [
     h_flex().w_full().flex_wrap().justify_between().items_center().gap(8)
       .child(v_flex().gap(2)
         .child(div().font_semibold().text_size(14).child("Usage over time"))
-        .child(div().text_size(11).text_color(t.muted).child(subtitle)))
+        .child(div().text_size(11).text_color(t.muted).child(`${subtitle} · ${detail}`)))
       .child(lineModeToggle),
   ];
 
@@ -634,53 +666,32 @@ export function lineGraphCard(t, data, colors, state) {
     }
 
     if (elapsed.length > 0) {
-      if (cumulative) {
-        const totalPts = elapsed.map(({ idx, bucket }) => ({
-          xPct: toXPct(idx),
-          y: toY(bucket.cumulativeTotal),
-          val: bucket.cumulativeTotal,
-        }));
-        marks.push(...paintLineSeries(totalPts, t.accent, plotH, {
+      if (filledTotal || multiple) {
+        const totalPts = elapsed.map(({ idx, bucket }) => {
+          const val = cumulative ? bucket.cumulativeTotal : bucket.total;
+          return { xPct: toXPct(idx), y: toY(val), val };
+        });
+        marks.push(...paintLineSeries(totalPts, filledTotal ? t.accent : t.muted, plotH, filledTotal ? {
           strokeWidth: 2,
           fill: true,
-          dots: showDots && models.length <= 1,
+          dots: showDots && !multiple,
+        } : {
+          strokeWidth: 1.5,
+          dash: [4, 3],
+          opacity: 0.75,
         }));
-        if (models.length > 1) {
-          for (const name of models) {
-            const pts = elapsed.map(({ idx, bucket }) => {
-              const val = bucket.cumulativeByModel?.[name] ?? 0;
-              return { xPct: toXPct(idx), y: toY(val), val };
-            });
-            marks.push(...paintLineSeries(pts, colors.get(name) ?? OTHER_COLOR, plotH, {
-              strokeWidth: 1.5,
-              dots: false,
-            }));
-          }
-        }
-      } else {
-        if (showTotalLine) {
-          const totalPts = elapsed.map(({ idx, bucket }) => ({
-            xPct: toXPct(idx),
-            y: toY(bucket.total),
-            val: bucket.total,
-          }));
-          marks.push(...paintLineSeries(totalPts, t.muted, plotH, {
-            strokeWidth: 1.5,
-            dash: [4, 3],
-            opacity: 0.75,
-            dots: false,
-          }));
-        }
-        const singleModel = models.length === 1;
-        for (const name of models) {
+      }
+      if (!filledTotal || multiple) {
+        for (const name of names) {
           const pts = elapsed.map(({ idx, bucket }) => {
-            const val = bucket.byModel?.[name] ?? 0;
+            const values = cumulative ? bucket.cumulative : bucket.values;
+            const val = values?.[name] ?? 0;
             return { xPct: toXPct(idx), y: toY(val), val };
           });
           marks.push(...paintLineSeries(pts, colors.get(name) ?? OTHER_COLOR, plotH, {
-            strokeWidth: 2,
-            fill: singleModel,
-            dots: showDots,
+            strokeWidth: filledTotal ? 1.5 : 2,
+            fill: !multiple,
+            dots: showDots && !filledTotal,
           }));
         }
       }
@@ -691,7 +702,7 @@ export function lineGraphCard(t, data, colors, state) {
         HoverCard.new(`hist-line-${data.horizon}-${data.offset}-${state.lineMode}-${idx}`)
           .open_delay(0).close_delay(0)
           .trigger(div().w_full().h(plotH).hover((s) => s.bg(HOVER_TINT)))
-          .content(bucketTooltip(t, bucket, models, colors, data.includeCache, cumulative)),
+          .content(bucketTooltip(t, bucket, series, data.includeCache, cumulative)),
       )));
 
     children.push(
@@ -703,7 +714,7 @@ export function lineGraphCard(t, data, colors, state) {
       xAxisLabels(t, buckets),
     );
     if (state.chartMode === "line") {
-      const legend = seriesLegend(t, models, colors, state.modelFilter, state.setModelFilter);
+      const legend = seriesLegend(t, series, state);
       if (legend) children.push(legend);
     }
   }

@@ -76,7 +76,11 @@ function mainFor(view: string): string {
   const source = readFileSync(join(modSource, "main.js"), "utf8");
   const opening = 'this.view = "allowances";';
   if (source.split(opening).length !== 2) throw new Error(`main.js no longer sets ${opening}`);
-  const lines = source.replace(opening, `this.view = ${JSON.stringify(view)};`).split("\n");
+  const initialView = [`this.view = ${JSON.stringify(view)};`];
+  if (view === "historical") {
+    initialView.push('setShared(CHART_PREFS, { groupBy: "type", lineMode: "cumulative" });');
+  }
+  const lines = source.replace(opening, initialView.join("\n")).split("\n");
   const lastImport = lines.findLastIndex((line) => line.startsWith("import "));
   lines.splice(lastImport + 1, 0, "", `Date.now = () => Date.parse(${JSON.stringify(SHOT_TIME)});`);
   return lines.join("\n");
