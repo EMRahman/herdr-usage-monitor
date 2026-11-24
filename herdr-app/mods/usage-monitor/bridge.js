@@ -1,10 +1,10 @@
 // @bun
-// fetcher.ts
+// src/fetcher.ts
 import { existsSync as existsSync2, mkdirSync, writeFileSync as writeFileSync2 } from "fs";
 import { homedir as homedir2 } from "os";
 import { basename, join as join2 } from "path";
 
-// providers.ts
+// src/providers.ts
 import { Database } from "bun:sqlite";
 import { createHash } from "crypto";
 import { closeSync, existsSync, mkdtempSync, openSync, readdirSync, readSync, rmSync, writeFileSync, writeSync } from "fs";
@@ -739,7 +739,7 @@ async function fetchOtherProviders() {
   return [...cursor, ...copilot, ...grok, ...opencode];
 }
 
-// fetcher.ts
+// src/fetcher.ts
 var CACHE_DIR = process.env["HERDR_USAGE_CACHE_DIR"] ?? (process.env["XDG_CACHE_HOME"] ? join2(process.env["XDG_CACHE_HOME"], "herdr-usage-monitor") : join2(homedir2(), ".cache", "herdr-usage-monitor"));
 var CACHE_FILE = join2(CACHE_DIR, "herdr-usage-cache.json");
 var LEGACY_PARTIAL_CACHE_FILE = join2(CACHE_DIR, "herdr-usage-fast-cache.json");
@@ -1103,10 +1103,10 @@ async function fetchDetailedReport() {
   return report;
 }
 
-// historical.ts
+// src/history/historical.ts
 import { existsSync as existsSync3 } from "fs";
 
-// history-db.ts
+// src/history/db.ts
 import { Database as Database2 } from "bun:sqlite";
 import { closeSync as closeSync2, mkdirSync as mkdirSync2, openSync as openSync2 } from "fs";
 import { homedir as homedir3 } from "os";
@@ -1234,7 +1234,7 @@ function openHistoryDatabase(file, readonly = false) {
   }
 }
 
-// historical.ts
+// src/history/historical.ts
 var MONTHS_SHORT = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 var MONTHS_LONG = [
   "January",
@@ -1890,7 +1890,7 @@ function readHistorical(options = {}, file = historyFile(), backfill = { pending
   }
 }
 
-// history.ts
+// src/history/burndown.ts
 import { existsSync as existsSync4 } from "fs";
 import { createHash as createHash2 } from "crypto";
 
@@ -1911,7 +1911,7 @@ function windowLength(text) {
   return null;
 }
 
-// history.ts
+// src/history/burndown.ts
 var MINUTE = 60000;
 var HOUR2 = 60 * MINUTE;
 var DAY2 = 24 * HOUR2;
@@ -2121,7 +2121,7 @@ function runs(readings, length, until) {
   return out;
 }
 
-// model-usage.ts
+// src/history/model-usage.ts
 import { createHash as createHash3 } from "crypto";
 import { existsSync as existsSync5 } from "fs";
 import { readdir, stat } from "fs/promises";
@@ -2823,7 +2823,7 @@ async function syncModelUsage(file = historyFile(), roots = localLogs(), now = D
   }
 }
 
-// usage-summary.ts
+// src/usage-summary.ts
 var SHORT_NAMES = {
   claude: "Claude",
   codex: "Codex",

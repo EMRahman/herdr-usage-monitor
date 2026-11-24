@@ -2,9 +2,9 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { openHistoryDatabase } from "./history-db.ts";
-import type { FullReport } from "./fetcher.ts";
-import { BUCKETS, accountId, burndowns, labelAccounts, readBurndowns, readHistory, recordReport, runs, samplesFrom, type Entry } from "./history.ts";
+import { openHistoryDatabase } from "../../src/history/db.ts";
+import type { FullReport } from "../../src/fetcher.ts";
+import { BUCKETS, accountId, burndowns, labelAccounts, readBurndowns, readHistory, recordReport, runs, samplesFrom, type Entry } from "../../src/history/burndown.ts";
 
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
@@ -102,7 +102,7 @@ describe("recordReport", () => {
 
   test("deduplicates readings from overlapping bridge processes", async () => {
     const file = tempFile();
-    const writer = `import { recordReport } from ${JSON.stringify(new URL("./history.ts", import.meta.url).href)};
+    const writer = `import { recordReport } from ${JSON.stringify(new URL("../../src/history/burndown.ts", import.meta.url).href)};
       const [file, payload] = process.argv.slice(1);
       recordReport(JSON.parse(payload), file);`;
     const results = await Promise.all([

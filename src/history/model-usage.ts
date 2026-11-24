@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import { readdir, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
-import { historyFile, openHistoryDatabase } from "./history-db.ts";
+import { historyFile, openHistoryDatabase } from "./db.ts";
 
 export const PARSER_VERSION = 2;
 const DEFAULT_SYNC_BUDGET_MS = 3_000;
