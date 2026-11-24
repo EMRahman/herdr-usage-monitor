@@ -70,6 +70,13 @@ const report = {
   ] },
 };
 
+function sampleTokenCounts(total) {
+  const input = Math.round(total * 0.32);
+  const output = Math.round(total * 0.18);
+  const cacheWrite = Math.round(total * 0.03);
+  return { input, output, cacheWrite, cacheRead: total - input - output - cacheWrite };
+}
+
 function sampleHistorical() {
   const models = ["claude-opus-4-8", "gpt-6.2-sol", "gemini-4-neon", "claude-sonnet-4-6", "gemini-flash-worker"];
   const monthStart = Date.UTC(2026, 10, 1);
@@ -113,12 +120,13 @@ function sampleHistorical() {
       runningTotal += total;
       if (total > maxBucketTotal) maxBucketTotal = total;
       if (!peakBucket || total > peakBucket.tokens) peakBucket = { label: `Nov ${d}`, tokens: total };
-      totalInput += Math.round(total * 0.042);
-      totalOutput += Math.round(total * 0.011);
-      totalCacheRead += Math.round(total * 0.917);
-      totalCacheWrite += Math.round(total * 0.03);
       totalEvents += events;
     }
+    const counts = sampleTokenCounts(total);
+    totalInput += counts.input;
+    totalOutput += counts.output;
+    totalCacheRead += counts.cacheRead;
+    totalCacheWrite += counts.cacheWrite;
     const showTick = d === 1 || (d % 5 === 1 && days - d >= 2);
     histBuckets.push({
       startMs,
@@ -128,10 +136,7 @@ function sampleHistorical() {
       future,
       total,
       cumulativeTotal: future ? 0 : runningTotal,
-      input: Math.round(total * 0.042),
-      output: Math.round(total * 0.011),
-      cacheRead: Math.round(total * 0.917),
-      cacheWrite: Math.round(total * 0.03),
+      ...counts,
       events,
       byModel,
       cumulativeByModel,
@@ -148,6 +153,7 @@ function sampleHistorical() {
   const deltas = [24.8, 41.2, -11.3, 8.5, -6.1];
   const entries = models.map((model, i) => {
     const tokens = totalsByModel[model];
+    const counts = sampleTokenCounts(tokens);
     const deltaPct = deltas[i];
     return {
       rank: i + 1,
@@ -155,11 +161,8 @@ function sampleHistorical() {
       provider: providerMap[model],
       providers: [providerMap[model]],
       tokens,
-      input: Math.round(tokens * 0.042),
-      output: Math.round(tokens * 0.011),
-      cacheRead: Math.round(tokens * 0.917),
-      cacheWrite: Math.round(tokens * 0.03),
-      reasoning: Math.round(tokens * 0.004),
+      ...counts,
+      reasoning: Math.round(counts.output * 0.36),
       sessions: 14 - i * 2,
       events: Math.round(tokens / 1_400_000),
       sharePct: Math.round((tokens / runningTotal) * 1000) / 10,

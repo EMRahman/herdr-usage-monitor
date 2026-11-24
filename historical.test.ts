@@ -187,6 +187,21 @@ describe("historical.js UI rendering", () => {
     });
   }
 
+  type Element = ReturnType<typeof mockElement>;
+
+  function findById(root: Element, id: string): Element | undefined {
+    if (root.name === id) return root;
+    for (const child of root.items) {
+      if (typeof child !== "object" || !child) continue;
+      const found = findById(child as Element, id);
+      if (found) return found;
+    }
+  }
+
+  function labels(root: Element): string[] {
+    return root.items.flatMap((item) => typeof item === "string" ? [item] : labels(item as Element));
+  }
+
   test("renders both stacked bar segments and PathBuilder polylines with interactive hover cards", async () => {
     const paintedPaths: Array<{ ops: unknown[]; paint: unknown }> = [];
     const makeBuilder = (mode: string) => {
@@ -232,6 +247,7 @@ describe("historical.js UI rendering", () => {
       horizon: "y",
       chartMode: "line",
       lineMode: "cumulative",
+      groupBy: "type",
       includeCache: false,
       providerFilter: "claude",
       modelFilter: "claude-opus-4-8",
@@ -239,11 +255,13 @@ describe("historical.js UI rendering", () => {
       horizon: "y",
       chartMode: "line",
       lineMode: "cumulative",
+      groupBy: "type",
       includeCache: false,
       providerFilter: "claude",
       modelFilter: "claude-opus-4-8",
     });
-    expect(normalizeChartPrefs({ horizon: "invalid", chartMode: 42, includeCache: "yes" })).toEqual(DEFAULT_CHART_PREFS);
+    expect(normalizeChartPrefs({ horizon: "invalid", chartMode: 42, groupBy: "unknown", includeCache: "yes" })).toEqual(DEFAULT_CHART_PREFS);
+    expect(normalizeChartPrefs('{"lineMode":"cumulative"}')).toMatchObject({ lineMode: "cumulative", groupBy: "model" });
 
     expect(niceMax(142_000_000)).toBe(150_000_000);
     expect(niceMax(0)).toBe(0);
@@ -255,7 +273,7 @@ describe("historical.js UI rendering", () => {
       const now = new Date(2026, 10, 24, 15, 0, 0, 0).getTime();
       insertUsage(file, [
         { provider: "claude", id: "u1", at: new Date(2026, 10, 23, 10).getTime(), model: "claude-opus-4-8", effort: "high", session: "s1", input: 1000, output: 400, cacheRead: 5000, cacheWrite: 0, reasoning: 100 },
-        { provider: "codex", id: "u2", at: new Date(2026, 10, 24, 11).getTime(), model: "gpt-6.2-sol", effort: "xhigh", session: "s2", input: 800, output: 300, cacheRead: 2000, cacheWrite: 0, reasoning: 80 },
+        { provider: "codex", id: "u2", at: new Date(2026, 10, 24, 11).getTime(), model: "gpt-6.2-sol", effort: "xhigh", session: "s2", input: 800, output: 300, cacheRead: 1500, cacheWrite: 500, reasoning: 80 },
       ]);
       const data = readHistorical({ horizon: "w", offset: 0, now }, file);
       const t = {
@@ -263,7 +281,7 @@ describe("historical.js UI rendering", () => {
         border: "#2e2e32", foreground: "#f4f4f5", muted: "#a1a1aa", dim: "#71717a", accent: "#3b82f6", blocked: "#ef4444",
       };
       const noop = () => {};
-      const tree = historicalView(t, {
+      const state = {
         historical: data,
         historicalError: "",
         horizon: "w",
@@ -273,6 +291,7 @@ describe("historical.js UI rendering", () => {
         includeCache: true,
         chartMode: "both",
         lineMode: "models",
+        groupBy: "model",
         openFilter: null,
         width: 1200,
         setOpenFilter: noop,
@@ -285,9 +304,11 @@ describe("historical.js UI rendering", () => {
         clearFilters: noop,
         toggleCache: noop,
         setChartMode: noop,
+        setGroupBy: mock((groupBy: string) => { state.groupBy = groupBy; }),
         setLineMode: noop,
         retryHistorical: noop,
-      });
+      };
+      const tree = historicalView(t, state);
 
       expect(tree).toBeTruthy();
       // 2 models + 1 dashed total line = 3 painted PathBuilder paths!
@@ -296,34 +317,44 @@ describe("historical.js UI rendering", () => {
 
       // Cumulative line mode paints area fill + total stroke + 2 model strokes = 4 paths!
       paintedPaths.length = 0;
-      const cumTree = historicalView(t, {
-        historical: data,
-        historicalError: "",
-        horizon: "w",
-        offset: 0,
-        providerFilter: "all",
-        modelFilter: "all",
-        includeCache: true,
-        chartMode: "line",
-        lineMode: "cumulative",
-        openFilter: null,
-        width: 1200,
-        setOpenFilter: noop,
-        setHorizon: noop,
-        stepOffset: noop,
-        resetOffset: noop,
-        jumpToLatest: noop,
-        setProviderFilter: noop,
-        setModelFilter: noop,
-        clearFilters: noop,
-        toggleCache: noop,
-        setChartMode: noop,
-        setLineMode: noop,
-        retryHistorical: noop,
-      });
+      const cumTree = historicalView(t, { ...state, chartMode: "line", lineMode: "cumulative" });
       expect(cumTree).toBeTruthy();
       expect(paintedPaths).toHaveLength(4);
       expect(paintedPaths[0]!.ops[0]).toEqual(["fill"]);
+
+      const splitButton = findById(tree, "hist-group-type")!;
+      const click = splitButton.calls.find(([method]) => method === "on_click")![1] as (event: object, cx: object) => void;
+      click({}, {});
+      expect(state.groupBy).toBe("type");
+      paintedPaths.length = 0;
+      const split = historicalView(t, { ...state, lineMode: "cumulative" });
+      const hoverLabels = (view: Element, id: string) => labels(findById(view, id)!.cardContent as Element);
+      expect(hoverLabels(split, "hist-bar-w-0-1")).toEqual([
+        "Tue, Nov 24", "3,100 tokens · 1 call", "Input", "800 (25.8%)", "Output", "300 (9.7%)", "Prompt cache", "2,000 (64.5%)",
+      ]);
+      expect(hoverLabels(split, "hist-line-w-0-cumulative-1")).toEqual([
+        "Tue, Nov 24", "9,500 cumulative tokens", "Input", "1,800 (18.9%)", "Output", "700 (7.4%)", "Prompt cache", "7,000 (73.7%)",
+      ]);
+      expect(hoverLabels(split, "hist-line-w-0-cumulative-2")).toContain("Future time slot");
+      const bar = findById(split, "hist-bar-w-0-1")!.triggerEl as Element;
+      const segments = (bar.items[0] as Element).items as Element[];
+      expect(segments.map((el) => el.calls.find(([method]) => method === "flex_grow")?.[1]))
+        .toEqual([2000, 300, 800]);
+      expect(paintedPaths).toHaveLength(4); // combined total, input, output and cache
+      expect(paintedPaths[0]!.ops).toContainEqual(["dash_array", [4, 3]]);
+      expect(paintedPaths.every(({ ops }) => ops.filter((op: any) => op[0] === "line_to").length === 1)).toBe(true);
+      for (const [i, tokens] of [9500, 1800, 700, 7000].entries()) {
+        const [, , y] = paintedPaths[i]!.ops.at(-1) as [string, string, number];
+        expect(y).toBeCloseTo(3 + (1 - tokens / 10_000) * (148 - 6));
+      }
+
+      const filtered = readHistorical({ horizon: "w", model: "gpt-6.2-sol", includeCache: false, now }, file);
+      paintedPaths.length = 0;
+      const uncached = historicalView(t, { ...state, historical: filtered, includeCache: false, modelFilter: "gpt-6.2-sol" });
+      expect(hoverLabels(uncached, "hist-line-w-0-models-1")).toEqual([
+        "Tue, Nov 24", "1,100 tokens · 1 call", "Input", "800 (72.7%)", "Output", "300 (27.3%)",
+      ]);
+      expect(paintedPaths).toHaveLength(3);
 
       // Hourly D horizon and 52-week Y horizon + stepping backward work cleanly.
       const dayData = readHistorical({ horizon: "d", offset: -1, now }, file);
