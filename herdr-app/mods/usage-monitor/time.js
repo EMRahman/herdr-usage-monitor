@@ -5,6 +5,16 @@ const PAST = { Resets: "Reset", Expires: "Expired" };
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
+export function latestAllowanceReadAt(report) {
+  const readAt = report?.read_at;
+  if (!readAt) return 0;
+  const providers = ["claude", "codex", "antigravity"];
+  for (const provider of report.others ?? []) {
+    if (!provider.problem) providers.push(provider.id);
+  }
+  return Math.max(0, ...providers.map((id) => readAt[id]).filter(Number.isFinite));
+}
+
 // "3:56 PM" today, "Nov 25, 8:58 AM" on another day.
 export function localTime(value, seconds = false) {
   const date = new Date(value);

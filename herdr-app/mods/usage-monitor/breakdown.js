@@ -195,11 +195,15 @@ function refreshStatus(t, { manualRefresh, lastRefreshedAt }) {
     const running = manualRefresh.elapsedMs === null;
     const elapsed = manualRefresh.elapsedMs ?? Math.max(0, Date.now() - manualRefresh.startedAt);
     const seconds = `${(elapsed / 1000).toFixed(1)}s`;
+    const label = manualRefresh.outcome === "failed" ? "Failed"
+      : manualRefresh.outcome === "unchanged" ? "No new readings" : "✓ Done";
+    const color = manualRefresh.outcome === "failed" ? t.blocked
+      : manualRefresh.outcome === "unchanged" ? t.muted : t.accent;
     status.child(h_flex().gap(5).items_center().font_semibold()
-      .text_color(manualRefresh.failed ? t.blocked : t.accent)
+      .text_color(color)
       .when(running, (el) => el.child(svg("mods/usage-monitor/refresh-spinner.svg")
         .size(11).flex_none().text_color(t.accent).spin(750)))
-      .child(running ? seconds : `${manualRefresh.failed ? "Failed" : "✓ Done"} · ${seconds}`));
+      .child(running ? seconds : `${label} · ${seconds}`));
   }
   const time = lastRefreshedAt ? localTime(lastRefreshedAt, true) : "—";
   return status.child(div().text_color(t.muted).child(`Last refreshed ${time}`));

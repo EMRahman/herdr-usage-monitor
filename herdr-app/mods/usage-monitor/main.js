@@ -3,6 +3,7 @@ import { h_flex, v_flex } from "gpui-base";
 import { appHome, checking, closeOverlay, exec, home, layout, props, readTextFile, run, setShared, shared, theme } from "herdr";
 import { breakdown } from "./breakdown.js";
 import { normalizeChartPrefs, offsetForTimestamp } from "./historical.js";
+import { latestAllowanceReadAt } from "./time.js";
 
 const ID = "usage-monitor";
 const REVISION = `${ID}.revision`;
@@ -19,6 +20,7 @@ const CHART_MODES = ["both", "bars", "line"];
 // copy's own: Herdr cancels a copy's pending calls when it closes or reloads, and a request
 // shared with other copies could then never settle and block them all.
 let snapshot = null;
+let latestReadAt = 0;
 let config = null;
 let bun = null;
 let error = "";
@@ -64,9 +66,11 @@ async function readUsage(args) {
   return JSON.parse(result.stdout);
 }
 
-function apply(next) {
-  const changed = Boolean(error) || (next.report && next.report.timestamp !== snapshot?.report?.timestamp);
+function apply(next, readAt) {
+  const changed = Boolean(error) || readAt > latestReadAt
+    || (next.report && next.report.timestamp !== snapshot?.report?.timestamp);
   if (next.report) snapshot = next;
+  latestReadAt = Math.max(latestReadAt, readAt);
   error = "";
   if (changed) setShared(REVISION, Date.now());
 }
@@ -81,7 +85,7 @@ function fail(failure) {
 
 function lastRefreshedAt() {
   const manual = shared(LAST_MANUAL_REFRESH);
-  return Math.max(snapshot?.report?.timestamp ?? 0, Number.isFinite(manual) ? manual : 0);
+  return Math.max(latestReadAt, Number.isFinite(manual) ? manual : 0);
 }
 
 export default class UsageMonitor extends View {
@@ -167,12 +171,15 @@ export default class UsageMonitor extends View {
       this.refreshTimer = cx.timer.every(100, (timerCx) => timerCx.notify());
     }
     cx.notify();
-    let succeeded = false;
+    let outcome = "failed";
     try {
       try {
         const next = await readUsage(args);
-        apply(next);
-        succeeded = Boolean(next.report);
+        const readAt = latestAllowanceReadAt(next.report);
+        // A legacy cache has only the report timestamp. New reports also record the age of each reading.
+        const legacyTime = args[0] === "--cached" && !next.report?.read_at ? next.report?.timestamp : 0;
+        apply(next, readAt || legacyTime || 0);
+        if (next.report) outcome = readAt > 0 && readAt >= next.report.timestamp ? "done" : "unchanged";
       } catch (failure) {
         fail(failure);
       } finally {
@@ -181,18 +188,18 @@ export default class UsageMonitor extends View {
       }
       if (this.view === "burndown") {
         await this.readHistory(cx);
-        succeeded &&= !this.historyError;
+        if (this.historyError) outcome = "failed";
       } else if (this.view === "historical") {
         await this.readHistorical(cx, { sync: this.backfill.pendingFiles > 0 });
-        succeeded &&= !this.historicalError;
+        if (this.historicalError) outcome = "failed";
       }
     } finally {
       if (manual) {
         const finishedAt = Date.now();
         this.refreshTimer.cancel();
         this.refreshTimer = null;
-        this.manualRefresh = { elapsedMs: Math.max(0, finishedAt - startedAt), failed: !succeeded };
-        if (succeeded) setShared(LAST_MANUAL_REFRESH, finishedAt);
+        this.manualRefresh = { elapsedMs: Math.max(0, finishedAt - startedAt), outcome };
+        if (outcome === "done") setShared(LAST_MANUAL_REFRESH, finishedAt);
         cx.notify();
       }
     }
@@ -439,7 +446,7 @@ export default class UsageMonitor extends View {
         manualRefresh: this.manualRefresh,
         lastRefreshedAt: this.manualRefresh?.previousRefreshAt ?? lastRefreshedAt(),
         error,
-        stale: snapshot?.report?.partial || Date.now() - snapshot?.report?.timestamp > STALE_MS,
+        stale: snapshot?.report?.partial || (latestReadAt > 0 && Date.now() - latestReadAt > STALE_MS),
         refresh: (_event, cx) => this.refresh(cx),
         close: () => closeOverlay(overlay),
         view: this.view,
