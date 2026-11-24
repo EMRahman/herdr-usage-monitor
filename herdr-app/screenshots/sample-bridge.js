@@ -55,6 +55,7 @@ const buckets = (group) => burndowns.filter((b) => b.group === group)
 
 const report = {
   timestamp: now,
+  read_at: { claude: now, codex: now, antigravity: now },
   claude: {
     plan: "Pro", windows: windows("claude"),
     extra_usage: { used: "£8.16", limit: "£15.39", balance_left: "£7.23", used_percent: 53 },

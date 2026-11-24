@@ -1,4 +1,4 @@
-import { div } from "gpui-kit";
+import { div, svg } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
 import { LIGHT_LABEL, creditLight, light, lightColor, windowLength } from "./pace.js";
 import { burndownCards } from "./burndown.js";
@@ -189,6 +189,26 @@ function keyHint(t, key) {
   return div().text_size(10).text_color(t.dim).child(key);
 }
 
+function refreshStatus(t, { manualRefresh, lastRefreshedAt }) {
+  const status = v_flex().flex_none().gap(1).text_size(11);
+  if (manualRefresh) {
+    const running = manualRefresh.elapsedMs === null;
+    const elapsed = manualRefresh.elapsedMs ?? Math.max(0, Date.now() - manualRefresh.startedAt);
+    const seconds = `${(elapsed / 1000).toFixed(1)}s`;
+    const label = manualRefresh.outcome === "failed" ? "Failed"
+      : manualRefresh.outcome === "unchanged" ? "No new readings" : "✓ Done";
+    const color = manualRefresh.outcome === "failed" ? t.blocked
+      : manualRefresh.outcome === "unchanged" ? t.muted : t.accent;
+    status.child(h_flex().gap(5).items_center().font_semibold()
+      .text_color(color)
+      .when(running, (el) => el.child(svg("mods/usage-monitor/refresh-spinner.svg")
+        .size(11).flex_none().text_color(t.accent).spin(750)))
+      .child(running ? seconds : `${label} · ${seconds}`));
+  }
+  const time = lastRefreshedAt ? localTime(lastRefreshedAt, true) : "—";
+  return status.child(div().text_color(t.muted).child(`Last refreshed ${time}`));
+}
+
 // Allowances | Burndown | History, switched with A, B and H (U aliases A), or cycled with Space.
 function views(t, current, choose) {
   const items = [
@@ -232,17 +252,18 @@ export function breakdown(t, report, state) {
     : historical && backfillPending ? `Indexing older logs (${state.historical.backfill.totalFiles - state.historical.backfill.pendingFiles}/${state.historical.backfill.totalFiles})…`
     : historical && state.historicalPending ? "Loading usage history…"
     : report?.partial ? "Partial report"
-    : report?.timestamp ? `${state.stale ? "Cached" : "Updated"} · ${localTime(report.timestamp)}` : "");
+    : state.stale ? "Cached allowances" : "");
   return v_flex().id("usage-root").size_full().overflow_hidden().bg(t.popover).text_color(t.foreground).text_size(12)
     .when(Boolean(state.focus), (el) => el.track_focus(state.focus).on_key_down(state.onKey))
     .on_size_change(state.onSize)
-    .child(h_flex().flex_none().justify_between().items_center().gap(8).px(16).py(12)
+    .child(h_flex().flex_none().flex_wrap().justify_between().items_center().gap(8).px(16).py(12)
       .border_b(1).border_color(t.border)
       .child(h_flex().gap(12).items_center()
         .child(div().text_size(16).font_semibold().child("Usage Monitor"))
         .child(views(t, view, state.setView)))
-      .child(h_flex().gap(6)
+      .child(h_flex().flex_none().items_center().gap(8)
         .child(button(t, "refresh-usage", "Refresh", state.refresh, state.pending, "R"))
+        .child(refreshStatus(t, state))
         .child(button(t, "close-usage", "Close", state.close))))
     .child(v_flex().id("usage-scroll").flex_1().min_h(0).overflow_y_scrollbar().p(16).gap(8)
       .when(historical, (el) => el.child(historicalView(t, state)))
@@ -250,6 +271,6 @@ export function breakdown(t, report, state) {
       .when(!burndown && !historical && cards.length > 0, (el) => el.child(untapped(t, spares)).child(columns(cards, state.width ?? 0)))
       .when(!burndown && !historical && cards.length === 0, (el) => el.child(div().text_color(t.muted)
         .child(state.pending ? "Reading provider allowances…" : "No provider allowances available."))))
-    .child(div().flex_none().px(16).py(10).border_t(1).border_color(t.border)
-      .text_color(state.error ? t.blocked : t.muted).child(message));
+    .when(Boolean(message), (el) => el.child(div().flex_none().px(16).py(10).border_t(1).border_color(t.border)
+      .text_color(state.error ? t.blocked : t.muted).child(message)));
 }
