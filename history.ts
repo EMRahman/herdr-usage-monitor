@@ -161,7 +161,15 @@ export function readHistory(file = historyFile(), since = 0): Entry[] {
   }
 }
 
-const limitOf = (s: Sample) => `${s.p}\u0000${s.g ?? ""}\u0000${s.w}`;
+// An Antigravity limit is known by its window length rather than its label, so the same limit
+// read two ways ("Five Hour Limit Remaining" from the agy CLI, "5h limit" from the API fallback)
+// is one chart. Other providers keep their labels: Claude's "7d weekly", "7d Opus" and
+// "7d Sonnet" are separate limits of one length.
+const windowOf = (s: Sample) => (s.p === "antigravity" ? windowLength(s.w) ?? s.w : s.w);
+const limitOf = (s: Sample) => `${s.p}\u0000${s.g ?? ""}\u0000${windowOf(s)}`;
+// A full limit whose reset is a whole window after the reading hasn't started: the provider
+// quotes a reset that rolls forward with every read until the first request.
+const ROLLING = MINUTE;
 const CHARTED = new Set([5 * HOUR, WEEK]);
 
 export function readBurndowns(file = historyFile(), now = Date.now()): Burndown[] {
@@ -199,12 +207,23 @@ export function burndowns(entries: Entry[], now = Date.now()): Burndown[] {
     }
   }
   const result: Burndown[] = [];
+  // A limit missing from its provider's latest reading is gone (a model group folded into
+  // another, say), so only the limits that reading has are charted.
+  const latestRead = new Map<string, number>();
+  for (const readings of series.values()) {
+    const { t, s } = readings.at(-1)!;
+    const key = `${s.p}\u0000${accountOf(s)}`;
+    latestRead.set(key, Math.max(latestRead.get(key) ?? 0, t));
+  }
   for (const readings of series.values()) {
     const latest = readings.at(-1)!;
     if (now - latest.t > DAY) continue;
+    if (latest.t < latestRead.get(`${latest.s.p}\u0000${accountOf(latest.s)}`)!) continue;
     const length = windowLength(latest.s.w);
     if (!length || !CHARTED.has(length)) continue;
-    const reset = Date.parse(latest.s.reset ?? "");
+    const quoted = Date.parse(latest.s.reset ?? "");
+    const rolling = latest.s.left >= 100 && quoted >= latest.t + length - ROLLING;
+    const reset = rolling ? NaN : quoted;
     const unstarted = !Number.isFinite(reset) && latest.s.left >= 100;
     const end = Number.isFinite(reset) ? reset : unstarted ? now + length : now;
     const start = end - length;
@@ -219,7 +238,7 @@ export function burndowns(entries: Entry[], now = Date.now()): Burndown[] {
       start,
       end,
       left: latest.s.left,
-      reset: latest.s.reset,
+      reset: rolling ? null : latest.s.reset,
       runs: unstarted
         ? [[start, start, latest.s.left]]
         : runs(inWindow.map((r) => [r.t, r.s.left]), length, Math.min(now, end)),
