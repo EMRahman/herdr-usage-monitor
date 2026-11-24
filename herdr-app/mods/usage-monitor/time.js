@@ -78,9 +78,12 @@ export function duration(ms) {
     : hours > 0 ? `${hours}h ${minutes % 60}m` : `${minutes}m`;
 }
 
+// A time at or before the Unix epoch is a placeholder (Antigravity's reset for a limit with no
+// window running), not a real time.
 export function timed(label, iso) {
-  if (!iso || !Number.isFinite(Date.parse(iso))) return "";
-  const ms = Date.parse(iso) - Date.now();
+  const at = Date.parse(iso ?? "");
+  if (!(at > 0)) return "";
+  const ms = at - Date.now();
   if (ms <= 0) return `${PAST[label] ?? label} ${localTime(iso)}`;
   return `${label} in ${duration(ms)} · ${localTime(iso)}`;
 }

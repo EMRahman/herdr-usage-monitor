@@ -222,6 +222,15 @@ describe("burndowns", () => {
     expect(charts[0]!.runs).toEqual([[NOW, NOW, 100]]);
   });
 
+  test("treats Antigravity's epoch reset as no window running", () => {
+    const charts = burndowns([
+      entry(NOW - MINUTE, { p: "antigravity", g: "Claude and GPT models", w: "Five Hour Limit Remaining", left: 100, reset: "1970-01-01T00:00:00Z" }),
+    ], NOW);
+    expect(charts[0]!.reset).toBeNull();
+    expect(charts[0]!.start).toBe(NOW);
+    expect(charts[0]!.end).toBe(NOW + 5 * HOUR);
+  });
+
   test("ends a partially used window with no reset time at now", () => {
     const charts = burndowns([entry(NOW - HOUR, { p: "claude", w: "5h session", left: 80, reset: null })], NOW);
     expect(charts[0]!.end).toBe(NOW);
