@@ -59,10 +59,8 @@ history across models.
     under it. Time with no readings is a gap. A dotted `muted` diagonal runs
     from 100% at the start to 0% at the reset: an even pace. The time already
     gone in the window (start to now) has a faint `foreground` tint at 3.5%
-    opacity behind everything, so how far through it you are shows at a
-    glance; the time still to come stays clear. At the current
-    time, a 2px white marker extends from the remaining allowance to the
-    bottom of the plot.
+    opacity behind everything. A 5px `accent` dot marks the end of the last
+    allowance step, even when a gap separates it from the current time.
   - Between the step line and the dotted line, a band at 22% opacity shades
     each reading's gap to an even pace: green (`#2fbf71`) where it was ahead,
     yellow (`#d4a72c`) where it was less than 20 points behind, red
@@ -199,5 +197,5 @@ history across models.
   and advances the last refreshed time. If providers only return cached readings,
   the stopwatch ends with "No new readings" and keeps the previous time.
 - Closing the breakdown during a refresh, then reopening it, still loads.
-- After a few reads, Burndown shows a line in each 5-hour and weekly chart,
-  ending at the now marker, and hovering it shows the reading there.
+- After a few reads, each Burndown line ends with a dot at the last recorded
+  allowance level. Hovering the chart shows the reading for that time slice.

@@ -4,7 +4,7 @@
 // and the historical model/token graphs with --historical.
 //
 // SHOT_TIME is the sample's clock. capture.ts freezes the mod's clock at the same moment, so
-// "Updated", the reset times and the charts' current-time marker agree across every image.
+// "Updated", the reset times and the charts' elapsed-time shading agree across every image.
 export const SHOT_TIME = "2026-11-24T09:26:00Z";
 
 const hour = 3_600_000;
