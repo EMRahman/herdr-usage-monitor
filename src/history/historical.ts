@@ -1,6 +1,6 @@
 // Local-time historical model & token aggregation over history.sqlite.
 import { existsSync } from "node:fs";
-import { historyFile, openHistoryDatabase } from "./history-db.ts";
+import { historyFile, openHistoryDatabase } from "./db.ts";
 
 export type Horizon = "d" | "w" | "m" | "y";
 export type DeltaKind = "up" | "down" | "flat" | "new" | "none";

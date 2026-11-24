@@ -2,8 +2,8 @@ import { describe, expect, mock, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { buildHorizonWindow, readHistorical } from "./historical.ts";
-import { openHistoryDatabase } from "./history-db.ts";
+import { buildHorizonWindow, readHistorical } from "../../src/history/historical.ts";
+import { openHistoryDatabase } from "../../src/history/db.ts";
 
 function insertUsage(
   file: string,
@@ -240,7 +240,7 @@ describe("historical.js UI rendering", () => {
       },
     };
 
-    const { DEFAULT_CHART_PREFS, historicalView, niceMax, normalizeChartPrefs, offsetForTimestamp } = await import("./herdr-app/mods/usage-monitor/historical.js");
+    const { DEFAULT_CHART_PREFS, historicalView, niceMax, normalizeChartPrefs, offsetForTimestamp } = await import("../../herdr-app/mods/usage-monitor/historical.js");
 
     expect(normalizeChartPrefs(null)).toEqual(DEFAULT_CHART_PREFS);
     expect(normalizeChartPrefs({

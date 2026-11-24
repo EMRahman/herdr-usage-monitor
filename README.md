@@ -115,7 +115,7 @@ Providers you aren't signed in to are left out.
 <details>
 <summary><b>Developing</b></summary>
 
-`herdr-app/mods/usage-monitor/bridge.js` is the provider code prebuilt for the Herdr app mod. After changing `fetcher.ts`, `providers.ts` or `usage-summary.ts`, rebuild it, and check it before committing:
+`herdr-app/mods/usage-monitor/bridge.js` is the provider code prebuilt for the Herdr app mod. After changing anything in `src/` (provider fetching, and the SQLite history in `src/history/`), rebuild it, and check it before committing:
 
 ```sh
 bun run build:mod     # rebuild bridge.js

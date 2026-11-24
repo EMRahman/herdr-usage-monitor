@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { hasFreshAllowance, refreshDuration, sampleStatus } from "./herdr-app/mods/usage-monitor/time.js";
+import { hasFreshAllowance, refreshDuration, sampleStatus } from "../../herdr-app/mods/usage-monitor/time.js";
 
 const minute = 60_000;
 const now = Date.UTC(2026, 10, 24, 12);

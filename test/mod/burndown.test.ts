@@ -36,7 +36,7 @@ mock.module("gpui-base", () => ({
   HoverCard: { new: (id: string) => element().id(id) },
   Popover: { new: (id: string) => element().id(id) },
 }));
-const { burndownCards } = await import("./herdr-app/mods/usage-monitor/burndown.js");
+const { burndownCards } = await import("../../herdr-app/mods/usage-monitor/burndown.js");
 
 type Element = ReturnType<typeof element>;
 

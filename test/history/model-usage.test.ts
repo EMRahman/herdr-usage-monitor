@@ -3,8 +3,8 @@ import { expect, test } from "bun:test";
 import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { openHistoryDatabase, SCHEMA_VERSION } from "./history-db.ts";
-import { PARSER_VERSION, syncModelUsage } from "./model-usage.ts";
+import { openHistoryDatabase, SCHEMA_VERSION } from "../../src/history/db.ts";
+import { PARSER_VERSION, syncModelUsage } from "../../src/history/model-usage.ts";
 
 test("collects model, effort, and tokens once, max-upserts streamed Claude chunks, and retries an incomplete log line", async () => {
   const root = mkdtempSync(join(tmpdir(), "model-usage-"));

@@ -1,9 +1,9 @@
 // Allowance history kept on this machine for the burndown charts.
 import { existsSync } from "node:fs";
 import { createHash } from "node:crypto";
-import { historyFile, openHistoryDatabase } from "./history-db.ts";
-import type { FullReport } from "./fetcher.ts";
-import { windowLength } from "./herdr-app/mods/usage-monitor/pace.js";
+import { historyFile, openHistoryDatabase } from "./db.ts";
+import type { FullReport } from "../fetcher.ts";
+import { windowLength } from "../../herdr-app/mods/usage-monitor/pace.js";
 
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;

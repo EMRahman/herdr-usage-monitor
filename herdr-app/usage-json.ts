@@ -1,9 +1,9 @@
 // JSON bridge for the desktop mod.
-import { fetchDetailedReport, getCachedReport } from "../fetcher.ts";
-import { readHistorical, type Horizon } from "../historical.ts";
-import { accountNames, labelAccounts, readBurndowns, recordReport } from "../history.ts";
-import { readModelUsage, syncModelUsage } from "../model-usage.ts";
-import { formatSummary, summaryParts } from "../usage-summary.ts";
+import { fetchDetailedReport, getCachedReport } from "../src/fetcher.ts";
+import { readHistorical, type Horizon } from "../src/history/historical.ts";
+import { accountNames, labelAccounts, readBurndowns, recordReport } from "../src/history/burndown.ts";
+import { readModelUsage, syncModelUsage } from "../src/history/model-usage.ts";
+import { formatSummary, summaryParts } from "../src/usage-summary.ts";
 
 const DAY_MS = 24 * 60 * 60_000;
 const mode = process.argv[2];
