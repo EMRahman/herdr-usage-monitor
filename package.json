@@ -1,7 +1,7 @@
 {
   "name": "herdr-usage-monitor",
   "version": "0.1.0",
-  "description": "Subscription allowance monitor for Herdr desktop with a sidebar readout and a full breakdown",
+  "description": "Track AI subscription allowances, burndown pace, and historical model & token usage in Herdr",
   "type": "module",
   "scripts": {
     "build:mod": "bun herdr-app/build.ts",
