@@ -70,6 +70,9 @@ function columns(cards, width) {
     .children(cols.map((col) => v_flex().flex_1().min_w(0).gap(GAP).children(col.els)));
 }
 
+// An Antigravity limit with no reset hasn't started its window yet.
+const NOT_STARTED = "No window running: it starts with the next request";
+
 // Lights a window and notes it for the summary when it's untapped.
 function lit(spares, provider, label, remainingPercent, resetsAt, length) {
   const result = light({ remaining: remainingPercent, resetsAt, length });
@@ -119,7 +122,7 @@ function providerCards(t, report, spares) {
       .when(Boolean(group.models), (el) => el.child(div().text_size(11).text_color(t.muted).child(group.models)))
       .children((group.buckets ?? []).map((entry) => metric(
         t, entry.label, entry.remaining_percent,
-        [timed("Resets", entry.resets_at), entry.description].filter(Boolean).join(" · "),
+        [timed("Resets", entry.resets_at) || NOT_STARTED, entry.description].filter(Boolean).join(" · "),
         lit(spares, "Antigravity", `${group.name} · ${entry.label}`, entry.remaining_percent,
           entry.resets_at, windowLength(entry.label)),
       ))));

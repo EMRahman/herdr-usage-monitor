@@ -221,7 +221,9 @@ export function burndowns(entries: Entry[], now = Date.now()): Burndown[] {
     if (latest.t < latestRead.get(`${latest.s.p}\u0000${accountOf(latest.s)}`)!) continue;
     const length = windowLength(latest.s.w);
     if (!length || !CHARTED.has(length)) continue;
-    const quoted = Date.parse(latest.s.reset ?? "");
+    // Antigravity's epoch reset (saved before the fetcher dropped it) means no window running.
+    const parsed = Date.parse(latest.s.reset ?? "");
+    const quoted = parsed > 0 ? parsed : NaN;
     const rolling = latest.s.left >= 100 && quoted >= latest.t + length - ROLLING;
     const reset = rolling ? NaN : quoted;
     const unstarted = !Number.isFinite(reset) && latest.s.left >= 100;
@@ -238,7 +240,7 @@ export function burndowns(entries: Entry[], now = Date.now()): Burndown[] {
       start,
       end,
       left: latest.s.left,
-      reset: rolling ? null : latest.s.reset,
+      reset: Number.isFinite(reset) ? latest.s.reset : null,
       runs: unstarted
         ? [[start, start, latest.s.left]]
         : runs(inWindow.map((r) => [r.t, r.s.left]), length, Math.min(now, end)),

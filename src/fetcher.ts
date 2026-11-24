@@ -106,6 +106,14 @@ async function getRateLimitsAsync(): Promise<RateLimitState> {
   return {};
 }
 
+// Antigravity quotes the Unix epoch (1970-01-01T00:00:00Z) as the reset of a limit with no
+// window running, as it does for a model group that hasn't been used yet: that's no reset.
+function agyReset(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const time = Date.parse(value);
+  return Number.isFinite(time) && time > 0 ? value : null;
+}
+
 function saveRateLimits(state: RateLimitState): void {
   try {
     mkdirSync(CACHE_DIR, { recursive: true });
@@ -369,7 +377,7 @@ export async function fetchDetailedReport(): Promise<FullReport> {
           return {
             label: b.name ?? (b.window === "5h" ? "5h limit" : b.window === "weekly" ? "Weekly limit" : "Limit"),
             remaining_percent: Math.round(remFraction * 100),
-            resets_at: b.reset_time ?? b.resetTime ?? null,
+            resets_at: agyReset(b.reset_time ?? b.resetTime),
             description: b.description,
           };
         });
@@ -424,7 +432,7 @@ export async function fetchDetailedReport(): Promise<FullReport> {
         return {
           label: is5h ? "5h limit" : isWeekly ? "Weekly limit" : (b.displayName ?? b.name ?? "Limit"),
           remaining_percent: Math.round((b.remainingFraction ?? 0) * 100),
-          resets_at: b.resetTime ?? null,
+          resets_at: agyReset(b.resetTime),
         };
       }),
     }));

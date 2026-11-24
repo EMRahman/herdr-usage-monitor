@@ -754,6 +754,12 @@ async function getRateLimitsAsync() {
   } catch {}
   return {};
 }
+function agyReset(value) {
+  if (typeof value !== "string")
+    return null;
+  const time = Date.parse(value);
+  return Number.isFinite(time) && time > 0 ? value : null;
+}
 function saveRateLimits(state) {
   try {
     mkdirSync(CACHE_DIR, { recursive: true });
@@ -986,7 +992,7 @@ async function fetchDetailedReport() {
           return {
             label: b.name ?? (b.window === "5h" ? "5h limit" : b.window === "weekly" ? "Weekly limit" : "Limit"),
             remaining_percent: Math.round(remFraction * 100),
-            resets_at: b.reset_time ?? b.resetTime ?? null,
+            resets_at: agyReset(b.reset_time ?? b.resetTime),
             description: b.description
           };
         });
@@ -1040,7 +1046,7 @@ async function fetchDetailedReport() {
         return {
           label: is5h ? "5h limit" : isWeekly ? "Weekly limit" : b.displayName ?? b.name ?? "Limit",
           remaining_percent: Math.round((b.remainingFraction ?? 0) * 100),
-          resets_at: b.resetTime ?? null
+          resets_at: agyReset(b.resetTime)
         };
       })
     }));
@@ -2074,7 +2080,8 @@ function burndowns(entries, now = Date.now()) {
     const length = windowLength(latest.s.w);
     if (!length || !CHARTED.has(length))
       continue;
-    const quoted = Date.parse(latest.s.reset ?? "");
+    const parsed = Date.parse(latest.s.reset ?? "");
+    const quoted = parsed > 0 ? parsed : NaN;
     const rolling = latest.s.left >= 100 && quoted >= latest.t + length - ROLLING;
     const reset = rolling ? NaN : quoted;
     const unstarted = !Number.isFinite(reset) && latest.s.left >= 100;
@@ -2091,7 +2098,7 @@ function burndowns(entries, now = Date.now()) {
       start,
       end,
       left: latest.s.left,
-      reset: rolling ? null : latest.s.reset,
+      reset: Number.isFinite(reset) ? latest.s.reset : null,
       runs: unstarted ? [[start, start, latest.s.left]] : runs(inWindow.map((r) => [r.t, r.s.left]), length, Math.min(now, end))
     });
   }
