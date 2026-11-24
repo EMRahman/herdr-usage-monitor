@@ -8,7 +8,7 @@ Claude Code · Codex · Antigravity · Cursor · GitHub Copilot · Grok · OpenC
 [![Herdr mod](https://img.shields.io/badge/Herdr-mod-2fbf71)](https://herdr.dev/gallery/?type=mods)
 [![Runs on Bun](https://img.shields.io/badge/runs%20on-Bun-f9f1e1)](https://bun.sh)
 
-![Usage Monitor shows remaining allowances alongside burndown charts and highlights quota likely to go unused](herdr-app/preview.png)
+![Usage Monitor shows remaining allowances alongside burndown charts, spare-allowance highlights, and historical token usage by model](herdr-app/preview.png)
 
 **Always on screen.** What's left of each subscription sits at the bottom left of the Herdr app's sidebar, above Settings. A figure turns yellow at 30% or less and red at 10% or less.
 

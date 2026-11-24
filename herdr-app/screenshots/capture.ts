@@ -4,9 +4,10 @@
 //
 //   bun run screenshots
 //
-// It writes docs/herdr-app-allowances.png and docs/herdr-app-burndown.png, and repaints the
-// Claude cards inside herdr-app/preview.png. The rest of the preview (its paper, headline and the
-// "spare at this pace" callout) is a fixed design and stays as it is.
+// It writes docs/herdr-app-allowances.png, docs/herdr-app-burndown.png, and
+// docs/herdr-app-historical.png, and repaints the Claude Allowances and Burndown cards inside
+// herdr-app/preview.png. The rest of the preview (its paper, headline, the "spare at this pace"
+// callout, and the compact History card) is a fixed design and stays as it is.
 //
 // Nothing real is read or changed. The window gets its own Herdr home, terminal core, data and
 // cache folders, with telemetry off. The mod's bridge is swapped for sample-bridge.js, which
@@ -27,13 +28,10 @@ const HEIGHT = 1040;
 const DIALOG = [WIDTH * 0.05, HEIGHT * 0.05, WIDTH * 0.9, HEIGHT * 0.9];
 
 // Where each view's Claude card goes in the preview: a rect of the window shot, scaled and placed
-// as the preview was first laid out. Each rect's edges sit on the card's plain background.
+// as the preview was laid out. Each rect's edges sit on the card's plain background.
 const PREVIEW: Record<string, Array<{ from: number[]; scale: number; at: number[] }>> = {
-  allowances: [{ from: [111, 274, 490, 246], scale: 0.8975, at: [84.5, 282.75] }],
-  burndown: [
-    { from: [112, 192, 490, 160], scale: 0.864, at: [596, 284.5] }, // 5h session
-    { from: [112, 547, 490, 160], scale: 0.86375, at: [596.25, 441.25] }, // 7d Opus
-  ],
+  allowances: [{ from: [109, 270, 490, 248], scale: 0.895, at: [85.225, 266.02] }],
+  burndown: [{ from: [109, 196, 486, 156], scale: 0.825, at: [607.025, 256.15] }], // 5h session
 };
 
 const need = (name: string) => {
