@@ -145,6 +145,21 @@ describe("readHistorical", () => {
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  test("includes cache_write_tokens in the cache-hit denominator", () => {
+    const root = mkdtempSync(join(tmpdir(), "historical-cache-hit-"));
+    try {
+      const file = join(root, "history.sqlite");
+      const now = new Date(2026, 10, 24, 15, 0, 0, 0).getTime();
+      insertUsage(file, [
+        { provider: "claude", id: "cw-1", at: now - 60_000, model: "claude-opus-4-8", session: "s1", input: 0, output: 50, cacheRead: 100, cacheWrite: 900, reasoning: 0 },
+      ]);
+      const data = readHistorical({ horizon: "d", offset: 0, now }, file);
+      expect(data.summary.cacheHitRate).toBe(10);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("historical.js UI rendering", () => {

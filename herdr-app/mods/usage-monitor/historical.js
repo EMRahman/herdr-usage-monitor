@@ -295,7 +295,7 @@ function kpiStrip(t, data, colors, width) {
   ].filter(Boolean).join(" · ");
 
   const cacheTip = s.cacheHitRate != null
-    ? `${formatInt(s.cacheReadTokens)} cache reads of ${formatInt(s.inputTokens + s.cacheReadTokens)} input-side tokens`
+    ? `${formatInt(s.cacheReadTokens)} cache reads of ${formatInt(s.inputTokens + s.cacheReadTokens + s.cacheWriteTokens)} input-side tokens`
     : "No input tokens in this period";
 
   const top = s.topModel;

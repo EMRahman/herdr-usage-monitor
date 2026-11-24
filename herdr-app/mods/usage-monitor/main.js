@@ -101,6 +101,8 @@ export default class UsageMonitor extends View {
     this.historicalError = "";
     this.historicalPending = false;
     this.historicalGeneration = 0;
+    this.backfill = { pendingFiles: 0, totalFiles: 0 };
+    this.activeSyncs = 0;
     this.backfillTimer = null;
 
     // The breakdown takes the keyboard for its shortcuts: R refreshes, A/B/H switch views
@@ -129,6 +131,17 @@ export default class UsageMonitor extends View {
     this.backfillTimer = null;
   }
 
+  scheduleBackfill(cx) {
+    if (this.view !== "historical" || this.backfill.pendingFiles <= 0) return;
+    if (this.backfillTimer || this.activeSyncs > 0) return;
+    this.backfillTimer = cx.timer.after(BACKFILL_DELAY_MS, (timerCx) => {
+      this.backfillTimer = null;
+      if (this.view === "historical" && this.backfill.pendingFiles > 0 && this.activeSyncs === 0) {
+        timerCx.spawn((nextCx) => this.readHistorical(nextCx, { sync: true }));
+      }
+    });
+  }
+
   busy() {
     return Date.now() - this.since < BUSY_MS;
   }
@@ -148,7 +161,7 @@ export default class UsageMonitor extends View {
       cx.notify();
     }
     if (this.view === "burndown") await this.readHistory(cx);
-    else if (this.view === "historical") await this.readHistorical(cx, { sync: false });
+    else if (this.view === "historical") await this.readHistorical(cx, { sync: this.backfill.pendingFiles > 0 });
   }
 
   setView(view, cx) {
@@ -324,9 +337,13 @@ export default class UsageMonitor extends View {
     cx.notify();
   }
 
-  // Aggregated local model & token usage for the Historical panel.
+  // Aggregated local model & token usage for the History panel.
   async readHistorical(cx, { sync = false } = {}) {
-    this.cancelBackfill();
+    const runSync = sync && this.activeSyncs === 0;
+    if (runSync) {
+      this.cancelBackfill();
+      this.activeSyncs += 1;
+    }
     const generation = ++this.historicalGeneration;
     this.historicalPending = true;
     cx.notify();
@@ -337,31 +354,44 @@ export default class UsageMonitor extends View {
       `--provider=${this.providerFilter}`,
       `--model=${this.modelFilter}`,
       `--cache=${this.includeCache ? "1" : "0"}`,
-      `--sync=${sync ? "1" : "0"}`,
+      `--sync=${runSync ? "1" : "0"}`,
     ];
+    let failed = false;
     try {
       const result = await runBridge(args);
-      if (generation !== this.historicalGeneration) return;
       if (result.code !== 0) {
-        throw new Error(`Couldn’t read historical usage${lastLine(result.stderr) ? `: ${lastLine(result.stderr)}` : "."}`);
+        failed = true;
+        if (generation !== this.historicalGeneration) return;
+        throw new Error(`Couldn’t read usage history${lastLine(result.stderr) ? `: ${lastLine(result.stderr)}` : "."}`);
       }
-      this.historical = JSON.parse(result.stdout);
+      const payload = JSON.parse(result.stdout);
+      if (runSync) {
+        this.backfill = payload.backfill ?? { pendingFiles: 0, totalFiles: 0 };
+      } else {
+        payload.backfill = this.backfill;
+      }
+      if (generation !== this.historicalGeneration) {
+        // Sync finished after the user changed controls: keep backfill state and refresh current view.
+        if (runSync && this.view === "historical") {
+          if (this.historical) this.historical = { ...this.historical, backfill: this.backfill };
+          cx.spawn((nextCx) => this.readHistorical(nextCx, { sync: false }));
+        }
+        return;
+      }
+      this.historical = payload;
       this.historicalError = "";
-      if (this.view === "historical" && this.historical?.backfill?.pendingFiles > 0) {
-        this.backfillTimer = cx.timer.after(BACKFILL_DELAY_MS, (timerCx) => {
-          this.backfillTimer = null;
-          if (this.view === "historical" && generation === this.historicalGeneration) {
-            timerCx.spawn((nextCx) => this.readHistorical(nextCx, { sync: true }));
-          }
-        });
-      }
     } catch (failure) {
+      failed = true;
       if (generation !== this.historicalGeneration) return;
       this.historicalError = failure?.message || String(failure);
     } finally {
+      if (runSync) this.activeSyncs = Math.max(0, this.activeSyncs - 1);
       if (generation === this.historicalGeneration) {
         this.historicalPending = false;
         cx.notify();
+      }
+      if (!failed && this.view === "historical" && this.backfill.pendingFiles > 0) {
+        this.scheduleBackfill(cx);
       }
     }
   }

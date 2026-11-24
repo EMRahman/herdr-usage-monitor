@@ -1810,7 +1810,7 @@ function readHistorical(options = {}, file = historyFile(), backfill = { pending
     });
     const summaryPrev = hasPrevHistory ? prevTotalTokens : null;
     const summaryChange = compareChange(totalTokens, summaryPrev);
-    const inputSide = inputTokens + cacheReadTokens;
+    const inputSide = inputTokens + cacheReadTokens + cacheWriteTokens;
     const cacheHitRate = inputSide > 0 ? round1(cacheReadTokens / inputSide * 100) : null;
     const topEntry = leaderboardEntries[0] ?? null;
     return {

@@ -194,7 +194,7 @@ function sampleHistorical() {
       cacheReadTokens: totalCacheRead,
       cacheWriteTokens: totalCacheWrite,
       reasoningTokens: Math.round(totalOutput * 0.36),
-      cacheHitRate: Math.round((totalCacheRead / (totalInput + totalCacheRead)) * 1000) / 10,
+      cacheHitRate: Math.round((totalCacheRead / (totalInput + totalCacheRead + totalCacheWrite)) * 1000) / 10,
       sessions: 54,
       events: totalEvents,
       unmeasuredEvents: 0,
