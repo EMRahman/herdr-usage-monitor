@@ -7,6 +7,7 @@ function element() {
     openDelay: null as number | null,
     closeDelay: null as number | null,
     items: [] as unknown[],
+    calls: [] as unknown[][],
     id(name: string) { this.name = name; return this; },
     content(content: unknown) { this.cardContent = content; return this; },
     open_delay(ms: number) { this.openDelay = ms; return this; },
@@ -17,7 +18,8 @@ function element() {
   };
   return new Proxy(node, {
     get(target, key, receiver) {
-      return typeof key === "string" && !(key in target) ? () => receiver : Reflect.get(target, key, receiver);
+      if (typeof key !== "string" || key in target) return Reflect.get(target, key, receiver);
+      return (...args: unknown[]) => { target.calls.push([key, ...args]); return receiver; };
     },
   });
 }
@@ -37,6 +39,14 @@ function hoverCards(node: unknown): Element[] {
   const el = node as Element;
   return el.cardContent ? [el] : el.items.flatMap(hoverCards);
 }
+
+function elements(node: unknown): Element[] {
+  if (!node || typeof node !== "object") return [];
+  const el = node as Element;
+  return [el, ...el.items.flatMap(elements)];
+}
+
+const style = (el: Element, name: string) => el.calls.find(([key]) => key === name)?.[1];
 
 function labels(node: unknown): string[] {
   if (typeof node === "string") return [node];
@@ -87,4 +97,24 @@ test("labels an unstarted 100% window with Now on the left", () => {
   expect(text).toContain("100% left");
   expect(text[text.length - 2]).toBe("Now");
   expect(text[text.length - 1]).not.toBe("Now");
+});
+
+test("shades the gap to an even pace: green ahead, yellow a little behind, red well behind", () => {
+  const hour = 60 * 60_000;
+  const start = Date.parse("2026-11-23T00:00:00Z");
+  const end = start + 10 * hour;
+  const now = start + 5 * hour;
+  const series = {
+    provider: "codex", label: "Weekly", length: end - start, start, end,
+    left: 30, reset: new Date(end).toISOString(),
+    // Even pace is 95-100% over the first hour, 70-80% over the third, 50-60% over the fifth.
+    runs: [[start, start + hour, 100], [start + 2 * hour, start + 3 * hour, 70], [start + 4 * hour, now, 30]],
+  };
+  const [card] = burndownCards({}, [series], [], now);
+  const band = elements(card!.rows[0]).filter((el) => style(el, "opacity") === 0.22);
+  const colors = band.map((el) => style(el, "bg"));
+  expect([...new Set(colors)]).toEqual(["#2fbf71", "#d4a72c", "#e5534b"]);
+  // Nothing is shaded in the gaps between runs or after now.
+  const lefts = band.map((el) => Number.parseFloat(String(style(el, "left"))));
+  expect(lefts.every((at) => at < 10 || (at >= 20 && at < 30) || (at >= 40 && at < 50))).toBe(true);
 });

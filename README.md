@@ -20,7 +20,7 @@ Claude Code · Codex · Antigravity · Cursor · GitHub Copilot · Grok · OpenC
 
 Press <kbd>B</kbd> (or <kbd>Space</kbd>, which toggles between the two views) to switch to the **Burndown** view, which charts how each limit has drained through its current window against an even pace (see [Burndown charts](#burndown-charts)):
 
-![Burndown charts for Claude, Codex and Antigravity. Faint shading extends from the start of each window to the current-time marker. Green segments above the dotted even-pace line show allowance that would go unused at the current pace.](docs/herdr-app-burndown.png)
+![Burndown charts for Claude, Codex and Antigravity. Faint shading extends from the start of each window to the current-time marker. Shading between each allowance line and the dotted even-pace line is green where allowance is ahead of pace and would go unused, yellow where it is a little behind, and red where it is 20 or more points behind.](docs/herdr-app-burndown.png)
 
 ## Quick start
 
@@ -56,7 +56,7 @@ Everything green is listed in the **Untapped allowance** panel at the top, soone
 
 ## Burndown charts
 
-Switch the breakdown to **Burndown** (press <kbd>B</kbd>, and <kbd>U</kbd> to go back, or <kbd>Space</kbd> to toggle) to see how each 5-hour and weekly limit has drained through its current window, from 100% at the start to the reset. Claude’s 7d Opus and 7d Sonnet limits have their own charts, and Antigravity shows one chart per 5-hour or weekly limit in each model group. A dotted line shows an even pace to 0% at the reset. Faint shading extends from the start of the window to the vertical marker at the current time, so you can see how far through the window you are. The marker’s green segment shows how much allowance is above the even pace and would go unused at the current pace. Hover a chart for the allowance reading. On Claude, Codex and Antigravity charts, the tooltip also lists models and reasoning efforts logged in that part of the timeline.
+Switch the breakdown to **Burndown** (press <kbd>B</kbd>, and <kbd>U</kbd> to go back, or <kbd>Space</kbd> to toggle) to see how each 5-hour and weekly limit has drained through its current window, from 100% at the start to the reset. Claude’s 7d Opus and 7d Sonnet limits have their own charts, and Antigravity shows one chart per 5-hour or weekly limit in each model group. A dotted line shows an even pace to 0% at the reset. Faint shading extends from the start of the window to the vertical marker at the current time, so you can see how far through the window you are. The area between the allowance line and the dotted line is shaded to show how far ahead or behind an even pace each reading was: green when ahead (allowance that would go unused at that pace), yellow when a little behind, and red when 20 or more points behind. Hover a chart for the allowance reading. On Claude, Codex and Antigravity charts, the tooltip also lists models and reasoning efforts logged in that part of the timeline.
 
 The charts come from readings kept on your machine, recorded each time allowances are read (every few minutes while Herdr is open), so they fill in from when you install this version. Time when Herdr was closed or the machine was asleep shows as a gap.
 
