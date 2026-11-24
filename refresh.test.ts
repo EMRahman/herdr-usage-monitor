@@ -1,8 +1,16 @@
 import { expect, test } from "bun:test";
-import { hasFreshAllowance, sampleStatus } from "./herdr-app/mods/usage-monitor/time.js";
+import { hasFreshAllowance, refreshDuration, sampleStatus } from "./herdr-app/mods/usage-monitor/time.js";
 
 const minute = 60_000;
 const now = Date.UTC(2026, 10, 24, 12);
+
+test("refresh durations round to the nearest tenth and keep the decimal at whole seconds", () => {
+  expect(refreshDuration(0)).toBe("0.0s");
+  expect(refreshDuration(100)).toBe("0.1s");
+  expect(refreshDuration(949)).toBe("0.9s");
+  expect(refreshDuration(950)).toBe("1.0s");
+  expect(refreshDuration(1150)).toBe("1.2s");
+});
 
 test("sample age advances from the provider timestamp across display boundaries", () => {
   const report = { claude: {}, read_at: { claude: now } };

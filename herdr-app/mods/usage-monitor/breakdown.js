@@ -3,7 +3,7 @@ import { h_flex, v_flex } from "gpui-base";
 import { LIGHT_LABEL, creditLight, light, lightColor, windowLength } from "./pace.js";
 import { burndownCards } from "./burndown.js";
 import { historicalView } from "./historical.js";
-import { duration, sampleStatus, timed } from "./time.js";
+import { duration, refreshDuration, sampleStatus, timed } from "./time.js";
 
 const PROVIDERS = { copilot: "GitHub Copilot", cursor: "Cursor", grok: "Grok", opencode: "OpenCode" };
 const WINDOWS = { session: "Session", day: "Daily", week: "Weekly", month: "Monthly" };
@@ -199,15 +199,15 @@ function refreshControls(t, report, state) {
     const { outcome, elapsedMs } = state.refreshResult;
     const label = outcome === "failed" ? "Refresh failed" : outcome === "unchanged" ? "No new readings" : "✓ Refreshed";
     status.child(div().text_color(outcome === "failed" ? t.blocked : t.muted)
-      .child(`${label} · ${(elapsedMs / 1000).toFixed(1)}s`));
+      .child(`${label} · ${refreshDuration(elapsedMs)}`));
   }
   const label = state.pending ? h_flex().gap(5).items_center()
     .child(svg("mods/usage-monitor/refresh-spinner.svg").size(11).flex_none().text_color(t.accent).spin(750))
-    .child(`Refreshing ${Math.max(0, Math.floor((now - state.startedAt) / 1000))}s`) : "Refresh";
+    .child(`Refreshing ${refreshDuration(now - state.startedAt)}`) : "Refresh";
   return h_flex().items_center().gap(8)
     .child(status)
     .child(button(t, "refresh-usage", label, state.refresh, state.pending, state.pending ? "" : "R")
-      .w(114).justify_center());
+      .min_w(114).justify_center());
 }
 
 // Allowances | Burndown | History, switched with A, B and H (U aliases A), or cycled with Space.
