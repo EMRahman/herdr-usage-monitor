@@ -1,11 +1,12 @@
-# Subscription Usage
+# Usage Monitor
 
-See which AI subscription is running tight and which will reset with quota to
-spare. Compare limits for Claude Code, Codex, Antigravity, Cursor, GitHub
-Copilot, Grok, and OpenCode. Click the sidebar readout for reset times and
-burndown charts that show how fast each allowance is draining.
+Track AI subscription allowances, burndown pace, and historical model & token
+usage in Herdr. Compare limits for Claude Code, Codex, Antigravity, Cursor,
+GitHub Copilot, Grok, and OpenCode. Click the sidebar readout for reset times,
+burndown charts that show how fast each allowance is draining, and local token
+history across models.
 
-![Subscription Usage](preview.png)
+![Usage Monitor](preview.png)
 
 ## What you see
 
@@ -21,8 +22,7 @@ burndown charts that show how fast each allowance is draining.
   centred, with the same colour.
 - **The breakdown** is a dialog covering 90% of the window, `popover`
   background, 12px text:
-  - A header with "Subscription usage" (16px semibold) and Refresh and Close
-    buttons (28px high, `raised`).
+  - A header with "Usage Monitor" (16px semibold), the `Allowances A | Burndown B | History H` view switcher, and Refresh and Close buttons (28px high, `raised`).
   - An **Untapped allowance** panel across the full width (a card with a green
     border when anything is listed): every untapped window, soonest reset
     first, as `● Claude  5h session ··· 47% left · ≈27% spare · resets in 1h 0m`.
@@ -42,8 +42,8 @@ burndown charts that show how fast each allowance is draining.
   - A footer: "Updated · 11:20 AM", "Cached · …" when older than 5 minutes,
     "Refreshing allowances…" while reading, or the error in red.
 
-- **Burndown**, the dialog's second view (an `Allowances | Burndown` switch
-  beside the title, the chosen one on `selected`): an intro line, then one card
+- **Burndown**, the dialog's second view (in the `Allowances | Burndown | History`
+  switch beside the title, the chosen one on `selected`): an intro line, then one card
   per provider with a chart for each 5-hour and weekly limit, model-specific
   ones too (Claude's 7d Opus and 7d Sonnet, each Antigravity model group).
   - Each chart has a header like the breakdown's rows (light dot, name,
@@ -71,6 +71,8 @@ burndown charts that show how fast each allowance is draining.
     48th of the window. Claude and Codex tooltips also show the local model
     and reasoning effort combinations logged in that time slice.
 
+- **History**, the dialog's third view (shortcut <kbd>H</kbd>; `Allowances A | Burndown B | History H`, cycled with <kbd>Space</kbd>): local model usage and token counts from `history.sqlite` across calendar-aligned **D** (24 hourly), **W** (7 daily), **M** (daily), and **Y** (52 weekly) horizons, with `[` / `]` period stepping, Provider and Model filter popovers, a `Cache: On/Off` toggle (`C`), a 5-stat summary strip, both a categorical **Tokens by model** stacked bar chart (top 7 models + `Other`) and a native GPUI `PathBuilder` **Usage over time** line graph (`Per model` / `Cumulative`, toggled via `G` between `Both | Bars | Line`), and a clickable 2-column **Top models** breakdown with period-over-period Δ% and reasoning effort mix. Chart selections (horizon, chart/line mode, cache toggle, and filters) persist across overlay closes and restarts via Herdr's `shared("usage-monitor.chartPrefs")`.
+
 ## How it behaves
 
 - **Traffic lights.** A window's length comes from its label (5h, 7d / weekly,
@@ -89,9 +91,12 @@ burndown charts that show how fast each allowance is draining.
   Esc, Close or a click outside closes it.
 - **Refresh** asks every provider now. It's greyed out while a read is running.
 - **Keys in the breakdown:** it takes the keyboard when it opens. R refreshes,
-  B switches to Burndown and U back to Allowances, and Space toggles between
-  them; each button shows its key in `dim` 10px text, with a Space hint beside
-  the view switch. Cmd+U and Esc still close it.
+  A switches to Allowances (U also works as an alias), B to Burndown, H to
+  History, and Space cycles between them (`Shift+Space` reverses); each button
+  shows its key in `dim` 10px text, with a Space hint beside the view switch.
+  Inside History, D/W/M/Y switch time horizons, `[` / `]` step periods (`T`
+  returns to current), `G` cycles `Both | Bars | Line`, and `C` toggles cache
+  tokens. Cmd+U and Esc still close it.
 - **Polling.** Each copy of the mod checks every 60s. The bridge answers from a
   shared cache and only asks the providers when the cache is 3 minutes old, so
   the readout and breakdown share recent results.
@@ -132,13 +137,18 @@ burndown charts that show how fast each allowance is draining.
     so every copy redraws. Uses `exec`, `readTextFile`, `appHome`, `home`,
     `layout` (to tell the rail), `run("mod.open")`, `closeOverlay`, `setShared`,
     `theme`, `checking`, `cx.timer.every`, `.on_size_change`.
-  - `breakdown.js`: the dialog. `burndown.js`: the charts. `pace.js`: the
-    traffic-light rules. `time.js`: times and durations.
+  - `breakdown.js`: the dialog. `burndown.js`: the burndown charts. `historical.js`:
+    the Historical panel (stacked bars, `PathBuilder` line graph, KPIs, filters,
+    and model leaderboard). `pace.js`: the traffic-light rules. `time.js`: times,
+    durations, and compact token formatting.
   - `bridge.js`: the provider code, prebuilt by `build.ts`. It
     prints `{report, summary, parts}` as JSON: `--cached` returns whatever's
     cached, no flag refreshes a cache 3 minutes old, `--refresh` asks now.
     `--history` prints `{burndowns, modelUsage}` with allowance runs for each
     limit's current window and timestamped model activity from SQLite.
+    `--historical` prints pre-bucketed `D/W/M/Y` token & model analytics from
+    SQLite (optionally running one bounded incremental log-sync slice with
+    `--sync=1`).
   - `gauge.svg`: the icon.
 - **Programs:** Bun runs `bridge.js`. The mod tries `bun` on Herdr's PATH, then
   `config.json`'s `bun` (written by the installer), then `~/.bun/bin/bun`,

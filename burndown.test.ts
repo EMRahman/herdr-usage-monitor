@@ -24,11 +24,17 @@ function element() {
   });
 }
 
-mock.module("gpui-kit", () => ({ div: element }));
+mock.module("gpui-kit", () => ({
+  div: element,
+  PathBuilder: { stroke: () => element(), fill: () => element() },
+  Background: { solid: () => ({ opacity: () => ({}) }) },
+}));
 mock.module("gpui-base", () => ({
   h_flex: element,
   v_flex: element,
+  Button: { new: (id: string) => element().id(id) },
   HoverCard: { new: (id: string) => element().id(id) },
+  Popover: { new: (id: string) => element().id(id) },
 }));
 const { burndownCards } = await import("./herdr-app/mods/usage-monitor/burndown.js");
 

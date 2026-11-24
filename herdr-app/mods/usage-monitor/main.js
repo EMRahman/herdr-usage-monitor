@@ -1,12 +1,17 @@
 import { View, div, svg } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
-import { appHome, checking, closeOverlay, exec, home, layout, props, readTextFile, run, setShared, theme } from "herdr";
+import { appHome, checking, closeOverlay, exec, home, layout, props, readTextFile, run, setShared, shared, theme } from "herdr";
 import { breakdown } from "./breakdown.js";
+import { normalizeChartPrefs, offsetForTimestamp } from "./historical.js";
 
 const ID = "usage-monitor";
 const REVISION = `${ID}.revision`;
+const CHART_PREFS = `${ID}.chartPrefs`;
 const POLL_MS = 60_000;
 const STALE_MS = 5 * 60_000;
+const BACKFILL_DELAY_MS = 300;
+const VIEWS = ["allowances", "burndown", "historical"];
+const CHART_MODES = ["both", "bars", "line"];
 
 // Shared by every copy: the latest data and error. A task's cx only redraws its own copy,
 // so a change is announced through shared state, which redraws every copy. Requests are each
@@ -79,8 +84,27 @@ export default class UsageMonitor extends View {
     this.view = "allowances";
     this.history = null;
     this.historyError = "";
-    // The breakdown takes the keyboard for its shortcuts: R refreshes, B and U switch views,
-    // Space toggles between them.
+
+    // History panel state (persisted across overlay closes and restarts via Herdr shared state).
+    let savedRaw = null;
+    try { savedRaw = shared(CHART_PREFS); } catch {}
+    const saved = normalizeChartPrefs(savedRaw);
+    this.horizon = saved.horizon;
+    this.offset = 0;
+    this.providerFilter = saved.providerFilter;
+    this.modelFilter = saved.modelFilter;
+    this.includeCache = saved.includeCache;
+    this.chartMode = saved.chartMode;
+    this.lineMode = saved.lineMode;
+    this.openFilter = null;
+    this.historical = null;
+    this.historicalError = "";
+    this.historicalPending = false;
+    this.historicalGeneration = 0;
+    this.backfillTimer = null;
+
+    // The breakdown takes the keyboard for its shortcuts: R refreshes, A/B/H switch views
+    // (U aliases A), Space cycles them, and D/W/M/Y/[/]/T/G/C control History.
     if (props()?.overlay) {
       this.handle = cx.focus_handle();
       this.handle.focus();
@@ -91,7 +115,18 @@ export default class UsageMonitor extends View {
       if (!snapshot) await this.read(cx, ["--cached"]);
       await this.read(cx, []);
     });
+    if (this.view === "burndown") cx.spawn((cx) => this.readHistory(cx));
+    else if (this.view === "historical") cx.spawn((cx) => this.readHistorical(cx, { sync: true }));
     cx.timer.every(POLL_MS, (cx) => cx.spawn((cx) => this.read(cx, [])));
+  }
+
+  close() {
+    this.cancelBackfill();
+  }
+
+  cancelBackfill() {
+    try { this.backfillTimer?.cancel(); } catch {}
+    this.backfillTimer = null;
   }
 
   busy() {
@@ -113,11 +148,15 @@ export default class UsageMonitor extends View {
       cx.notify();
     }
     if (this.view === "burndown") await this.readHistory(cx);
+    else if (this.view === "historical") await this.readHistorical(cx, { sync: false });
   }
 
   setView(view, cx) {
     this.view = view;
+    this.openFilter = null;
+    if (view !== "historical") this.cancelBackfill();
     if (view === "burndown") cx.spawn((cx) => this.readHistory(cx));
+    else if (view === "historical") cx.spawn((cx) => this.readHistorical(cx, { sync: true }));
     cx.notify();
   }
 
@@ -125,13 +164,151 @@ export default class UsageMonitor extends View {
     if (!this.busy()) cx.spawn((cx) => this.read(cx, ["--refresh"]));
   }
 
+  saveChartPrefs() {
+    if (checking()) return;
+    try {
+      setShared(CHART_PREFS, {
+        horizon: this.horizon,
+        chartMode: this.chartMode,
+        lineMode: this.lineMode,
+        includeCache: this.includeCache,
+        providerFilter: this.providerFilter,
+        modelFilter: this.modelFilter,
+      });
+    } catch {}
+  }
+
+  setHorizon(horizon, cx) {
+    if (this.horizon === horizon && this.offset === 0) return;
+    this.horizon = horizon;
+    this.offset = 0;
+    this.openFilter = null;
+    this.saveChartPrefs();
+    cx.spawn((cx) => this.readHistorical(cx, { sync: false }));
+    cx.notify();
+  }
+
+  stepOffset(delta, cx) {
+    const next = Math.min(0, this.offset + delta);
+    if (next === this.offset) return;
+    this.offset = next;
+    cx.spawn((cx) => this.readHistorical(cx, { sync: false }));
+    cx.notify();
+  }
+
+  resetOffset(cx) {
+    if (this.offset === 0) return;
+    this.offset = 0;
+    cx.spawn((cx) => this.readHistorical(cx, { sync: false }));
+    cx.notify();
+  }
+
+  jumpToLatest(latestMs, cx) {
+    this.offset = offsetForTimestamp(this.horizon, latestMs, Date.now());
+    cx.spawn((cx) => this.readHistorical(cx, { sync: false }));
+    cx.notify();
+  }
+
+  setProviderFilter(provider, cx) {
+    if (this.providerFilter === provider) return;
+    this.providerFilter = provider;
+    this.saveChartPrefs();
+    cx.spawn((cx) => this.readHistorical(cx, { sync: false }));
+    cx.notify();
+  }
+
+  setModelFilter(model, cx) {
+    if (this.modelFilter === model) return;
+    this.modelFilter = model;
+    this.saveChartPrefs();
+    cx.spawn((cx) => this.readHistorical(cx, { sync: false }));
+    cx.notify();
+  }
+
+  clearFilters(cx) {
+    if (this.providerFilter === "all" && this.modelFilter === "all") return;
+    this.providerFilter = "all";
+    this.modelFilter = "all";
+    this.openFilter = null;
+    this.saveChartPrefs();
+    cx.spawn((cx) => this.readHistorical(cx, { sync: false }));
+    cx.notify();
+  }
+
+  toggleCache(cx) {
+    this.includeCache = !this.includeCache;
+    this.saveChartPrefs();
+    cx.spawn((cx) => this.readHistorical(cx, { sync: false }));
+    cx.notify();
+  }
+
+  setChartMode(mode, cx) {
+    if (this.chartMode === mode) return;
+    this.chartMode = mode;
+    this.saveChartPrefs();
+    cx.notify();
+  }
+
+  cycleChartMode(cx) {
+    const idx = CHART_MODES.indexOf(this.chartMode);
+    this.chartMode = CHART_MODES[(idx + 1) % CHART_MODES.length];
+    this.saveChartPrefs();
+    cx.notify();
+  }
+
+  setLineMode(mode, cx) {
+    if (this.lineMode === mode) return;
+    this.lineMode = mode;
+    this.saveChartPrefs();
+    cx.notify();
+  }
+
   onKey(event, cx) {
-    const toggled = this.view === "burndown" ? "allowances" : "burndown";
-    const action = { r: "refresh", b: "burndown", u: "allowances", space: toggled }[event.keystroke];
-    if (!action) return;
-    if (action === "refresh") this.refresh(cx);
-    else if (action !== this.view) this.setView(action, cx);
-    cx.stop_propagation();
+    const key = event.keystroke;
+    if (key === "escape" && this.openFilter) {
+      this.openFilter = null;
+      cx.notify();
+      cx.stop_propagation();
+      return;
+    }
+    const idx = VIEWS.indexOf(this.view);
+    const nextView = VIEWS[(idx + 1) % VIEWS.length];
+    const prevView = VIEWS[(idx + VIEWS.length - 1) % VIEWS.length];
+    const action = {
+      r: "refresh",
+      a: "allowances",
+      u: "allowances",
+      b: "burndown",
+      h: "historical",
+      space: nextView,
+      "shift-space": prevView,
+    }[key];
+    if (action) {
+      if (action === "refresh") this.refresh(cx);
+      else if (action !== this.view) this.setView(action, cx);
+      cx.stop_propagation();
+      return;
+    }
+    if (this.view !== "historical") return;
+    if (key === "d" || key === "w" || key === "m" || key === "y") {
+      this.setHorizon(key, cx);
+      cx.stop_propagation();
+    } else if (key === "[") {
+      this.stepOffset(-1, cx);
+      cx.stop_propagation();
+    } else if (key === "]") {
+      this.stepOffset(1, cx);
+      cx.stop_propagation();
+    } else if (key === "0" || key === "t") {
+      this.resetOffset(cx);
+      cx.stop_propagation();
+    } else if (key === "g") {
+      this.cycleChartMode(cx);
+      cx.stop_propagation();
+    } else if (key === "c") {
+      this.toggleCache(cx);
+      cx.stop_propagation();
+    }
   }
 
   // The burndown charts' data, read from the local history while they're on screen.
@@ -145,6 +322,48 @@ export default class UsageMonitor extends View {
       this.historyError = failure?.message || String(failure);
     }
     cx.notify();
+  }
+
+  // Aggregated local model & token usage for the Historical panel.
+  async readHistorical(cx, { sync = false } = {}) {
+    this.cancelBackfill();
+    const generation = ++this.historicalGeneration;
+    this.historicalPending = true;
+    cx.notify();
+    const args = [
+      "--historical",
+      `--horizon=${this.horizon}`,
+      `--offset=${this.offset}`,
+      `--provider=${this.providerFilter}`,
+      `--model=${this.modelFilter}`,
+      `--cache=${this.includeCache ? "1" : "0"}`,
+      `--sync=${sync ? "1" : "0"}`,
+    ];
+    try {
+      const result = await runBridge(args);
+      if (generation !== this.historicalGeneration) return;
+      if (result.code !== 0) {
+        throw new Error(`Couldn’t read historical usage${lastLine(result.stderr) ? `: ${lastLine(result.stderr)}` : "."}`);
+      }
+      this.historical = JSON.parse(result.stdout);
+      this.historicalError = "";
+      if (this.view === "historical" && this.historical?.backfill?.pendingFiles > 0) {
+        this.backfillTimer = cx.timer.after(BACKFILL_DELAY_MS, (timerCx) => {
+          this.backfillTimer = null;
+          if (this.view === "historical" && generation === this.historicalGeneration) {
+            timerCx.spawn((nextCx) => this.readHistorical(nextCx, { sync: true }));
+          }
+        });
+      }
+    } catch (failure) {
+      if (generation !== this.historicalGeneration) return;
+      this.historicalError = failure?.message || String(failure);
+    } finally {
+      if (generation === this.historicalGeneration) {
+        this.historicalPending = false;
+        cx.notify();
+      }
+    }
   }
 
   render() {
@@ -161,6 +380,32 @@ export default class UsageMonitor extends View {
         history: this.history,
         historyError: this.historyError,
         setView: (view, cx) => this.setView(view, cx),
+        historical: this.historical,
+        historicalError: this.historicalError,
+        historicalPending: this.historicalPending,
+        horizon: this.horizon,
+        offset: this.offset,
+        providerFilter: this.providerFilter,
+        modelFilter: this.modelFilter,
+        includeCache: this.includeCache,
+        chartMode: this.chartMode,
+        lineMode: this.lineMode,
+        openFilter: this.openFilter,
+        setOpenFilter: (id, cx) => {
+          this.openFilter = id;
+          cx.notify();
+        },
+        setHorizon: (horizon, cx) => this.setHorizon(horizon, cx),
+        stepOffset: (delta, cx) => this.stepOffset(delta, cx),
+        resetOffset: (cx) => this.resetOffset(cx),
+        jumpToLatest: (latestMs, cx) => this.jumpToLatest(latestMs, cx),
+        setProviderFilter: (provider, cx) => this.setProviderFilter(provider, cx),
+        setModelFilter: (model, cx) => this.setModelFilter(model, cx),
+        clearFilters: (cx) => this.clearFilters(cx),
+        toggleCache: (cx) => this.toggleCache(cx),
+        setChartMode: (mode, cx) => this.setChartMode(mode, cx),
+        setLineMode: (mode, cx) => this.setLineMode(mode, cx),
+        retryHistorical: (cx) => cx.spawn((nextCx) => this.readHistorical(nextCx, { sync: true })),
         focus: this.handle,
         onKey: (event, cx) => this.onKey(event, cx),
         width: this.size?.width,
@@ -176,7 +421,7 @@ export default class UsageMonitor extends View {
     const parts = snapshot?.parts ?? [];
     const lowest = Math.min(...parts.map((part) => part.remaining ?? Infinity));
     const tint = error ? t.blocked : levelColor(t, lowest) ?? t.muted;
-    const tooltip = error || snapshot?.summary || "Subscription usage";
+    const tooltip = error || snapshot?.summary || "Usage Monitor";
     return v_flex().size_full().bg(t.chrome).border_t(1).border_color(t.border).px(8).py(4)
       .when(collapsed, (el) => el.px(0).items_center())
       .child(h_flex().id("usage-details").h(28).px(8).gap(9).items_center().rounded(8)

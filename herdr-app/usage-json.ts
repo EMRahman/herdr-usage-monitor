@@ -1,11 +1,18 @@
 // JSON bridge for the desktop mod.
 import { fetchDetailedReport, getCachedReport } from "../fetcher.ts";
+import { readHistorical, type Horizon } from "../historical.ts";
 import { accountNames, labelAccounts, readBurndowns, recordReport } from "../history.ts";
 import { readModelUsage, syncModelUsage } from "../model-usage.ts";
 import { formatSummary, summaryParts } from "../usage-summary.ts";
 
 const DAY_MS = 24 * 60 * 60_000;
 const mode = process.argv[2];
+
+function flagValue(name: string): string | undefined {
+  const prefix = `--${name}=`;
+  const found = process.argv.find((arg) => arg.startsWith(prefix));
+  return found ? found.slice(prefix.length) : undefined;
+}
 
 // --history: the current 5-hour and weekly window of each limit, from the local history.
 if (mode === "--history") {
@@ -14,6 +21,31 @@ if (mode === "--history") {
   const burndowns = labelAccounts(readBurndowns(undefined, now), accountNames(cached));
   const start = Math.min(...burndowns.map((chart) => chart.start));
   console.log(JSON.stringify({ burndowns, modelUsage: readModelUsage(start, now) }));
+  process.exit(0);
+}
+
+// --historical: aggregated local model & token usage across D / W / M / Y horizons.
+if (mode === "--historical") {
+  const now = Date.now();
+  const shouldSync = flagValue("sync") === "1";
+  let backfill = { pendingFiles: 0, totalFiles: 0 };
+  if (shouldSync) {
+    const stats = await syncModelUsage(undefined, undefined, now, { budgetMs: 3_500 }).catch((error) => {
+      console.warn("Couldn't sync model usage:", error instanceof Error ? error.message : error);
+      return null;
+    });
+    if (stats) backfill = { pendingFiles: stats.pendingFiles, totalFiles: stats.totalFiles };
+  }
+  const offsetRaw = Number(flagValue("offset") ?? "0");
+  const payload = readHistorical({
+    horizon: (flagValue("horizon") ?? "m") as Horizon,
+    offset: Number.isFinite(offsetRaw) ? offsetRaw : 0,
+    provider: flagValue("provider") ?? "all",
+    model: flagValue("model") ?? "all",
+    includeCache: flagValue("cache") !== "0",
+    now,
+  }, undefined, backfill);
+  console.log(JSON.stringify(payload));
   process.exit(0);
 }
 

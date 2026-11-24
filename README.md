@@ -1,6 +1,6 @@
 # Herdr Usage Monitor
 
-**See which AI subscription is running tight and which will reset with quota to spare in the [Herdr desktop app](https://herdr.dev).**
+**Track AI subscription allowances, burndown pace, and historical model & token usage in the [Herdr desktop app](https://herdr.dev).**
 
 Claude Code · Codex · Antigravity · Cursor · GitHub Copilot · Grok · OpenCode
 
@@ -8,7 +8,7 @@ Claude Code · Codex · Antigravity · Cursor · GitHub Copilot · Grok · OpenC
 [![Herdr mod](https://img.shields.io/badge/Herdr-mod-2fbf71)](https://herdr.dev/gallery/?type=mods)
 [![Runs on Bun](https://img.shields.io/badge/runs%20on-Bun-f9f1e1)](https://bun.sh)
 
-![Subscription Usage shows remaining allowances alongside burndown charts and highlights quota likely to go unused](herdr-app/preview.png)
+![Usage Monitor shows remaining allowances alongside burndown charts and highlights quota likely to go unused](herdr-app/preview.png)
 
 **Always on screen.** What's left of each subscription sits at the bottom left of the Herdr app's sidebar, above Settings. A figure turns yellow at 30% or less and red at 10% or less.
 
@@ -18,9 +18,13 @@ Claude Code · Codex · Antigravity · Cursor · GitHub Copilot · Grok · OpenC
 
 ![The breakdown in the Herdr app, with an Untapped allowance panel and traffic-light bars for Claude, Codex and Antigravity](docs/herdr-app-allowances.png)
 
-Press <kbd>B</kbd> (or <kbd>Space</kbd>, which toggles between the two views) to switch to the **Burndown** view, which charts how each limit has drained through its current window against an even pace (see [Burndown charts](#burndown-charts)):
+Press <kbd>B</kbd> for **Burndown** (or <kbd>H</kbd> for **History**, and <kbd>Space</kbd> to cycle views), which charts how each limit has drained through its current window against an even pace (see [Burndown charts](#burndown-charts)):
 
 ![Burndown charts for Claude, Codex and Antigravity. Faint shading extends from the start of each window to the current-time marker. Shading between each allowance line and the dotted even-pace line is green where allowance is ahead of pace and would go unused, yellow where it is a little behind, and red where it is 20 or more points behind.](docs/herdr-app-burndown.png)
+
+Press <kbd>H</kbd> to switch to **History**, which graphs local model usage and token counts with both a stacked bar chart and a line graph across `D/W/M/Y` horizons (see [Usage history](#usage-history)):
+
+![Usage history panel in the Herdr app, showing D/W/M/Y horizon controls, KPI summary strip, stacked bar chart by model, multi-line usage graph over time with dashed total line, and Top models breakdown](docs/herdr-app-historical.png)
 
 ## Quick start
 
@@ -35,7 +39,7 @@ bun herdr-app/install.ts --bind-key
 That's it. The readout appears at the bottom left of the sidebar, above Settings.
 
 - **If you don't see it**, switch layouts with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>L</kbd>. The installer prints the layout's name: the personal layout you had open, or its own `herdr-with-usage`.
-- **Open the breakdown** with <kbd>Cmd</kbd>+<kbd>U</kbd> (<kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>U</kbd> on Linux and Windows), or click the readout. In it, <kbd>R</kbd> refreshes, <kbd>B</kbd> shows the burndown charts and <kbd>U</kbd> the usage again.
+- **Open Usage Monitor** with <kbd>Cmd</kbd>+<kbd>U</kbd> (<kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>U</kbd> on Linux and Windows), or click the readout. In it, <kbd>R</kbd> refreshes, <kbd>A</kbd> shows Allowances (<kbd>U</kbd> also works), <kbd>B</kbd> shows Burndown, <kbd>H</kbd> shows History, and <kbd>Space</kbd> cycles between views.
 - **Without a shortcut:** leave out `--bind-key` and click the readout instead. The flag edits Herdr's `keys.json`, and Herdr stops adding new default shortcuts to an edited keys file.
 
 To update, `git pull` and run the installer again.
@@ -56,11 +60,15 @@ Everything green is listed in the **Untapped allowance** panel at the top, soone
 
 ## Burndown charts
 
-Switch the breakdown to **Burndown** (press <kbd>B</kbd>, and <kbd>U</kbd> to go back, or <kbd>Space</kbd> to toggle) to see how each 5-hour and weekly limit has drained through its current window, from 100% at the start to the reset. Claude’s 7d Opus and 7d Sonnet limits have their own charts, and Antigravity shows one chart per 5-hour or weekly limit in each model group. A dotted line shows an even pace to 0% at the reset. Faint shading extends from the start of the window to the vertical marker at the current time, so you can see how far through the window you are. The area between the allowance line and the dotted line is shaded to show how far ahead or behind an even pace each reading was: green when ahead (allowance that would go unused at that pace), yellow when a little behind, and red when 20 or more points behind. Hover a chart for the allowance reading. On Claude, Codex and Antigravity charts, the tooltip also lists models and reasoning efforts logged in that part of the timeline.
+Switch the view to **Burndown** (press <kbd>B</kbd>, <kbd>A</kbd> for Allowances, <kbd>H</kbd> for History, or <kbd>Space</kbd> to cycle) to see how each 5-hour and weekly limit has drained through its current window, from 100% at the start to the reset. Claude’s 7d Opus and 7d Sonnet limits have their own charts, and Antigravity shows one chart per 5-hour or weekly limit in each model group. A dotted line shows an even pace to 0% at the reset. Faint shading extends from the start of the window to the vertical marker at the current time, so you can see how far through the window you are. The area between the allowance line and the dotted line is shaded to show how far ahead or behind an even pace each reading was: green when ahead (allowance that would go unused at that pace), yellow when a little behind, and red when 20 or more points behind. Hover a chart for the allowance reading. On Claude, Codex and Antigravity charts, the tooltip also lists models and reasoning efforts logged in that part of the timeline.
 
 The charts come from readings kept on your machine, recorded each time allowances are read (every few minutes while Herdr is open), so they fill in from when you install this version. Time when Herdr was closed or the machine was asleep shows as a gap.
 
 Upgrading from the JSONL version starts a fresh chart history in `history.sqlite`. Your previous readings remain available in `history.jsonl` in the same directory.
+
+## Usage history
+
+Switch to **History** (press <kbd>H</kbd>, or cycle with <kbd>Space</kbd>) to inspect local model usage and token consumption across **Day (`D`, hourly)**, **Week (`W`, daily)**, **Month (`M`, daily)**, and **Year (`Y`, 52 weekly buckets)** calendar horizons. Use <kbd>[</kbd> and <kbd>]</kbd> to step backward and forward through past periods (<kbd>T</kbd> returns to the current period), <kbd>G</kbd> to toggle between **Both**, **Bars**, and **Line** views, and <kbd>C</kbd> to include or exclude prompt cache tokens. Click any model in the legend or **Top models** list to filter both charts.
 
 ## What it shows
 
@@ -79,7 +87,7 @@ Providers you aren't signed in to are left out.
 - **It connects only to the providers themselves:** Anthropic, OpenAI and ChatGPT, GitHub, Cursor, Google, Grok and OpenCode, to read your usage. It has no server of its own and sends nothing anywhere else.
 - **Results are cached** in `~/.cache/herdr-usage-monitor/` and shared by the sidebar and breakdown, so the providers aren't asked on every check.
 - **History stays on your machine** in `~/.local/share/herdr-usage-monitor/history.sqlite` (under `$XDG_DATA_HOME` when set). Allowance readings and collected model activity are kept indefinitely. Allowance readings include the time, remaining percentage, reset time, and a hashed account identifier when available.
-- **Model activity** is recorded from local Codex, Claude Code and Antigravity session logs. SQLite stores the reported model ID, timestamp, reasoning effort when available, and a hashed event ID. The collector picks up events written in the last eight days. Deleting `history.sqlite` while Herdr is closed clears the database. The next poll can pick up recent model activity again from the logs.
+- **Model activity & tokens** are recorded from local Codex, Claude Code and Antigravity session logs. SQLite stores the reported model ID, timestamp, reasoning effort when available, hashed event and session IDs, and token counts (uncached input, output, cache read, cache write, reasoning). Prompt text, response bodies, and file paths are never stored. Existing local logs are indexed newest-first in bounded slices so recent horizons appear immediately. Deleting `history.sqlite` while Herdr is closed clears the database; the next poll rebuilds history from remaining local logs.
 
 ## Troubleshooting
 

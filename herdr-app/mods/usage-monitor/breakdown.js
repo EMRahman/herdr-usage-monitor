@@ -2,6 +2,7 @@ import { div } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
 import { LIGHT_LABEL, creditLight, light, lightColor, windowLength } from "./pace.js";
 import { burndownCards } from "./burndown.js";
+import { historicalView } from "./historical.js";
 import { duration, localTime, timed } from "./time.js";
 
 const PROVIDERS = { copilot: "GitHub Copilot", cursor: "Cursor", grok: "Grok", opencode: "OpenCode" };
@@ -188,9 +189,14 @@ function keyHint(t, key) {
   return div().text_size(10).text_color(t.dim).child(key);
 }
 
-// Allowances | Burndown, switched with U and B, or toggled with Space.
+// Allowances | Burndown | History, switched with A, B and H (U aliases A), or cycled with Space.
 function views(t, current, choose) {
-  const pill = h_flex().gap(2).p(2).rounded(6).bg(t.raised).children([["allowances", "Allowances", "U"], ["burndown", "Burndown", "B"]]
+  const items = [
+    ["allowances", "Allowances", "A"],
+    ["burndown", "Burndown", "B"],
+    ["historical", "History", "H"],
+  ];
+  const pill = h_flex().gap(2).p(2).rounded(6).bg(t.raised).children(items
     .map(([view, label, key]) => {
       const el = div().id(`view-${view}`).h(24).px(10).gap(6).rounded(4).flex().items_center();
       return (view === current ? el.bg(t.selected).text_color(t.foreground)
@@ -216,10 +222,15 @@ function burndownView(t, state) {
 }
 
 export function breakdown(t, report, state) {
+  const view = state.view === "burndown" || state.view === "historical" ? state.view : "allowances";
+  const burndown = view === "burndown";
+  const historical = view === "historical";
   const spares = [];
-  const cards = providerCards(t, report, spares);
-  const burndown = state.view === "burndown";
+  const cards = !burndown && !historical ? providerCards(t, report, spares) : [];
+  const backfillPending = state.historical?.backfill?.pendingFiles > 0;
   const message = state.error || (state.pending ? "Refreshing allowances…"
+    : historical && backfillPending ? `Indexing older logs (${state.historical.backfill.totalFiles - state.historical.backfill.pendingFiles}/${state.historical.backfill.totalFiles})…`
+    : historical && state.historicalPending ? "Loading usage history…"
     : report?.partial ? "Partial report"
     : report?.timestamp ? `${state.stale ? "Cached" : "Updated"} · ${localTime(report.timestamp)}` : "");
   return v_flex().id("usage-root").size_full().overflow_hidden().bg(t.popover).text_color(t.foreground).text_size(12)
@@ -228,15 +239,16 @@ export function breakdown(t, report, state) {
     .child(h_flex().flex_none().justify_between().items_center().gap(8).px(16).py(12)
       .border_b(1).border_color(t.border)
       .child(h_flex().gap(12).items_center()
-        .child(div().text_size(16).font_semibold().child("Subscription usage"))
-        .child(views(t, burndown ? "burndown" : "allowances", state.setView)))
+        .child(div().text_size(16).font_semibold().child("Usage Monitor"))
+        .child(views(t, view, state.setView)))
       .child(h_flex().gap(6)
         .child(button(t, "refresh-usage", "Refresh", state.refresh, state.pending, "R"))
         .child(button(t, "close-usage", "Close", state.close))))
     .child(v_flex().id("usage-scroll").flex_1().min_h(0).overflow_y_scrollbar().p(16).gap(8)
+      .when(historical, (el) => el.child(historicalView(t, state)))
       .when(burndown, (el) => el.child(burndownView(t, state)))
-      .when(!burndown && cards.length > 0, (el) => el.child(untapped(t, spares)).child(columns(cards, state.width ?? 0)))
-      .when(!burndown && cards.length === 0, (el) => el.child(div().text_color(t.muted)
+      .when(!burndown && !historical && cards.length > 0, (el) => el.child(untapped(t, spares)).child(columns(cards, state.width ?? 0)))
+      .when(!burndown && !historical && cards.length === 0, (el) => el.child(div().text_color(t.muted)
         .child(state.pending ? "Reading provider allowances…" : "No provider allowances available."))))
     .child(div().flex_none().px(16).py(10).border_t(1).border_color(t.border)
       .text_color(state.error ? t.blocked : t.muted).child(message));

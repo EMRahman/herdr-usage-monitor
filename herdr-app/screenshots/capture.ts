@@ -126,7 +126,7 @@ async function capture(view: string) {
   const out = join(repo, "docs", `herdr-app-${view}.png`);
   run(img, "crop", shot, ...DIALOG.map(String), out);
   console.log(`Wrote ${out}`);
-  for (const { from, scale, at } of PREVIEW[view]!) {
+  for (const { from, scale, at } of PREVIEW[view] ?? []) {
     run(img, "paste", shot, ...from.map(String), String(scale), ...at.map(String), preview);
   }
 }
@@ -137,6 +137,7 @@ try {
   await waitForWindow();
   await capture("allowances");
   await capture("burndown");
+  await capture("historical");
   console.log(`Updated ${preview}`);
 } finally {
   Bun.spawnSync([herdr, "do", "app.quit"], { env, stdout: "ignore", stderr: "ignore" });
