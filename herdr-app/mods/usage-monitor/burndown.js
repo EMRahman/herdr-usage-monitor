@@ -1,12 +1,13 @@
 // Burndown charts: % left over each 5-hour and weekly window, from the local history.
 //
 // GPUI has no paths, so the chart is boxes: a step line of 2px bars with a faint fill under it,
-// a dotted diagonal for an even pace from 100% at the window's start to 0% at its reset, a faint
-// tint over the time already gone, and a row of invisible columns that show the reading
-// and model activity under the pointer.
+// a dotted diagonal for an even pace from 100% at the window's start to 0% at its reset, a band
+// between the two that shades how far ahead or behind that pace each reading was, a faint tint
+// over the time already gone, and a row of invisible columns that show the reading and model
+// activity under the pointer.
 import { div } from "gpui-kit";
 import { h_flex, HoverCard, v_flex } from "gpui-base";
-import { light, lightColor } from "./pace.js";
+import { MARGIN, light, lightColor } from "./pace.js";
 import { localTime, timed } from "./time.js";
 
 const NAMES = {
@@ -22,6 +23,7 @@ const PACE_DOTS = 40;
 const COLUMNS = 48;
 // Narrowest a run is drawn, in % of the width, so a single reading still shows.
 const MIN_RUN = 0.4;
+const BAND_OPACITY = 0.22;
 
 const clamp = (value, lo, hi) => Math.max(lo, Math.min(hi, value));
 
@@ -76,6 +78,32 @@ function hoverColumns(t, b, activity, id, now) {
   });
 }
 
+// The gap between each reading and an even pace, shaded: green ahead of it, yellow a little
+// behind, red MARGIN or more points behind. Each run is cut at the hover columns' edges and
+// measured against the pace at each piece's middle, so the band steps down beside the dots.
+function gapBand(t, b, x, y) {
+  const span = b.end - b.start;
+  if (span <= 0) return [];
+  const slice = span / COLUMNS;
+  const boxes = [];
+  for (const [from, to, left] of b.runs) {
+    for (let i = Math.floor((from - b.start) / slice); b.start + i * slice < to; i += 1) {
+      const a = Math.max(from, b.start + i * slice);
+      const z = Math.min(to, b.start + (i + 1) * slice);
+      if (z <= a) continue;
+      const even = pace(b, (a + z) / 2);
+      const top = y(Math.max(left, even));
+      const height = y(Math.min(left, even)) - top;
+      if (height < 1) continue;
+      const spare = left - even;
+      const level = spare >= 0 ? "untapped" : spare > -MARGIN ? "pace" : "tight";
+      boxes.push(div().absolute().left(`${x(a)}%`).w(`${x(z) - x(a)}%`).top(top).h(height)
+        .bg(lightColor(t, level)).opacity(BAND_OPACITY));
+    }
+  }
+  return boxes;
+}
+
 function plot(t, b, activity, id, now) {
   const { x, y } = scale(b);
   const line = t.accent;
@@ -87,6 +115,7 @@ function plot(t, b, activity, id, now) {
   for (const level of [0, 50, 100]) {
     marks.push(div().absolute().left(0).w_full().h(1).top(Math.min(PLOT - 1, y(level))).bg(t.border));
   }
+  marks.push(...gapBand(t, b, x, y));
   for (let i = 0; i <= PACE_DOTS; i += 1) {
     const share = i / PACE_DOTS;
     marks.push(div().absolute().size(2).rounded_full().bg(t.muted)
@@ -108,11 +137,7 @@ function plot(t, b, activity, id, now) {
   if (now < b.end) {
     // A white line at the present, from the current % left down to the bottom of the plot.
     const top = y(b.left);
-    // The part above the even-pace line is allowance that would go unused at this pace: green.
-    const paceY = clamp(y(pace(b, now)), top, PLOT);
-    const at = `${x(now)}%`;
-    marks.push(div().absolute().left(at).top(top).h(PLOT - top).w(2).ml(-1).bg("#ffffff"));
-    if (paceY > top) marks.push(div().absolute().left(at).top(top).h(paceY - top).w(2).ml(-1).bg(lightColor(t, "untapped")));
+    marks.push(div().absolute().left(`${x(now)}%`).top(top).h(PLOT - top).w(2).ml(-1).bg("#ffffff"));
   }
   marks.push(...hoverColumns(t, b, activity, id, now));
   return div().relative().flex_1().min_w(0).h(PLOT).children(marks)

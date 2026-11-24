@@ -60,8 +60,13 @@ burndown charts that show how fast each allowance is draining.
     opacity behind everything, so how far through it you are shows at a
     glance; the time still to come stays clear. At the current
     time, a 2px white marker extends from the remaining allowance to the
-    bottom of the plot. The part above the dotted line is green (`#2fbf71`)
-    to show allowance that would go unused at this pace.
+    bottom of the plot.
+  - Between the step line and the dotted line, a band at 22% opacity shades
+    each reading's gap to an even pace: green (`#2fbf71`) where it was ahead,
+    yellow (`#d4a72c`) where it was less than 20 points behind, red
+    (`#e5534b`) where it was 20 or more behind. Each run is cut at the 48ths
+    of the window and measured against the pace at each piece's middle, so
+    the band steps down beside the dots. Gaps in the readings stay clear.
   - Hovering the plot shows "3:40 PM · 62% left · even pace 55%" for that
     48th of the window. Claude and Codex tooltips also show the local model
     and reasoning effort combinations logged in that time slice.
