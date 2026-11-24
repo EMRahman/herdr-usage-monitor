@@ -1,12 +1,14 @@
 # Herdr Usage Monitor
 
-**See how much of your AI subscriptions is left, and where allowance is about to go unused, in the [Herdr desktop app](https://herdr.dev).**
+**See which AI subscription is running tight and which will reset with quota to spare in the [Herdr desktop app](https://herdr.dev).**
 
 Claude Code · Codex · Antigravity · Cursor · GitHub Copilot · Grok · OpenCode
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Herdr mod](https://img.shields.io/badge/Herdr-mod-2fbf71)](https://herdr.dev/mods)
+[![Herdr mod](https://img.shields.io/badge/Herdr-mod-2fbf71)](https://herdr.dev/gallery/?type=mods)
 [![Runs on Bun](https://img.shields.io/badge/runs%20on-Bun-f9f1e1)](https://bun.sh)
+
+![Subscription Usage shows remaining allowances alongside burndown charts and highlights quota likely to go unused](herdr-app/preview.png)
 
 **Always on screen.** What's left of each subscription sits at the bottom left of the Herdr app's sidebar, above Settings. A figure turns yellow at 30% or less and red at 10% or less.
 
@@ -14,7 +16,7 @@ Claude Code · Codex · Antigravity · Cursor · GitHub Copilot · Grok · OpenC
 
 **One shortcut for the full breakdown.** Press <kbd>Cmd</kbd>+<kbd>U</kbd>, or click the readout, to see every limit, when it resets, and where allowance is going unused:
 
-![The breakdown in the Herdr app: an Untapped allowance panel, then Claude, Codex and Antigravity cards with traffic-light bars](herdr-app/preview.png)
+![The breakdown in the Herdr app, with an Untapped allowance panel and traffic-light bars for Claude, Codex and Antigravity](docs/herdr-app-allowances.png)
 
 Press <kbd>B</kbd> (or <kbd>Space</kbd>, which toggles between the two views) to switch to the **Burndown** view, which charts how each limit has drained through its current window against an even pace (see [Burndown charts](#burndown-charts)):
 
