@@ -4,11 +4,14 @@ import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { BRIDGE, bundle } from "./build.ts";
 import {
-  type LayoutNode, addAboveSidebarFooter, findNode, foreignTo, reinsert, removeNode, shipped, strip,
+  type LayoutNode, addAboveSidebarFooter, addBesideTabs, findNode, foreignTo, reinsert, removeBesideTabs, removeNode,
+  shipped, strip,
 } from "./layout.ts";
 
 const MOD = "usage-monitor";
 const PANEL = `${MOD}-panel`;
+const TAB = `${MOD}-tab`;
+const TABS_ROW = `${MOD}-tabs-row`;
 const LAYOUT = "herdr-with-usage";
 const home = resolve(process.env.HERDR_APP_HOME || join(homedir(), ".config", "herdr-app"));
 const source = join(import.meta.dir, "mods", MOD);
@@ -37,8 +40,12 @@ const layoutArg = layoutFlag === -1 ? undefined : process.argv[layoutFlag + 1];
 // 28px row plus 4px above and below, like the footer's rows.
 const BLOCK: LayoutNode = { id: MOD, type: "block", size: { px: 36 }, content: { mod: MOD } };
 
+// The Usage panel's toggle at the end of the tab bar, beside Herdr's Files and Changes. macOS
+// only: elsewhere the window buttons end the tab bar, and the toggle stays in the sidebar.
+const TAB_BLOCK: LayoutNode = { id: TAB, type: "block", size: { px: 80 }, content: { mod: MOD, props: { mode: "tab-button" } } };
+
 // Everything the mod needs. bridge.js is the provider code, prebuilt by build.ts.
-const FILES = ["mod.json", "main.js", "breakdown.js", "burndown.js", "panel.js", "historical.js", "pace.js", "time.js", "gauge.svg", "refresh-spinner.svg", "reset.svg", "bridge.js"];
+const FILES = ["mod.json", "main.js", "breakdown.js", "burndown.js", "panel.js", "historical.js", "pace.js", "time.js", "gauge.svg", "refresh.svg", "refresh-spinner.svg", "reset.svg", "bridge.js"];
 
 // Optional: the mod also works without it, finding Bun on the PATH.
 interface Config {
@@ -82,6 +89,16 @@ function addRightPanel(tree: LayoutNode): boolean {
   return true;
 }
 
+function addTabButton(tree: LayoutNode): boolean {
+  return mac && addBesideTabs(tree, structuredClone(TAB_BLOCK), TABS_ROW);
+}
+
+/** The panel and its toggle, wherever the readout is. True if anything was added. */
+function addPanel(tree: LayoutNode): boolean {
+  const panel = addRightPanel(tree);
+  return addTabButton(tree) || panel;
+}
+
 interface LayoutPlan {
   /** Files to write, by path. */
   writes: Map<string, string>;
@@ -99,7 +116,7 @@ function planOwnLayout(previous: Partial<Config> | null, foreign: (node: LayoutN
   const stripped = existing ? strip(existing, foreign) : null;
   if (existing && stripped && hash(json(stripped.tree)) !== previous?.layoutHash) {
     const writes = new Map<string, string>();
-    if (findNode(existing, MOD) && addRightPanel(existing)) writes.set(path, json(existing));
+    if (findNode(existing, MOD) && addPanel(existing)) writes.set(path, json(existing));
     notes.push(`Kept your layout edits in ${path}.`);
     return { writes, layoutHash: previous?.layoutHash, notes };
   }
@@ -108,7 +125,7 @@ function planOwnLayout(previous: Partial<Config> | null, foreign: (node: LayoutN
   if (!addAboveSidebarFooter(tree, structuredClone(BLOCK))) {
     throw new Error("The main layout has no standard Herdr sidebar footer.");
   }
-  addRightPanel(tree);
+  addPanel(tree);
   const layoutHash = hash(json(tree));
   for (const lost of reinsert(tree, stripped?.removed ?? [])) {
     notes.push(`Herdr's main layout changed: no place left for the ${lost.node.content?.mod} block. Reinstall that mod.`);
@@ -129,7 +146,7 @@ function planOtherLayout(name: string, previous: Partial<Config> | null): Layout
     }
     changed = true;
   }
-  if (addRightPanel(tree) || changed) writes.set(path, json(tree));
+  if (addPanel(tree) || changed) writes.set(path, json(tree));
   return { writes, layoutHash: previous?.layoutHash, notes: [] };
 }
 
@@ -181,9 +198,10 @@ async function install() {
     const tree = readJson<LayoutNode>(layoutFile(moved));
     const removedReadout = removeNode(tree, MOD);
     const removedPanel = removeNode(tree, PANEL);
+    const removedTab = removeBesideTabs(tree, TABS_ROW);
     const stack = findNode(tree, "panel-body");
     if (removedPanel && stack?.active === PANEL) stack.active = stack.children?.[0]?.id;
-    if (removedReadout || removedPanel) plan.writes.set(layoutFile(moved), json(tree));
+    if (removedReadout || removedPanel || removedTab) plan.writes.set(layoutFile(moved), json(tree));
   }
 
   const keys = existsSync(keysPath) ? readJson<Record<string, Record<string, unknown>>>(keysPath) : null;
