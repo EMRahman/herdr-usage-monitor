@@ -1,13 +1,16 @@
 import { View, div, svg } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
-import { appHome, checking, closeOverlay, exec, home, layout, props, readTextFile, run, setShared, shared, theme } from "herdr";
+import { appHome, checking, closeOverlay, exec, focused, home, layout, openOverlay, props,
+  readTextFile, run, setShared, shared, terminals, theme } from "herdr";
 import { breakdown } from "./breakdown.js";
 import { normalizeChartPrefs, offsetForTimestamp } from "./historical.js";
+import { focusedProvider, PANEL_ID, rightPanel } from "./panel.js";
 import { hasFreshAllowance } from "./time.js";
 
 const ID = "usage-monitor";
 const REVISION = `${ID}.revision`;
 const CHART_PREFS = `${ID}.chartPrefs`;
+const PINNED_PROVIDER = `${ID}.pinnedProvider`;
 const POLL_MS = 60_000;
 const RESULT_MS = 5_000;
 const BACKFILL_DELAY_MS = 300;
@@ -83,13 +86,25 @@ function fail(failure) {
 
 export default class UsageMonitor extends View {
   init(_props, cx) {
+    this.isPanel = props()?.mode === "right-panel";
+    this.history = null;
+    this.historyError = "";
+    if (this.isPanel) {
+      this.lastProvider = null;
+      this.panelHistoryRevision = null;
+      if (!checking()) cx.timer.every(POLL_MS, (cx) => {
+        const root = layout();
+        if (panelIsOpen(root)) this.loadPanelHistory(cx, !readoutIsVisible(root));
+      });
+      return;
+    }
+
     this.since = 0;
     this.refreshResult = null;
     this.resultTimer = null;
     this.refreshTimer = null;
     this.view = "allowances";
-    this.history = null;
-    this.historyError = "";
+    if (props()?.overlay && props()?.view === "burndown") this.view = "burndown";
 
     // History panel state (persisted across overlay closes and restarts via Herdr shared state).
     let savedRaw = null;
@@ -126,7 +141,9 @@ export default class UsageMonitor extends View {
     });
     if (this.view === "burndown") cx.spawn((cx) => this.readHistory(cx));
     else if (this.view === "historical") cx.spawn((cx) => this.readHistorical(cx, { sync: true }));
-    cx.timer.every(POLL_MS, (cx) => cx.spawn((cx) => this.read(cx, [])));
+    cx.timer.every(POLL_MS, (cx) => {
+      if (this.handle || readoutIsVisible(layout())) cx.spawn((cx) => this.read(cx, []));
+    });
   }
 
   close() {
@@ -387,6 +404,27 @@ export default class UsageMonitor extends View {
     cx.notify();
   }
 
+  loadPanelHistory(cx, refreshAllowances = false) {
+    if (this.panelHistoryPending) return;
+    this.panelHistoryPending = true;
+    this.panelHistoryRevision = snapshot?.report?.timestamp;
+    cx.spawn(async (cx) => {
+      try {
+        if (refreshAllowances) {
+          try {
+            apply(await readUsage([]));
+          } catch (failure) {
+            fail(failure);
+          }
+          this.panelHistoryRevision = snapshot?.report?.timestamp;
+        }
+        await this.readHistory(cx);
+      } finally {
+        this.panelHistoryPending = false;
+      }
+    });
+  }
+
   // Aggregated local model & token usage for the History panel.
   async readHistorical(cx, { sync = false } = {}) {
     const runSync = sync && this.activeSyncs === 0;
@@ -446,16 +484,38 @@ export default class UsageMonitor extends View {
     }
   }
 
-  render() {
+  renderPanel(t, cx) {
+    const root = layout();
+    if (!checking() && panelIsOpen(root) && this.panelHistoryRevision !== snapshot?.report?.timestamp) {
+      this.loadPanelHistory(cx, this.panelHistoryRevision === null && !readoutIsVisible(root));
+    }
+    const active = focusedProvider(focused(), terminals());
+    if (active) this.lastProvider = active;
+    const pinned = shared(PINNED_PROVIDER);
+    const provider = pinned || this.lastProvider;
+    return rightPanel(t, {
+      provider, pinned, focused: Boolean(active), history: this.history, historyError: this.historyError || error,
+      report: snapshot?.report,
+      togglePin: () => setShared(PINNED_PROVIDER, pinned ? null : provider),
+      close: () => run("layout.hide", { id: "panel" }),
+      details: () => openOverlay({ kind: "dialog", mod: ID, width: 0.9, height: 0.9, props: { view: "burndown" } }),
+    });
+  }
+
+  render(cx) {
     const t = theme();
+    if (this.isPanel) return this.renderPanel(t, cx);
     const overlay = props()?.overlay;
     if (overlay) {
+      const readout = findNode(layout(), ID);
       return breakdown(t, snapshot?.report, {
         pending: this.busy(),
         startedAt: this.since,
         refreshResult: this.refreshResult,
         error,
         refresh: (_event, cx) => this.refresh(cx),
+        readoutHidden: Boolean(readout?.hidden),
+        toggleReadout: readout ? () => run("layout.toggle", { id: ID }) : null,
         close: () => closeOverlay(overlay),
         view: this.view,
         history: this.history,
@@ -500,28 +560,49 @@ export default class UsageMonitor extends View {
     }
     // Sits in the sidebar above Settings, styled like the footer's rows. On the folded
     // rail it's just the gauge, tinted by the lowest allowance.
-    const collapsed = narrow();
+    const root = layout();
+    const collapsed = (findNode(root, "sidebar")?.size?.px ?? Infinity) < 160;
+    const hasPanel = Boolean(findNode(root, PANEL_ID));
+    const hasButton = hasPanel && !collapsed;
+    const panelOpen = hasPanel && panelIsOpen(root);
     const parts = snapshot?.parts ?? [];
     const lowest = Math.min(...parts.map((part) => part.remaining ?? Infinity));
     const tint = error ? t.blocked : levelColor(t, lowest) ?? t.muted;
-    const tooltip = error || snapshot?.summary || "Usage Monitor";
+    const summary = error || snapshot?.summary || "Usage Monitor";
+    const tooltip = hasPanel && collapsed ? `${summary}\nRight-click to toggle the Burndown panel` : summary;
+    const readout = h_flex().id("usage-details").min_w(0).h(28).px(8).gap(9).items_center().rounded(8)
+      .when(hasButton, (el) => el.flex_1().px(4).gap(7))
+      .when(collapsed, (el) => el.w(32).px(0).justify_center())
+      .text_size(13).text_color(t.muted).cursor_pointer()
+      .hover((s) => s.bg(t.hover).text_color(t.foreground))
+      .tooltip(tooltip)
+      .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+      .when(hasPanel, (el) => el.on_mouse_down("right", (_e, cx) => {
+        cx.stop_propagation();
+        togglePanel(panelOpen);
+      }))
+      .on_click(() => run("mod.open", { name: ID }))
+      .child(svg(`mods/${ID}/gauge.svg`).size(14).flex_none().text_color(tint))
+      .when(!collapsed, (el) => el.child(parts.length === 0
+        ? div().truncate().child(error ? "Usage unavailable" : "Usage")
+        : h_flex().min_w(0).gap(8).text_size(12).overflow_hidden().children(parts.map((part) =>
+          h_flex().flex_none().gap(3)
+            .child(part.name)
+            .child(div().text_color(levelColor(t, part.remaining) ?? t.foreground)
+              .child(part.note ?? `${part.remaining}%`))))));
+
     return v_flex().size_full().bg(t.chrome).border_t(1).border_color(t.border).px(8).py(4)
+      .when(hasButton, (el) => el.px(4))
       .when(collapsed, (el) => el.px(0).items_center())
-      .child(h_flex().id("usage-details").h(28).px(8).gap(9).items_center().rounded(8)
-        .when(collapsed, (el) => el.w(32).px(0).justify_center())
-        .text_size(13).text_color(t.muted).cursor_pointer()
-        .hover((s) => s.bg(t.hover).text_color(t.foreground))
-        .tooltip(tooltip)
-        .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
-        .on_click(() => run("mod.open", { name: ID }))
-        .child(svg(`mods/${ID}/gauge.svg`).size(14).flex_none().text_color(tint))
-        .when(!collapsed, (el) => el.child(parts.length === 0
-          ? div().truncate().child(error ? "Usage unavailable" : "Usage")
-          : h_flex().min_w(0).gap(8).text_size(12).overflow_hidden().children(parts.map((part) =>
-            h_flex().flex_none().gap(3)
-              .child(part.name)
-              .child(div().text_color(levelColor(t, part.remaining) ?? t.foreground)
-                .child(part.note ?? `${part.remaining}%`)))))));
+      .child(h_flex().min_w(0).w_full().gap(3).items_center()
+        .when(collapsed, (el) => el.justify_center())
+        .child(readout)
+        .when(hasButton, (el) => el.child(h_flex().id("usage-toggle-panel").w(24).h(28).flex_none()
+          .justify_center().items_center().rounded(5).cursor_pointer()
+          .bg(panelOpen ? t.selected : t.chrome).text_color(panelOpen ? t.foreground : t.muted)
+          .hover((s) => s.bg(t.hover)).tooltip(panelOpen ? "Close Burndown panel" : "Open Burndown panel")
+          .on_mouse_down("left", (_e, cx) => cx.stop_propagation()).on_click(() => togglePanel(panelOpen))
+          .child(svg("mods/workspace-chrome/panel-right.svg").size(14)))));
   }
 }
 
@@ -540,7 +621,24 @@ function findNode(node, id) {
   return null;
 }
 
-// Same rule as Herdr's sidebar: under 160px it's the folded rail.
-function narrow() {
-  return (findNode(layout(), "sidebar")?.size?.px ?? Infinity) < 160;
+function panelIsOpen(root) {
+  const panel = findNode(root, "panel");
+  return Boolean(panel && !panel.hidden && findNode(panel, "panel-body")?.active === PANEL_ID);
+}
+
+function readoutIsVisible(root) {
+  const readout = findNode(root, ID);
+  return Boolean(readout && !readout.hidden && !findNode(root, "sidebar")?.hidden);
+}
+
+function togglePanel(open) {
+  if (open) {
+    run("layout.hide", { id: "panel" });
+    return;
+  }
+  // Herdr's tab bar uses this list to restore the selected panel per space.
+  const enabled = shared("workspace.panels") ?? ["files", "changes"];
+  if (!enabled.includes(PANEL_ID)) setShared("workspace.panels", [...enabled, PANEL_ID]);
+  run("layout.select", { stack: "panel-body", child: PANEL_ID });
+  run("layout.show", { id: "panel" });
 }

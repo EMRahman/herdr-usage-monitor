@@ -8,9 +8,9 @@
 import { div } from "gpui-kit";
 import { h_flex, HoverCard, v_flex } from "gpui-base";
 import { MARGIN, light, lightColor } from "./pace.js";
-import { localTime, timed } from "./time.js";
+import { duration, localTime, timed } from "./time.js";
 
-const NAMES = {
+export const PROVIDER_NAMES = {
   claude: "Claude", codex: "Codex", antigravity: "Antigravity",
   copilot: "GitHub Copilot", cursor: "Cursor", grok: "Grok", opencode: "OpenCode",
 };
@@ -146,7 +146,7 @@ function plot(t, b, activity, id, now) {
       .flex().justify_center().text_size(11).text_color(t.muted).child("No readings in this window yet")));
 }
 
-function chart(t, b, activity, id, now) {
+export function burndownChart(t, b, activity, id, now, compact = false) {
   const lit = light({ remaining: b.left, resetsAt: b.reset, length: b.length, now });
   const color = lit.level ? lightColor(t, lit.level) : t.foreground;
   const title = [b.accountLabel, b.group, b.label].filter(Boolean).join(" · ");
@@ -155,19 +155,24 @@ function chart(t, b, activity, id, now) {
   const startLabel = unstarted ? "Now" : localTime(b.start);
   const end = hasReset ? `Resets ${localTime(b.end)}` : unstarted ? localTime(b.end) : "Now";
   const caption = timed("Resets", b.reset) || "No window running: it starts with the next request";
+  const summary = compact && lit.msLeft > 0 ? `Resets in ${duration(lit.msLeft)}` : caption;
   return v_flex().gap(6).py(6)
     .child(h_flex().justify_between().gap(12)
       .child(h_flex().min_w(0).gap(6).items_center()
         .when(Boolean(lit.level), (el) => el.child(div().flex_none().size(8).rounded_full().bg(color)))
-        .child(div().min_w(0).truncate().text_color(t.foreground).child(title)))
+        .child(div().min_w(0).truncate().text_color(t.foreground)
+          .when(compact, (el) => el.tooltip(title)).child(title)))
       .child(div().flex_none().font_semibold().text_color(color).child(`${Math.round(b.left)}% left`)))
-    .child(div().text_size(11).text_color(t.muted).child(caption))
+    .child(div().text_size(11).text_color(t.muted)
+      .when(compact, (el) => el.truncate().tooltip(caption))
+      .child(compact && lit.level === "tight" ? `Tight · ${summary}` : summary))
     .child(h_flex().items_start()
       .child(v_flex().flex_none().w(GUTTER).h(PLOT).justify_between().text_size(10).text_color(t.muted)
         .children(["100%", "50%", "0%"].map((label) => div().mt(-6).child(label))))
-      .child(plot(t, b, activity, id, now)))
+      .child(plot(t, b, activityForChart(b, activity), id, now)))
     .child(h_flex().ml(GUTTER).justify_between().text_size(10).text_color(t.muted)
-      .child(startLabel).child(end));
+      .child(compact && !unstarted ? "Start" : startLabel)
+      .child(compact && hasReset ? "Reset" : end));
 }
 
 function activityForChart(b, activity) {
@@ -216,8 +221,8 @@ export function burndownCards(t, burndowns, modelUsage = [], now = Date.now()) {
   return [...byProvider].map(([provider, list]) => {
     const activity = activityByProvider.get(provider) ?? [];
     return {
-      title: NAMES[provider] ?? provider,
-      rows: list.map((b, i) => chart(t, b, activityForChart(b, activity), `burndown-${provider}-${i}`, now)),
+      title: PROVIDER_NAMES[provider] ?? provider,
+      rows: list.map((b, i) => burndownChart(t, b, activity, `burndown-${provider}-${i}`, now)),
       weight: list.length * 6,
     };
   });

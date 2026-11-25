@@ -218,6 +218,7 @@ describe("historical.js UI rendering", () => {
 
     mock.module("gpui-kit", () => ({
       div: mockElement,
+      svg: mockElement,
       PathBuilder: {
         stroke: (w: number) => makeBuilder(`stroke:${w}`),
         fill: () => makeBuilder("fill"),

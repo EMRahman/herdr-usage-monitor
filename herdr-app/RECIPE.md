@@ -20,9 +20,17 @@ history across models.
   when all are healthy and `blocked` on an error.
 - **On the folded sidebar rail** (under 160px wide), only the gauge shows,
   centred, with the same colour.
+- **The right-hand Usage panel** opens from the panel button beside the
+  readout or a right-click on the gauge. It stacks the 5-hour and weekly
+  burndowns for the focused agent's provider, using the tracked account's
+  history. The last provider stays visible when a shell has focus. **Pin**
+  holds the provider until you choose **Follow**. **Details** opens the full
+  Burndown dialog. The compact card below the charts shows the same provider's
+  remaining allowances, resets, and credits. The panel
+  shares Herdr's panel area with Files and Changes.
 - **The breakdown** is a dialog covering 90% of the window, `popover`
   background, 12px text:
-  - A header with "Usage Monitor" (16px semibold), the `Allowances A | Burndown B | History H` view switcher, and Refresh and Close buttons (28px high, `raised`).
+  - A header with "Usage Monitor" (16px semibold), the `Allowances A | Burndown B | History H` view switcher, and Refresh, Show/Hide readout, and Close buttons (28px high, `raised`).
     The header shows the age of the allowance samples. When ages differ, it
     shows the oldest. Hover for individual sample times. A sample at least five
     minutes old is shown in yellow. During a refresh the button shows a
@@ -126,21 +134,25 @@ history across models.
 
 ## Built from
 
-- **Layout:** one block, `{"id": "usage-monitor", "type": "block", "size":
+- **Layout:** the readout block, `{"id": "usage-monitor", "type": "block", "size":
   {"px": 36}, "content": {"mod": "usage-monitor"}}`, inserted into the sidebar
   column directly before `sidebar-footer`. Herdr's shipped layouts are
   read-only, so it goes into a personal layout: your own, one another mod made
   (`main-context` from context-monitor, say), or a clone of `main`
   (`herdr-app do layout.clone '{"name":"main","as":"herdr-with-usage"}'`).
+  The installer also adds `{"id":"usage-monitor-panel","type":"block",
+  "content":{"mod":"usage-monitor","props":{"mode":"right-panel"}}}`
+  to Herdr's `panel-body` stack when that stack is present inside `panel`.
 - **`mods/usage-monitor/`:**
-  - `mod.json`: `{"place": "none", "overlay": {"width": 0.9, "height": 0.9}}`.
+  - `mod.json`: `place: "none"`, a 90% overlay, and a **Usage Monitor** command palette entry.
   - `main.js`: the readout (in a layout block) and the breakdown (as the
     overlay, when `props().overlay` is set). Data lives at module scope, shared
     by both copies; each change calls `setShared("usage-monitor.revision", …)`
     so every copy redraws. Uses `exec`, `readTextFile`, `appHome`, `home`,
     `layout` (to tell the rail), `run("mod.open")`, `closeOverlay`, `setShared`,
     `theme`, `checking`, `cx.timer.every`, `.on_size_change`.
-  - `breakdown.js`: the dialog. `burndown.js`: the burndown charts. `historical.js`:
+  - `breakdown.js`: the dialog. `burndown.js`: the burndown charts. `panel.js`:
+    the compact right-hand view and provider selection. `historical.js`:
     the Historical panel (stacked bars, `PathBuilder` line graph, KPIs, filters,
     and model leaderboard). `pace.js`: the traffic-light rules. `time.js`: times,
     durations, and compact token formatting.

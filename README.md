@@ -40,7 +40,9 @@ That's it. The readout appears at the bottom left of the sidebar, above Settings
 
 - **If you don't see it**, switch layouts with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>L</kbd>. The installer prints the layout's name: the personal layout you had open, or its own `herdr-with-usage`.
 - **Open Usage Monitor** with <kbd>Cmd</kbd>+<kbd>U</kbd> (<kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>U</kbd> on Linux and Windows), or click the readout. In it, <kbd>R</kbd> refreshes, <kbd>A</kbd> shows Allowances (<kbd>U</kbd> also works), <kbd>B</kbd> shows Burndown, <kbd>H</kbd> shows History, and <kbd>Space</kbd> cycles between views.
-- **Without a shortcut:** leave out `--bind-key` and click the readout instead. The flag edits Herdr's `keys.json`, and Herdr stops adding new default shortcuts to an edited keys file.
+- **Follow your active agent** with the panel button beside the readout (right-click the gauge when the sidebar is folded). The right-hand panel shows the focused agent's 5-hour and weekly account burndowns, with that provider's current allowances, reset times, and credits below. It keeps the last provider in view when you focus a shell. Choose **Pin** to hold that provider, **Follow** to resume switching, or **Details** for full Burndown. This button is available in layouts with Herdr's Files and Changes panel area.
+- **Show or hide the bottom-left readout** with the **Show readout** or **Hide readout** button in the full Usage Monitor. You can open **Usage Monitor** from Herdr's command palette whenever the readout is hidden.
+- **Without a shortcut:** leave out `--bind-key` and open Usage Monitor from the readout or the command palette. The flag edits Herdr's `keys.json`, and Herdr stops adding new default shortcuts to an edited keys file.
 
 To update, `git pull` and run the installer again.
 
@@ -109,7 +111,7 @@ Providers you aren't signed in to are left out.
 
 **Updating.** Like other Herdr mods, this one doesn't update itself. Run the installer again after `git pull` or a Herdr update. It only writes what changed. It rebuilds `herdr-with-usage` from Herdr's current main layout unless you've edited that layout, and it keeps other mods' blocks in place.
 
-**Refresh timing.** While the readout shows, the mod checks the cache every minute and asks the providers when the cache is 3 minutes old. The breakdown shows sample age in minutes or hours. If providers differ, it shows the oldest known sample. Hover for individual times. The refresh button shows elapsed time in tenths of a second. After a manual refresh, the result shows the total time to the same precision.
+**Refresh timing.** While the readout or the right-hand panel shows, the mod checks the cache every minute and asks the providers when the cache is 3 minutes old. The breakdown shows sample age in minutes or hours. If providers differ, it shows the oldest known sample. Hover for individual times. The refresh button shows elapsed time in tenths of a second. After a manual refresh, the result shows the total time to the same precision.
 </details>
 
 <details>

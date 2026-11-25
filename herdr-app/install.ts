@@ -8,6 +8,7 @@ import {
 } from "./layout.ts";
 
 const MOD = "usage-monitor";
+const PANEL = `${MOD}-panel`;
 const LAYOUT = "herdr-with-usage";
 const home = resolve(process.env.HERDR_APP_HOME || join(homedir(), ".config", "herdr-app"));
 const source = join(import.meta.dir, "mods", MOD);
@@ -32,7 +33,7 @@ const layoutArg = layoutFlag === -1 ? undefined : process.argv[layoutFlag + 1];
 const BLOCK: LayoutNode = { id: MOD, type: "block", size: { px: 36 }, content: { mod: MOD } };
 
 // Everything the mod needs. bridge.js is the provider code, prebuilt by build.ts.
-const FILES = ["mod.json", "main.js", "breakdown.js", "burndown.js", "historical.js", "pace.js", "time.js", "gauge.svg", "refresh-spinner.svg", "bridge.js"];
+const FILES = ["mod.json", "main.js", "breakdown.js", "burndown.js", "panel.js", "historical.js", "pace.js", "time.js", "gauge.svg", "refresh-spinner.svg", "bridge.js"];
 
 // Optional: the mod also works without it, finding Bun on the PATH.
 interface Config {
@@ -68,6 +69,14 @@ function hash(text: string): string {
 
 const layoutFile = (name: string) => join(layoutsDir, `${name}.json`);
 
+function addRightPanel(tree: LayoutNode): boolean {
+  const panel = findNode(tree, "panel");
+  const stack = panel && findNode(panel, "panel-body");
+  if (stack?.type !== "stack" || !stack.children || findNode(tree, PANEL)) return false;
+  stack.children.push({ id: PANEL, type: "block", content: { mod: MOD, props: { mode: "right-panel" } } });
+  return true;
+}
+
 interface LayoutPlan {
   /** Files to write, by path. */
   writes: Map<string, string>;
@@ -83,15 +92,18 @@ function planOwnLayout(previous: Partial<Config> | null, foreign: (node: LayoutN
   const notes: string[] = [];
   const existing = existsSync(path) ? readJson<LayoutNode>(path) : null;
   const stripped = existing ? strip(existing, foreign) : null;
-  if (stripped && hash(json(stripped.tree)) !== previous?.layoutHash) {
-    notes.push(`Kept your edited ${path}. Delete it and rerun to rebuild it from Herdr's main layout.`);
-    return { writes: new Map(), layoutHash: previous?.layoutHash, notes };
+  if (existing && stripped && hash(json(stripped.tree)) !== previous?.layoutHash) {
+    const writes = new Map<string, string>();
+    if (findNode(existing, MOD) && addRightPanel(existing)) writes.set(path, json(existing));
+    notes.push(`Kept your layout edits in ${path}.`);
+    return { writes, layoutHash: previous?.layoutHash, notes };
   }
 
   const tree = readJson<LayoutNode>(layoutFile("main"));
   if (!addAboveSidebarFooter(tree, structuredClone(BLOCK))) {
     throw new Error("The main layout has no standard Herdr sidebar footer.");
   }
+  addRightPanel(tree);
   const layoutHash = hash(json(tree));
   for (const lost of reinsert(tree, stripped?.removed ?? [])) {
     notes.push(`Herdr's main layout changed: no place left for the ${lost.node.content?.mod} block. Reinstall that mod.`);
@@ -105,12 +117,14 @@ function planOtherLayout(name: string, previous: Partial<Config> | null): Layout
   if (!existsSync(path)) throw new Error(`There's no layout named ${name} in ${layoutsDir}.`);
   const tree = readJson<LayoutNode>(path);
   const writes = new Map<string, string>();
+  let changed = false;
   if (!findNode(tree, MOD)) {
     if (!addAboveSidebarFooter(tree, structuredClone(BLOCK))) {
       throw new Error(`The ${name} layout has no standard Herdr sidebar footer.`);
     }
-    writes.set(path, json(tree));
+    changed = true;
   }
+  if (addRightPanel(tree) || changed) writes.set(path, json(tree));
   return { writes, layoutHash: previous?.layoutHash, notes: [] };
 }
 
@@ -160,7 +174,11 @@ async function install() {
   const moved = previous?.layout && previous.layout !== target && previous.layout !== LAYOUT ? previous.layout : null;
   if (moved && existsSync(layoutFile(moved))) {
     const tree = readJson<LayoutNode>(layoutFile(moved));
-    if (removeNode(tree, MOD)) plan.writes.set(layoutFile(moved), json(tree));
+    const removedReadout = removeNode(tree, MOD);
+    const removedPanel = removeNode(tree, PANEL);
+    const stack = findNode(tree, "panel-body");
+    if (removedPanel && stack?.active === PANEL) stack.active = stack.children?.[0]?.id;
+    if (removedReadout || removedPanel) plan.writes.set(layoutFile(moved), json(tree));
   }
 
   const keys = existsSync(keysPath) ? readJson<Record<string, Record<string, unknown>>>(keysPath) : null;
