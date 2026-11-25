@@ -1,12 +1,13 @@
 import { div, svg } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
-import { LIGHT_LABEL, creditLight, light, lightColor, windowLength } from "./pace.js";
+import { LIGHT_LABEL, RESET_COLOR, WINDOW_NAMES, creditLight, heldResets, light, lightColor, resetNote,
+  windowLength } from "./pace.js";
 import { burndownCards } from "./burndown.js";
 import { historicalView } from "./historical.js";
 import { duration, refreshDuration, sampleStatus, timed } from "./time.js";
 
 const PROVIDERS = { copilot: "GitHub Copilot", cursor: "Cursor", grok: "Grok", opencode: "OpenCode" };
-const WINDOWS = { session: "Session", day: "Daily", week: "Weekly", month: "Monthly" };
+const NAMES = { claude: "Claude", codex: "Codex", antigravity: "Antigravity", ...PROVIDERS };
 
 function remaining(used) {
   return 100 - Math.round(used);
@@ -14,6 +15,11 @@ function remaining(used) {
 
 function dot(t, level) {
   return div().flex_none().size(8).rounded_full().bg(lightColor(t, level));
+}
+
+/** A held reset's mark, in the reset color: dimmed only when the reset can't be used right now. */
+export function resetIcon(t, dim = false, size = 10) {
+  return svg("mods/usage-monitor/reset.svg").size(size).flex_none().text_color(dim ? t.muted : RESET_COLOR);
 }
 
 function paceNote(lit) {
@@ -24,15 +30,17 @@ function paceNote(lit) {
 }
 
 // One allowance: its light, % left, a bar, and a tick where an even pace would be. Without a
-// percentage, `amount` (a balance, say) stands in its place, with no bar.
+// percentage, `amount` (a balance, say) stands in its place, with no bar. A held reset (level
+// "reset") takes the reset mark in place of a light.
 function metric(t, label, percent, caption, lit = { level: null }, amount = "", compact = false) {
   const value = Number.isFinite(percent) ? Math.max(0, Math.min(100, percent)) : null;
-  const color = lit.level ? lightColor(t, lit.level) : t.muted;
+  const reset = lit.level === "reset";
+  const color = reset ? (lit.urgent ? RESET_COLOR : t.foreground) : lit.level ? lightColor(t, lit.level) : t.muted;
   const note = compact ? (lit.level === "tight" ? LIGHT_LABEL.tight : "") : paceNote(lit);
   const figure = value !== null ? `${value}% left` : amount;
   return v_flex().gap(compact ? 2 : 5).py(compact ? 3 : 5).child(h_flex().justify_between().gap(12)
     .child(h_flex().min_w(0).gap(6).items_center()
-      .when(Boolean(lit.level), (el) => el.child(dot(t, lit.level)))
+      .when(Boolean(lit.level), (el) => el.child(reset ? resetIcon(t, lit.dim) : dot(t, lit.level)))
       .child(div().min_w(0).text_color(t.foreground)
         .when(compact, (el) => el.truncate().tooltip(label)).child(label)))
     .when(Boolean(figure), (el) => el.child(div().flex_none().font_semibold()
@@ -96,22 +104,21 @@ function providerCards(t, report, spares, compact = false) {
   const cards = [];
   const row = (label, value, caption, pace, amount) => metric(t, label, value, caption, pace, amount, compact);
   const addCard = (title, subtitle, rows, weight) => cards.push(card(t, title, subtitle, rows, weight, compact));
+  const held = heldResets(report);
+  const heldBy = (provider) => held.filter((entry) => entry.provider === provider);
+  const heldRow = (entry, label, caption) => row(label, null, caption,
+    { level: "reset", urgent: entry.urgent, dim: !entry.usable },
+    entry.total > 1 ? `${entry.count} of ${entry.total} left` : "");
   const claude = report?.claude;
   if (claude) {
     const rows = windows(row, spares, "Claude", claude);
-    const resets = claude.limit_resets ?? [];
+    const resets = heldBy("claude");
     if (resets.length) {
-      const available = resets.reduce((sum, reset) => sum + (reset.left ?? 0), 0);
+      const available = resets.reduce((sum, entry) => sum + entry.count, 0);
       rows.push(div().mt(4).font_semibold().child(`Limit resets · ${available} available`));
-      for (const reset of resets) {
-        const soon = creditLight({ expiresAt: reset.expires_at });
-        if (soon.level) spares.push({ provider: "Claude", label: reset.label, credit: true, ...soon });
-        const use = reset.paused ? "Paused"
-          : reset.usable_now === false ? "Can't be used right now"
-          : reset.needs_limit ? "Run /limit-reset at a limit to use it" : "Run /limit-reset to use it";
-        const count = reset.total > 1 ? `${reset.left} of ${reset.total} left` : "";
-        rows.push(row(reset.label, null,
-          [timed("Expires", reset.expires_at), use].filter(Boolean).join(" · "), soon, count));
+      for (const entry of resets) {
+        const use = entry.status ?? (entry.needsLimit ? "Run /limit-reset at a limit to use it" : "Run /limit-reset to use it");
+        rows.push(heldRow(entry, entry.label, [timed("Expires", entry.expiresAt), use].filter(Boolean).join(" · ")));
       }
     }
     const extra = claude.extra_usage;
@@ -136,14 +143,10 @@ function providerCards(t, report, spares, compact = false) {
   const codex = report?.codex;
   if (codex) {
     const rows = windows(row, spares, "Codex", codex);
-    const credits = codex.resets;
-    if (credits?.available || credits?.items?.length) {
-      rows.push(div().mt(4).font_semibold().child(`Reset credits · ${credits.available} available`));
-      for (const item of credits.items ?? []) {
-        const soon = creditLight({ expiresAt: item.expires_at });
-        if (soon.level) spares.push({ provider: "Codex", label: item.title || "Reset credit", credit: true, ...soon });
-        rows.push(row(item.title || "Reset credit", null, timed("Expires", item.expires_at), soon));
-      }
+    const resets = heldBy("codex");
+    if (resets.length) {
+      rows.push(div().mt(4).font_semibold().child(`Reset credits · ${codex.resets?.available ?? 0} available`));
+      for (const entry of resets) rows.push(heldRow(entry, entry.label, timed("Expires", entry.expiresAt)));
     }
     addCard("Codex", codex.plan, rows);
   }
@@ -166,7 +169,7 @@ function providerCards(t, report, spares, compact = false) {
   for (const provider of report?.others ?? []) {
     const name = PROVIDERS[provider.id] ?? provider.id;
     const rows = (provider.windows ?? []).map((entry) => {
-      const label = [WINDOWS[entry.kind] ?? entry.kind, entry.scope].filter(Boolean).join(" · ");
+      const label = [WINDOW_NAMES[entry.kind] ?? entry.kind, entry.scope].filter(Boolean).join(" · ");
       const left = remaining(entry.used_percent);
       return row(label, left, timed("Resets", entry.resets_at),
         lit(spares, name, label, left, entry.resets_at, windowLength(entry.kind)));
@@ -175,9 +178,8 @@ function providerCards(t, report, spares, compact = false) {
       const credits = provider.credits;
       rows.push(row(credits.label || "Credits", remaining(credits.used_percent ?? NaN), credits.balance));
     }
-    if (provider.resets?.available) {
-      rows.push(row(`Reset credits · ${provider.resets.available} available`, null,
-        timed("Expires", provider.resets.expires_at)));
+    for (const entry of heldBy(provider.id)) {
+      rows.push(heldRow(entry, `Reset credits · ${entry.count} available`, timed("Expires", entry.expiresAt)));
     }
     const problem = provider.problem === "expired" ? "Sign-in expired" : provider.problem;
     const subtitle = [provider.plan, problem].filter(Boolean).join(" · ");
@@ -207,19 +209,42 @@ export function compactAllowances(t, report, provider) {
 function legend(t) {
   return h_flex().gap(12).text_size(11).text_color(t.muted)
     .children(["untapped", "pace", "tight"].map((level) => h_flex().gap(5).items_center()
-      .child(dot(t, level)).child(LIGHT_LABEL[level])));
+      .child(dot(t, level)).child(LIGHT_LABEL[level])))
+    .child(h_flex().gap(5).items_center().child(resetIcon(t)).child("Reset held"));
 }
 
-// What would otherwise reset unused, soonest first.
-function untapped(t, spares) {
+// A command to type, set apart from the text around it.
+function command(t, text) {
+  return div().flex_none().px(5).rounded(4).bg(t.raised).text_size(11).text_color(t.foreground).child(text);
+}
+
+// Resets you hold, most pressing first. Each one refills whole limits, so all are listed, however
+// far off their expiry. A pressing one says why in the reset color.
+function heldSection(t, held) {
+  return v_flex().gap(8).pt(8).border_t(1).border_color(t.border)
+    .child(div().text_size(11).text_color(t.muted).child("Resets you hold"))
+    .children(held.map((entry) => h_flex().gap(8).items_center()
+      .when(!entry.usable, (el) => el.opacity(0.6))
+      .child(resetIcon(t, !entry.usable))
+      .child(div().flex_none().font_semibold().child(NAMES[entry.provider] ?? entry.provider))
+      .child(div().min_w(0).flex_1().truncate().text_color(t.muted)
+        .child(entry.count > 1 ? `${entry.label} · ${entry.count} left` : entry.label))
+      .child(div().flex_none().text_color(entry.urgent ? RESET_COLOR : t.muted).child(resetNote(entry)))
+      .when(entry.usable && Boolean(entry.command), (el) => el.child(command(t, entry.command)))));
+}
+
+// What would otherwise reset unused, soonest first, then the resets you hold.
+function untapped(t, spares, held) {
   const rows = [...spares].sort((a, b) => (a.msLeft ?? Infinity) - (b.msLeft ?? Infinity));
+  const border = rows.length ? lightColor(t, "untapped") : held.some((entry) => entry.urgent) ? RESET_COLOR : t.border;
   return v_flex().flex_none().gap(8).p(12).rounded(8).bg(t.surface).border(1)
-    .border_color(rows.length ? lightColor(t, "untapped") : t.border)
+    .border_color(border)
     .child(h_flex().justify_between().items_center().gap(12)
       .child(div().font_semibold().text_size(14).child("Untapped allowance"))
       .child(legend(t)))
-    .when(rows.length === 0, (el) => el.child(div().text_color(t.muted)
-      .child("Nothing is going unused: every allowance is on pace or tight.")))
+    .when(rows.length === 0, (el) => el.child(div().text_color(t.muted).child(held.length
+      ? "Every allowance is on pace or tight."
+      : "Nothing is going unused: every allowance is on pace or tight.")))
     .children(rows.map((row) => h_flex().gap(8).items_center()
       .child(dot(t, "untapped"))
       .child(div().flex_none().font_semibold().child(row.provider))
@@ -228,7 +253,8 @@ function untapped(t, spares) {
         ? `expires in ${duration(row.msLeft)}`
         : [`${row.remaining}% left`, Number.isFinite(row.spare) ? `≈${Math.round(row.spare)}% spare` : "",
           Number.isFinite(row.msLeft) && row.msLeft > 0 ? `resets in ${duration(row.msLeft)}` : ""]
-          .filter(Boolean).join(" · ")))));
+          .filter(Boolean).join(" · ")))))
+    .when(held.length > 0, (el) => el.child(heldSection(t, held)));
 }
 
 function button(t, id, label, onClick, disabled = false, key = "") {
@@ -323,7 +349,8 @@ export function breakdown(t, report, state) {
     .child(v_flex().id("usage-scroll").flex_1().min_h(0).overflow_y_scrollbar().p(16).gap(8)
       .when(historical, (el) => el.child(historicalView(t, state)))
       .when(burndown, (el) => el.child(burndownView(t, state)))
-      .when(!burndown && !historical && cards.length > 0, (el) => el.child(untapped(t, spares)).child(columns(cards, state.width ?? 0)))
+      .when(!burndown && !historical && cards.length > 0, (el) => el.child(untapped(t, spares, heldResets(report)))
+        .child(columns(cards, state.width ?? 0)))
       .when(!burndown && !historical && cards.length === 0, (el) => el.child(div().text_color(t.muted)
         .child(state.pending ? "Reading provider allowances…" : "No provider allowances available."))))
     .when(Boolean(message), (el) => el.child(div().flex_none().px(16).py(10).border_t(1).border_color(t.border)

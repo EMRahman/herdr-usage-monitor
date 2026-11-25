@@ -1,9 +1,11 @@
-import { View, div, svg } from "gpui-kit";
+import { View, div, image, svg } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
 import { appHome, checking, closeOverlay, exec, focused, home, layout, openOverlay, props,
   readTextFile, run, setShared, shared, terminals, theme } from "herdr";
-import { breakdown } from "./breakdown.js";
+import { breakdown, resetIcon } from "./breakdown.js";
+import { PROVIDER_NAMES } from "./burndown.js";
 import { normalizeChartPrefs, offsetForTimestamp } from "./historical.js";
+import { heldResets, providerDetail, RESET_COLOR, resetNote } from "./pace.js";
 import { focusedProvider, PANEL_ID, rightPanel } from "./panel.js";
 import { hasFreshAllowance } from "./time.js";
 
@@ -568,28 +570,39 @@ export default class UsageMonitor extends View {
     const parts = snapshot?.parts ?? [];
     const lowest = Math.min(...parts.map((part) => part.remaining ?? Infinity));
     const tint = error ? t.blocked : levelColor(t, lowest) ?? t.muted;
-    const summary = error || snapshot?.summary || "Usage Monitor";
+    const held = heldResets(snapshot?.report).filter((entry) => entry.usable);
+    const counts = {};
+    for (const entry of held) counts[entry.provider] = (counts[entry.provider] ?? 0) + entry.count;
+    const summary = [error || snapshot?.summary || "Usage Monitor", heldSummary(held, parts)].filter(Boolean).join("\n\n");
     const tooltip = hasPanel && collapsed ? `${summary}\nRight-click to toggle the Burndown panel` : summary;
     const readout = h_flex().id("usage-details").min_w(0).h(28).px(8).gap(9).items_center().rounded(8)
       .when(hasButton, (el) => el.flex_1().px(4).gap(7))
       .when(collapsed, (el) => el.w(32).px(0).justify_center())
       .text_size(13).text_color(t.muted).cursor_pointer()
       .hover((s) => s.bg(t.hover).text_color(t.foreground))
-      .tooltip(tooltip)
+      // Folded or without figures, one tooltip covers the readout; otherwise each provider has its own.
+      .when(collapsed || parts.length === 0, (el) => el.tooltip(tooltip))
       .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
       .when(hasPanel, (el) => el.on_mouse_down("right", (_e, cx) => {
         cx.stop_propagation();
         togglePanel(panelOpen);
       }))
       .on_click(() => run("mod.open", { name: ID }))
-      .child(svg(`mods/${ID}/gauge.svg`).size(14).flex_none().text_color(tint))
+      // Folded, a dot on the gauge stands in for the reset marks after each provider's figure.
+      .child(div().id("usage-gauge").relative().flex_none().size(14)
+        .when(!collapsed && parts.length > 0, (el) => el.tooltip(error || "Usage Monitor: click for every limit and reset"))
+        .child(svg(`mods/${ID}/gauge.svg`).size(14).text_color(tint))
+        .when(collapsed && held.length > 0, (el) => el.child(div().absolute().top(-2).right(-3).size(7)
+          .rounded_full().border(1).border_color(t.chrome).bg(RESET_COLOR))))
       .when(!collapsed, (el) => el.child(parts.length === 0
         ? div().truncate().child(error ? "Usage unavailable" : "Usage")
         : h_flex().min_w(0).gap(8).text_size(12).overflow_hidden().children(parts.map((part) =>
-          h_flex().flex_none().gap(3)
-            .child(part.name)
+          h_flex().id(`usage-${part.id}`).flex_none().gap(4).items_center()
+            .tooltip(providerDetail(snapshot?.report, part.id, PROVIDER_NAMES[part.id] ?? part.name))
+            .child(logo(part))
             .child(div().text_color(levelColor(t, part.remaining) ?? t.foreground)
-              .child(part.note ?? `${part.remaining}%`))))));
+              .child(part.note ?? `${part.remaining}%`))
+            .when(Boolean(counts[part.id]), (el) => el.child(resetBadge(t, counts[part.id])))))));
 
     return v_flex().size_full().bg(t.chrome).border_t(1).border_color(t.border).px(8).py(4)
       .when(hasButton, (el) => el.px(4))
@@ -604,6 +617,39 @@ export default class UsageMonitor extends View {
           .on_mouse_down("left", (_e, cx) => cx.stop_propagation()).on_click(() => togglePanel(panelOpen))
           .child(svg("mods/workspace-chrome/panel-right.svg").size(14)))));
   }
+}
+
+// Each provider's logo, from Herdr's own program icons (its icons/ folder) so the readout matches
+// the rest of the app: pictures keep their colors, one-color glyphs take the text color. The
+// tooltip names each one.
+const LOGOS = {
+  claude: ["icons/claude.svg", false], codex: ["icons/codex.svg", false],
+  antigravity: ["icons/antigravity.svg", false], cursor: ["icons/cursor.svg", true],
+  copilot: ["icons/copilot.svg", true], grok: ["icons/grok.svg", true], opencode: ["icons/opencode.svg", true],
+};
+
+function logo(part) {
+  const [path, tint] = LOGOS[part.id] ?? [];
+  if (!path) return div().child(part.name);
+  return tint ? svg(path).size(13).flex_none() : image(path).w(13).h(13).flex_none();
+}
+
+// The reset mark after a provider's figure, with a count when it holds more than one. Whether one
+// is worth using soon is in that provider's tooltip and the breakdown.
+function resetBadge(t, count) {
+  return h_flex().flex_none().gap(1).items_center().text_color(RESET_COLOR)
+    .child(resetIcon(t, false, 11))
+    .when(count > 1, (el) => el.child(div().text_size(11).child(String(count))));
+}
+
+// The folded readout's tooltip lines for the resets you hold.
+function heldSummary(held, parts) {
+  if (!held.length) return "";
+  const names = Object.fromEntries(parts.map((part) => [part.id, part.name]));
+  const lines = held.map((entry) => [names[entry.provider] ?? entry.provider,
+    entry.count > 1 ? `${entry.label} (${entry.count})` : entry.label,
+    resetNote(entry), entry.command && `run ${entry.command}`].filter(Boolean).join(" · "));
+  return ["Resets you hold:", ...lines].join("\n");
 }
 
 // Healthy allowances stay quiet; only low ones take a color.

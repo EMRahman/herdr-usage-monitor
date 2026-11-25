@@ -12,6 +12,8 @@ const SHORT_NAMES: Record<string, string> = {
 
 /** One provider in the compact summary: its % remaining, or a problem note instead. */
 export interface SummaryPart {
+  /** The report's key for it ("claude", "codex", "antigravity", or another provider's id). */
+  id: string;
   name: string;
   remaining: number | null;
   note?: string;
@@ -24,7 +26,7 @@ export function summaryParts(report: FullReport): SummaryPart[] {
   if (report.claude) {
     const s = report.claude.windows.find((w) => w.label.includes("5h")) ?? report.claude.windows[0];
     if (s) {
-      parts.push({ name: "Claude", remaining: Math.max(0, 100 - Math.round(s.used_percent)) });
+      parts.push({ id: "claude", name: "Claude", remaining: Math.max(0, 100 - Math.round(s.used_percent)) });
     }
   }
 
@@ -32,7 +34,7 @@ export function summaryParts(report: FullReport): SummaryPart[] {
   if (report.codex) {
     const s = report.codex.windows.find((w) => w.label.includes("5h")) ?? report.codex.windows[0];
     if (s) {
-      parts.push({ name: "Codex", remaining: Math.max(0, 100 - Math.round(s.used_percent)) });
+      parts.push({ id: "codex", name: "Codex", remaining: Math.max(0, 100 - Math.round(s.used_percent)) });
     }
   }
 
@@ -47,7 +49,7 @@ export function summaryParts(report: FullReport): SummaryPart[] {
       }
     }
     if (fiveHourValues.length > 0) {
-      parts.push({ name: "AGY", remaining: Math.max(...fiveHourValues) });
+      parts.push({ id: "antigravity", name: "AGY", remaining: Math.max(...fiveHourValues) });
     }
   }
 
@@ -56,12 +58,12 @@ export function summaryParts(report: FullReport): SummaryPart[] {
     for (const p of report.others) {
       const name = SHORT_NAMES[p.id] ?? p.id.charAt(0).toUpperCase() + p.id.slice(1);
       if (p.problem === "expired") {
-        parts.push({ name, remaining: null, note: "auth expired" });
+        parts.push({ id: p.id, name, remaining: null, note: "auth expired" });
         continue;
       }
       const sessionWindow = p.windows.find((w) => w.kind === "session") ?? p.windows[0];
       if (!sessionWindow) continue;
-      parts.push({ name, remaining: Math.max(0, 100 - Math.round(sessionWindow.used_percent)) });
+      parts.push({ id: p.id, name, remaining: Math.max(0, 100 - Math.round(sessionWindow.used_percent)) });
     }
   }
 
