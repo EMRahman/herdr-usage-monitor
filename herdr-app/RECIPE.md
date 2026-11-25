@@ -20,16 +20,27 @@ history across models.
   when all are healthy and `blocked` on an error.
 - **On the folded sidebar rail** (under 160px wide), only the gauge shows,
   centred, with the same colour.
-- **The right-hand Usage panel** opens from the panel button beside the
-  readout, a right-click on the gauge, or Cmd+Shift+U. The key sends
-  `usage-monitor.panel`, which reaches only shown copies: the readout toggles
-  the panel, or the open panel closes itself when the readout isn't showing. It stacks the 5-hour and weekly
-  burndowns for the focused agent's provider, using the tracked account's
-  history. The last provider stays visible when a shell has focus. **Pin**
-  holds the provider until you choose **Follow**. **Details** opens the full
-  Burndown dialog. The compact card below the charts shows the same provider's
-  remaining allowances, resets, and credits. The panel
-  shares Herdr's panel area with Files and Changes.
+- **The right-hand Usage panel** opens from a **Usage** button at the end of
+  the tab bar, after Herdr's Files and Changes and drawn like them (26px,
+  6px radius, 12px text, a 14px gauge, `selected` while open). It's our own
+  80px block beside Herdr's `tabs` block, the two in a fixed row. macOS only:
+  elsewhere the window buttons end the tab bar, so the toggle is a panel
+  button beside the readout instead. A right-click on the gauge or
+  Cmd+Shift+U also toggles it. The key sends `usage-monitor.panel`, which
+  reaches only shown copies: the readout toggles the panel, or the open panel
+  closes itself when the readout isn't showing.
+- **The panel** is a card like Files and Changes: 10px radius, `background`,
+  1px `border`, and a 42px header with "Usage" in semibold, refresh and pin
+  icons, and **Details**, which opens the full Burndown dialog. The refresh
+  icon (`refresh.svg`, `dim`) asks every provider now, then reloads the
+  burndowns; meanwhile it's the `accent` spinner. Its tooltip gives the panel
+  provider's sample age, and it's yellow (`ansi3`) once that is 5 minutes old. It stacks the 5-hour and
+  weekly burndowns for the focused agent's provider, using the tracked
+  account's history. The last provider stays visible when a shell has focus.
+  The pin (`dim`, or `selected` while pinned) holds the provider when focus
+  moves to another agent; its tooltip says which it's doing. The compact card
+  below the charts shows the same provider's remaining allowances, resets,
+  and credits. The panel shares Herdr's panel area with Files and Changes.
 - **The breakdown** is a dialog covering 90% of the window, `popover`
   background, 12px text:
   - A header with "Usage Monitor" (16px semibold), the `Allowances A | Burndown B | History H` view switcher, and Refresh, Show/Hide readout, and Close buttons (28px high, `raised`).

@@ -103,6 +103,39 @@ export function addAboveSidebarFooter(tree: LayoutNode, block: LayoutNode): bool
   return true;
 }
 
+/** Puts a block at the right end of Herdr's tab bar: the `tabs` block moves into a fixed row
+ *  (with this id, at the tab bar's size) beside it. False if there's no tab bar or it's done. */
+export function addBesideTabs(tree: LayoutNode, block: LayoutNode, rowId: string): boolean {
+  if (findNode(tree, rowId) || (block.id && findNode(tree, block.id))) return false;
+  const walk = (node: LayoutNode): boolean => {
+    const children = node.children ?? [];
+    const index = children.findIndex((child) => child.id === "tabs");
+    if (index === -1) return children.some(walk);
+    const tabs = children[index]!;
+    children[index] = {
+      id: rowId, type: "row", size: tabs.size, resizable: false,
+      children: [{ ...tabs, size: { weight: 1 } }, block],
+    };
+    return true;
+  };
+  return walk(tree);
+}
+
+/** Undoes addBesideTabs: the tab bar goes back where the row was, at the row's size. */
+export function removeBesideTabs(tree: LayoutNode, rowId: string): boolean {
+  const walk = (node: LayoutNode): boolean => {
+    const children = node.children ?? [];
+    const index = children.findIndex((child) => child.id === rowId);
+    if (index === -1) return children.some(walk);
+    const row = children[index]!;
+    const tabs = row.children?.find((child) => child.id === "tabs");
+    if (tabs) children[index] = { ...tabs, size: row.size };
+    else children.splice(index, 1);
+    return true;
+  };
+  return walk(tree);
+}
+
 /** Removes the block with this id. True if there was one. */
 export function removeNode(tree: LayoutNode, id: string): boolean {
   const children = tree.children ?? [];

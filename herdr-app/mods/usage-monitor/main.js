@@ -10,6 +10,7 @@ import { focusedProvider, PANEL_ID, rightPanel } from "./panel.js";
 import { hasFreshAllowance } from "./time.js";
 
 const ID = "usage-monitor";
+const TAB_ID = `${ID}-tab`;
 const REVISION = `${ID}.revision`;
 const CHART_PREFS = `${ID}.chartPrefs`;
 const PINNED_PROVIDER = `${ID}.pinnedProvider`;
@@ -89,6 +90,8 @@ function fail(failure) {
 export default class UsageMonitor extends View {
   init(_props, cx) {
     this.isPanel = props()?.mode === "right-panel";
+    this.isTabButton = props()?.mode === "tab-button";
+    if (this.isTabButton) return;
     this.history = null;
     this.historyError = "";
     if (this.isPanel) {
@@ -97,6 +100,8 @@ export default class UsageMonitor extends View {
       if (!checking()) cx.timer.every(POLL_MS, (cx) => {
         const root = layout();
         if (panelIsOpen(root)) this.loadPanelHistory(cx, !readoutIsVisible(root));
+        // Keeps the refresh icon's age and stale colour current.
+        cx.notify();
       });
       // With the readout hidden, the open panel is the shown copy that can close itself.
       if (!checking()) listenForPanelKey(cx, () => !readoutIsVisible(layout()));
@@ -409,15 +414,19 @@ export default class UsageMonitor extends View {
     cx.notify();
   }
 
+  // refreshAllowances: also read the allowances, from the cache when it's fresh, or with
+  // "force" from every provider now (the panel's refresh icon, which spins meanwhile).
   loadPanelHistory(cx, refreshAllowances = false) {
     if (this.panelHistoryPending) return;
     this.panelHistoryPending = true;
+    this.panelRefreshing = refreshAllowances === "force";
     this.panelHistoryRevision = snapshot?.report?.timestamp;
+    if (this.panelRefreshing) cx.notify();
     cx.spawn(async (cx) => {
       try {
         if (refreshAllowances) {
           try {
-            apply(await readUsage([]));
+            apply(await readUsage(this.panelRefreshing ? ["--refresh"] : []));
           } catch (failure) {
             fail(failure);
           }
@@ -426,6 +435,8 @@ export default class UsageMonitor extends View {
         await this.readHistory(cx);
       } finally {
         this.panelHistoryPending = false;
+        this.panelRefreshing = false;
+        cx.notify();
       }
     });
   }
@@ -501,8 +512,9 @@ export default class UsageMonitor extends View {
     return rightPanel(t, {
       provider, pinned, focused: Boolean(active), history: this.history, historyError: this.historyError || error,
       report: snapshot?.report,
+      refreshing: Boolean(this.panelRefreshing),
+      refresh: (_event, cx) => this.loadPanelHistory(cx, "force"),
       togglePin: () => setShared(PINNED_PROVIDER, pinned ? null : provider),
-      close: () => run("layout.hide", { id: "panel" }),
       details: () => openOverlay({ kind: "dialog", mod: ID, width: 0.9, height: 0.9, props: { view: "burndown" } }),
     });
   }
@@ -510,6 +522,7 @@ export default class UsageMonitor extends View {
   render(cx) {
     const t = theme();
     if (this.isPanel) return this.renderPanel(t, cx);
+    if (this.isTabButton) return tabButton(t);
     const overlay = props()?.overlay;
     if (overlay) {
       const readout = findNode(layout(), ID);
@@ -568,7 +581,8 @@ export default class UsageMonitor extends View {
     const root = layout();
     const collapsed = (findNode(root, "sidebar")?.size?.px ?? Infinity) < 160;
     const hasPanel = Boolean(findNode(root, PANEL_ID));
-    const hasButton = hasPanel && !collapsed;
+    // With the toggle in the tab bar beside Files and Changes, the sidebar doesn't repeat it.
+    const hasButton = hasPanel && !collapsed && !findNode(root, TAB_ID);
     const panelOpen = hasPanel && panelIsOpen(root);
     const parts = snapshot?.parts ?? [];
     const lowest = Math.min(...parts.map((part) => part.remaining ?? Infinity));
@@ -620,6 +634,20 @@ export default class UsageMonitor extends View {
           .on_mouse_down("left", (_e, cx) => cx.stop_propagation()).on_click(() => togglePanel(panelOpen))
           .child(svg("mods/workspace-chrome/panel-right.svg").size(14)))));
   }
+}
+
+// The Usage panel's toggle at the end of the tab bar, drawn like Herdr's own Files and Changes
+// buttons there (the tabs mod's panelButton) so the three read as one set.
+function tabButton(t) {
+  const root = layout();
+  const on = panelIsOpen(root);
+  return h_flex().size_full().pr(10).justify_end().items_center().bg(t.chrome).border_b(1).border_color(t.border)
+    .child(h_flex().id("panel-usage").h(26).px(8).gap(5).flex_none().items_center().rounded(6)
+      .text_size(12).bg(on ? t.selected : t.chrome).text_color(on ? t.foreground : t.muted)
+      .hover((s) => s.bg(t.hover)).tooltip(on ? "Close the Usage panel" : "Open the Usage panel")
+      .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+      .on_click(() => togglePanel(on))
+      .child(svg(`mods/${ID}/gauge.svg`).size(14)).child("Usage"));
 }
 
 // Each provider's logo, from Herdr's own program icons (its icons/ folder) so the readout matches
