@@ -52,7 +52,7 @@ Every limit resets on a clock. If you used it evenly, the share left would match
 
 | Light | Meaning |
 |---|---|
-| 🟢 **Untapped** | At least 20 points more allowance left than time left: at this pace, some of it resets unused. Also Codex reset credits expiring within 3 days. |
+| 🟢 **Untapped** | At least 20 points more allowance left than time left: at this pace, some of it resets unused. Also Codex reset credits, Claude limit resets and Claude usage credits expiring within 3 days. |
 | 🟡 **On pace** | Within 20 points either way. |
 | 🔴 **Tight** | 10% or less left, or 20 points behind: it runs out before the reset. |
 
@@ -76,7 +76,7 @@ Choose **Input & output** (or press <kbd>I</kbd> to switch from **By model**) to
 
 | Provider | Limits |
 |---|---|
-| **Claude Code** | 5-hour session, 7-day weekly, and Extra usage spend with balance |
+| **Claude Code** | 5-hour session and 7-day weekly limits, limit resets you hold (use them with `/limit-reset`) with their expiry, and usage credits: this month's spend against your limit, plus your credit balance and when it expires |
 | **Codex** | 5-hour and weekly limits, plus each reset credit with its expiry |
 | **Antigravity** | Every quota group (Gemini models, Claude & GPT models, Gemini 4 Argon) with reset times |
 | **Cursor, GitHub Copilot, Grok, OpenCode** | The session, daily, weekly or monthly limits and credits each one reports |

@@ -7,10 +7,12 @@
 
 import { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
-import { closeSync, existsSync, mkdtempSync, openSync, readdirSync, readSync, rmSync, writeFileSync, writeSync } from "node:fs";
+import {
+  closeSync, existsSync, mkdtempSync, openSync, readdirSync, readSync, realpathSync, rmSync, writeFileSync, writeSync,
+} from "node:fs";
 import { open, type FileHandle } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import type { GenericProvider } from "./fetcher.ts";
 
 const MAX_READ_BYTES = 1024 * 1024;
@@ -23,6 +25,8 @@ export type KeychainRead = { status: "found"; value: string } | { status: "missi
 export interface Account {
   id: string;
   label: string | null;
+  /** The organization the sign-in belongs to, where the provider has one (Claude). */
+  org?: string | null;
 }
 
 export interface SignIn {
@@ -351,7 +355,29 @@ function unlockedSignIns(found: FoundSignIn[]): SignIn[] {
 function claudeAccount(path: string): Account | null {
   const oauth = record(record(parseJson(readText(path)))["oauthAccount"]);
   const id = text(oauth["accountUuid"]);
-  return id ? { id, label: text(oauth["emailAddress"]) } : null;
+  return id ? { id, label: text(oauth["emailAddress"]), org: text(oauth["organizationUuid"]) } : null;
+}
+
+// A version known to get every part of the usage answer, for when the installed one can't be found.
+const CLAUDE_CODE_VERSION = "2.1.332";
+const VERSION = /^\d+\.\d+\.\d+$/;
+
+/** The installed Claude Code's version. Anthropic only reports some of an account's usage, such as
+ *  the limit resets it holds, to a recent enough version, which it reads from the user agent. */
+export function claudeCodeVersion(): string {
+  const bin = resolveBinary("claude");
+  if (!bin) return CLAUDE_CODE_VERSION;
+  try {
+    // The native installer links ~/.local/bin/claude to .../versions/<version>; Homebrew keeps
+    // .../<version>/claude; npm keeps cli.js beside a package.json.
+    const real = realpathSync(bin);
+    for (const name of [basename(real), basename(dirname(real))]) {
+      if (VERSION.test(name)) return name;
+    }
+    const version = text(record(parseJson(readText(join(dirname(real), "package.json"))))["version"]);
+    if (version && VERSION.test(version)) return version;
+  } catch {}
+  return CLAUDE_CODE_VERSION;
 }
 
 function claudeSignIn(source: string | null): RawSignIn | null {
