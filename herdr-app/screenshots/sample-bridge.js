@@ -63,7 +63,8 @@ const report = {
       id: "full-reset", label: "One full limit reset (November 2026)", left: 1, total: 1,
       expires_at: iso(now + 15 * day), usable_now: true, paused: false, needs_limit: false,
     }],
-    credits: { balance: "£8.99", expiring: [{ amount: "£8.98", expires_at: iso(now + 266 * day) }], read_at: now - 120_000 },
+    credits: { balance: "£8.99", expiring: [{ amount: "£8.98", expires_at: iso(now + 266 * day) }] },
+    credits_read_at: now - 120_000,
   },
   codex: {
     plan: "Plus", windows: windows("codex"),

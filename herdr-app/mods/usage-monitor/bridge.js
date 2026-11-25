@@ -825,9 +825,15 @@ function claudeCredits(body, now = Date.now()) {
   }));
   if (amount <= 0 && expiring.length === 0)
     return null;
-  return { balance: money(amount, currency, decimals), expiring, read_at: now };
+  return { balance: money(amount, currency, decimals), expiring };
 }
 var CREDITS_MAX_AGE_MS = 15 * 60000;
+function recentCredits(previous, account, now = Date.now()) {
+  if (previous?.account !== account || previous.credits === undefined)
+    return;
+  const at = previous.credits_read_at;
+  return typeof at === "number" && now - at < CREDITS_MAX_AGE_MS ? { credits: previous.credits, read_at: at } : undefined;
+}
 function saveRateLimits(state) {
   try {
     mkdirSync(CACHE_DIR, { recursive: true });
@@ -893,12 +899,12 @@ async function fetchDetailedReport() {
     };
     const account = s.account?.label ?? "default";
     const previous = (await getCachedReport(24 * 3600000, { allowPartial: true }))?.claude;
-    const recentCredits = previous?.account === account && previous.credits && Date.now() - previous.credits.read_at < CREDITS_MAX_AGE_MS ? previous.credits : undefined;
+    const recent = recentCredits(previous, account);
     const org = s.account?.org;
-    const creditsPromise = recentCredits || !org ? Promise.resolve(recentCredits) : fetch(`https://api.anthropic.com/api/oauth/organizations/${encodeURIComponent(org)}/prepaid/credits`, {
+    const creditsPromise = recent || !org ? Promise.resolve(recent) : fetch(`https://api.anthropic.com/api/oauth/organizations/${encodeURIComponent(org)}/prepaid/credits`, {
       headers,
       signal: AbortSignal.timeout(3500)
-    }).then(async (r) => r.ok ? claudeCredits(await r.json()) : undefined).catch(() => {
+    }).then(async (r) => r.ok ? { credits: claudeCredits(await r.json()), read_at: Date.now() } : undefined).catch(() => {
       return;
     });
     const res = await fetch("https://api.anthropic.com/api/oauth/usage?cedar_ember=1", {
@@ -948,6 +954,7 @@ async function fetchDetailedReport() {
         used_percent: usedPct
       };
     }
+    const credits = await creditsPromise;
     readAt.claude = Date.now();
     report.claude = {
       account,
@@ -955,7 +962,7 @@ async function fetchDetailedReport() {
       windows,
       extra_usage,
       limit_resets: claudeLimitResets(body),
-      credits: await creditsPromise
+      ...credits ? { credits: credits.credits, credits_read_at: credits.read_at } : {}
     };
   })().catch(() => {});
   const codexPromise = (async () => {
@@ -1157,6 +1164,7 @@ async function fetchDetailedReport() {
     const prevClaude = prevAny?.claude ?? prevComplete?.claude;
     if (report.claude && report.claude.credits === undefined && prevClaude?.account === report.claude.account) {
       report.claude.credits = prevClaude.credits;
+      report.claude.credits_read_at = prevClaude.credits_read_at;
     }
     if (!report.codex) {
       const from = prevComplete?.codex ? prevComplete : prevAny;

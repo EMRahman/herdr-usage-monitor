@@ -59,8 +59,6 @@ export interface ClaudeLimitReset {
 export interface ClaudeCredits {
   balance: string;
   expiring: Array<{ amount: string; expires_at: string; name?: string }>;
-  /** When the balance was read (ms). */
-  read_at: number;
 }
 
 export interface DetailedClaude {
@@ -76,6 +74,8 @@ export interface DetailedClaude {
   limit_resets?: ClaudeLimitReset[];
   /** Missing when the balance couldn't be read; null when the account has no prepaid credits. */
   credits?: ClaudeCredits | null;
+  /** When the credit balance was read (ms), whether or not there was one. */
+  credits_read_at?: number;
 }
 
 export interface AgyBucket {
@@ -195,11 +195,25 @@ export function claudeCredits(body: any, now = Date.now()): ClaudeCredits | null
       ...(typeof t.name === "string" && t.name.trim() ? { name: t.name.trim() } : {}),
     }));
   if (amount <= 0 && expiring.length === 0) return null;
-  return { balance: money(amount, currency, decimals), expiring, read_at: now };
+  return { balance: money(amount, currency, decimals), expiring };
 }
 
 // The credit balance only moves once a limit is reached, so it's read less often than the limits.
 const CREDITS_MAX_AGE_MS = 15 * 60_000;
+
+type CreditsRead = { credits: ClaudeCredits | null; read_at: number };
+
+/** The credit balance read last time for this account while it's recent, including a read that
+ *  found none, so an account without credits isn't asked again on every refresh. */
+export function recentCredits(
+  previous: DetailedClaude | null | undefined,
+  account: string,
+  now = Date.now(),
+): CreditsRead | undefined {
+  if (previous?.account !== account || previous.credits === undefined) return undefined;
+  const at = previous.credits_read_at;
+  return typeof at === "number" && now - at < CREDITS_MAX_AGE_MS ? { credits: previous.credits, read_at: at } : undefined;
+}
 
 function saveRateLimits(state: RateLimitState): void {
   try {
@@ -275,17 +289,17 @@ export async function fetchDetailedReport(): Promise<FullReport> {
     };
     const account = s.account?.label ?? "default";
 
-    // The credit balance, alongside the limits: the one read last time while it's recent.
+    // The credit balance, alongside the limits, unless it was read recently.
     const previous = (await getCachedReport(24 * 3600_000, { allowPartial: true }))?.claude;
-    const recentCredits = previous?.account === account && previous.credits
-      && Date.now() - previous.credits.read_at < CREDITS_MAX_AGE_MS ? previous.credits : undefined;
+    const recent = recentCredits(previous, account);
     const org = s.account?.org;
-    const creditsPromise: Promise<ClaudeCredits | null | undefined> = recentCredits || !org
-      ? Promise.resolve(recentCredits)
+    const creditsPromise: Promise<CreditsRead | undefined> = recent || !org
+      ? Promise.resolve(recent)
       : fetch(`https://api.anthropic.com/api/oauth/organizations/${encodeURIComponent(org)}/prepaid/credits`, {
           headers,
           signal: AbortSignal.timeout(3500),
-        }).then(async (r) => (r.ok ? claudeCredits(await r.json()) : undefined)).catch(() => undefined);
+        }).then(async (r) => (r.ok ? { credits: claudeCredits(await r.json()), read_at: Date.now() } : undefined))
+          .catch(() => undefined);
 
     const res = await fetch("https://api.anthropic.com/api/oauth/usage?cedar_ember=1", {
       headers,
@@ -340,6 +354,7 @@ export async function fetchDetailedReport(): Promise<FullReport> {
       };
     }
 
+    const credits = await creditsPromise;
     readAt.claude = Date.now();
     report.claude = {
       account,
@@ -347,7 +362,7 @@ export async function fetchDetailedReport(): Promise<FullReport> {
       windows,
       extra_usage,
       limit_resets: claudeLimitResets(body),
-      credits: await creditsPromise,
+      ...(credits ? { credits: credits.credits, credits_read_at: credits.read_at } : {}),
     };
   })().catch(() => {});
 
@@ -575,6 +590,7 @@ export async function fetchDetailedReport(): Promise<FullReport> {
     const prevClaude = prevAny?.claude ?? prevComplete?.claude;
     if (report.claude && report.claude.credits === undefined && prevClaude?.account === report.claude.account) {
       report.claude.credits = prevClaude.credits;
+      report.claude.credits_read_at = prevClaude.credits_read_at;
     }
     if (!report.codex) {
       const from = prevComplete?.codex ? prevComplete : prevAny;

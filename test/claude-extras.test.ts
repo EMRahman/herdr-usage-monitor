@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { claudeCredits, claudeLimitResets } from "../src/fetcher.ts";
+import { claudeCredits, claudeLimitResets, recentCredits } from "../src/fetcher.ts";
 import { localTime, timed } from "../herdr-app/mods/usage-monitor/time.js";
 
 const now = Date.parse("2026-11-25T09:30:00Z");
@@ -70,7 +70,6 @@ test("the credit balance lists the parts of it that expire, soonest first", () =
       { amount: "£8.98", expires_at: "2027-08-18T00:00:00Z" },
       { amount: "£0.01", expires_at: "2027-12-07T00:00:00Z", name: "Purchase" },
     ],
-    read_at: now,
   });
 });
 
@@ -85,7 +84,23 @@ test("no credit balance when the account has none or the answer has no amount", 
   expect(claudeCredits({ amount: 0, currency: "USD", tranches: [], promo_tranches: [] }, now)).toBeNull();
   expect(claudeCredits({ error: "not_found" }, now)).toBeNull();
   expect(claudeCredits({ amount: 2500, currency: "USD" }, now))
-    .toEqual({ balance: "$25.00", expiring: [], read_at: now });
+    .toEqual({ balance: "$25.00", expiring: [] });
+});
+
+test("a recent credit read is reused for the same account, even one that found no credits", () => {
+  const minute = 60_000;
+  const claude = { account: "a@example.com", plan: "pro", windows: [] };
+  const balance = { balance: "£8.99", expiring: [] };
+  expect(recentCredits({ ...claude, credits: null, credits_read_at: now - 5 * minute }, "a@example.com", now))
+    .toEqual({ credits: null, read_at: now - 5 * minute });
+  expect(recentCredits({ ...claude, credits: balance, credits_read_at: now - 14 * minute }, "a@example.com", now))
+    .toEqual({ credits: balance, read_at: now - 14 * minute });
+  // Too old, another account, never read, or a read time an older build didn't keep.
+  expect(recentCredits({ ...claude, credits: null, credits_read_at: now - 15 * minute }, "a@example.com", now)).toBeUndefined();
+  expect(recentCredits({ ...claude, credits: null, credits_read_at: now }, "b@example.com", now)).toBeUndefined();
+  expect(recentCredits({ ...claude, credits_read_at: now }, "a@example.com", now)).toBeUndefined();
+  expect(recentCredits({ ...claude, credits: balance }, "a@example.com", now)).toBeUndefined();
+  expect(recentCredits(null, "a@example.com", now)).toBeUndefined();
 });
 
 test("times in another year carry the year, and lowercase labels take the past tense", () => {
