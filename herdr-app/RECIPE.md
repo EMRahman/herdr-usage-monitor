@@ -21,7 +21,9 @@ history across models.
 - **On the folded sidebar rail** (under 160px wide), only the gauge shows,
   centred, with the same colour.
 - **The right-hand Usage panel** opens from the panel button beside the
-  readout or a right-click on the gauge. It stacks the 5-hour and weekly
+  readout, a right-click on the gauge, or Cmd+Shift+U. The key sends
+  `usage-monitor.panel`, which reaches only shown copies: the readout toggles
+  the panel, or the open panel closes itself when the readout isn't showing. It stacks the 5-hour and weekly
   burndowns for the focused agent's provider, using the tracked account's
   history. The last provider stays visible when a shell has focus. **Pin**
   holds the provider until you choose **Follow**. **Details** opens the full
@@ -173,7 +175,8 @@ history across models.
   usage endpoints over the network. It writes its cache to
   `~/.cache/herdr-usage-monitor/` and its history to
   `~/.local/share/herdr-usage-monitor/`.
-- **`keys.json`:** binds `cmd-u` to `mod.open:usage-monitor` (`global`).
+- **`keys.json`:** binds `cmd-u` to `mod.open:usage-monitor` and `cmd-shift-u`
+  to `usage-monitor.panel` (`global`).
 - **Optional helper:** the repository's `herdr-app/install.ts` copies the mod,
   writes `config.json`, adds the block and binds the key with `--bind-key`. See
   the repository README.
@@ -194,7 +197,8 @@ history across models.
   `installed.json` belongs to another mod: it isn't a hand edit, and rebuilding
   from `main` puts it back beside the same neighbours.
 - The readout fits a 268px sidebar with three providers. Narrower, it clips.
-- Cmd+U is macOS. On Linux and Windows use `ctrl-shift-u`.
+- Cmd+U is macOS. On Linux and Windows use `ctrl-shift-u`. The installer binds
+  Cmd+Shift+U for the panel on macOS only, and skips it if the key is taken.
 - Needs Bun installed. Providers you're not signed in to are left out.
 
 ## Done when
@@ -205,6 +209,7 @@ history across models.
   few seconds, and its tooltip shows the full summary.
 - Folding the sidebar leaves only the gauge, coloured by the lowest figure.
 - Cmd+U and clicking the readout open the breakdown; Cmd+U again closes it.
+- Cmd+Shift+U opens the Usage panel; pressing it again closes it.
 - A window with much more allowance left than time left shows green and appears
   in Untapped allowance; the tick on its bar sits left of the fill.
 - Pressing R or clicking Refresh starts the spinner and stopwatch. The sample

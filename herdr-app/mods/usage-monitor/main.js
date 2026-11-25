@@ -1,6 +1,6 @@
 import { View, div, image, svg } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
-import { appHome, checking, closeOverlay, exec, focused, home, layout, openOverlay, props,
+import { appHome, checking, closeOverlay, exec, focused, home, layout, nextCommand, openOverlay, props,
   readTextFile, run, setShared, shared, terminals, theme } from "herdr";
 import { breakdown, resetIcon } from "./breakdown.js";
 import { PROVIDER_NAMES } from "./burndown.js";
@@ -98,6 +98,8 @@ export default class UsageMonitor extends View {
         const root = layout();
         if (panelIsOpen(root)) this.loadPanelHistory(cx, !readoutIsVisible(root));
       });
+      // With the readout hidden, the open panel is the shown copy that can close itself.
+      if (!checking()) listenForPanelKey(cx, () => !readoutIsVisible(layout()));
       return;
     }
 
@@ -136,6 +138,7 @@ export default class UsageMonitor extends View {
       this.handle.focus();
     }
     if (checking()) return;
+    if (!props()?.overlay) listenForPanelKey(cx, () => true);
 
     cx.spawn(async (cx) => {
       if (!snapshot) await this.read(cx, ["--cached"]);
@@ -675,6 +678,19 @@ function panelIsOpen(root) {
 function readoutIsVisible(root) {
   const readout = findNode(root, ID);
   return Boolean(readout && !readout.hidden && !findNode(root, "sidebar")?.hidden);
+}
+
+// "usage-monitor.panel" in keys.json (Cmd+Shift+U) reaches every shown copy, so only one
+// acts: the readout when it shows, else the open panel. The overlay ignores it.
+function listenForPanelKey(cx, handles) {
+  cx.spawn(async (cx) => {
+    for (;;) {
+      const command = await nextCommand();
+      const root = layout();
+      if (command === "panel" && handles() && findNode(root, PANEL_ID)) togglePanel(panelIsOpen(root));
+      cx.notify();
+    }
+  });
 }
 
 function togglePanel(open) {

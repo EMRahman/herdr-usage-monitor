@@ -21,6 +21,11 @@ const mac = process.platform === "darwin";
 const shortcut = mac ? "cmd-u" : "ctrl-shift-u";
 const shortcutLabel = mac ? "Cmd+U" : "Ctrl+Shift+U";
 const action = `mod.open:${MOD}`;
+// The right-hand panel's toggle, delivered to the readout. macOS only: elsewhere Ctrl+Shift+U
+// is the breakdown, and Ctrl+Alt is AltGr on Windows.
+const panelShortcut = mac ? "cmd-shift-u" : null;
+const panelShortcutLabel = "Cmd+Shift+U";
+const panelAction = `${MOD}.panel`;
 // Editing keys.json makes it the person's: Herdr stops adding new default shortcuts to it.
 const bindKey = process.argv.includes("--bind-key");
 // --layout <name>: put the readout into another personal layout (one another mod made, say)
@@ -191,6 +196,13 @@ async function install() {
     throw new Error(`${shortcutLabel} is already bound in ${keysPath}, or the file doesn't exist yet. Rerun without --bind-key.`);
   }
   const canBind = bindKey && keyFree;
+  // The panel key is a bonus: taken by something else, it's skipped rather than failing the install.
+  const panelBindings = panelShortcut === null ? [] : Object.values(keys ?? {})
+    .flatMap((section) => Object.entries(section))
+    .filter(([key]) => key.toLowerCase() === panelShortcut);
+  const hasPanelShortcut = panelShortcut !== null && keys?.global?.[panelShortcut] === panelAction
+    && panelBindings.length === 1;
+  const canBindPanel = bindKey && keys !== null && panelShortcut !== null && panelBindings.length === 0;
 
   // Keep the checkout's prebuilt bridge current, then copy the mod folder as it would be shared.
   writeIfChanged(BRIDGE, await bundle());
@@ -210,7 +222,8 @@ async function install() {
     // Drop this mod's binding from an earlier install under another key (Ctrl+Shift+U before Cmd+U).
     const stale = Object.keys(global).filter((key) => key !== shortcut && global[key] === action);
     for (const key of stale) delete global[key];
-    if (canBind || stale.length > 0) {
+    if (canBindPanel) global[panelShortcut] = panelAction;
+    if (canBind || canBindPanel || stale.length > 0) {
       global[shortcut] = action;
       writeIfChanged(keysPath, json(keys));
     }
@@ -235,6 +248,11 @@ async function install() {
   } else {
     console.log("Open the breakdown by clicking the readout.");
     console.log(`For a shortcut, rerun with --bind-key to add ${shortcutLabel} to keys.json, or add "${shortcut}": "${action}" under "global" yourself.`);
+  }
+  if (canBindPanel || hasPanelShortcut) {
+    console.log(`Toggle the right-hand Usage panel with ${panelShortcutLabel}.`);
+  } else if (bindKey && panelShortcut !== null) {
+    console.log(`${panelShortcutLabel} is already bound in ${keysPath}, so the Usage panel has no shortcut. Bind "${panelAction}" to another key under "global" for one.`);
   }
   if (canBind) {
     console.log("Note: keys.json is now edited, so Herdr no longer adds new default shortcuts to it on upgrade.");
