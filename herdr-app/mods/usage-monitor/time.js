@@ -1,7 +1,7 @@
 // Times, durations, and compact counts formatted by hand for Herdr's script runtime
 // (which ignores toLocaleString's formatting options).
 
-const PAST = { Resets: "Reset", Expires: "Expired" };
+const PAST = { Resets: "Reset", Expires: "Expired", expires: "expired" };
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
@@ -55,15 +55,16 @@ export function sampleStatus(report, now = Date.now()) {
   return { label: `${label} ${age}`, detail, stale: now - oldest >= STALE_MS };
 }
 
-// "3:56 PM" today, "Nov 25, 8:58 AM" on another day.
-export function localTime(value, seconds = false) {
+// "3:56 PM" today, "Nov 25, 8:58 AM" on another day, "Aug 18, 2027, 1:00 AM" in another year.
+export function localTime(value, seconds = false, now = new Date()) {
   const date = new Date(value);
   const hours = date.getHours();
   const minutes = String(date.getMinutes()).padStart(2, "0");
   const secondPart = seconds ? `:${String(date.getSeconds()).padStart(2, "0")}` : "";
   const clock = `${hours % 12 || 12}:${minutes}${secondPart} ${hours < 12 ? "AM" : "PM"}`;
-  if (date.toDateString() === new Date().toDateString()) return clock;
-  return `${MONTHS[date.getMonth()]} ${date.getDate()}, ${clock}`;
+  if (date.toDateString() === now.toDateString()) return clock;
+  const year = date.getFullYear() === now.getFullYear() ? "" : `, ${date.getFullYear()}`;
+  return `${MONTHS[date.getMonth()]} ${date.getDate()}${year}, ${clock}`;
 }
 
 export function refreshDuration(ms) {

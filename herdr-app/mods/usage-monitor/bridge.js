@@ -2,15 +2,26 @@
 // src/fetcher.ts
 import { existsSync as existsSync2, mkdirSync, writeFileSync as writeFileSync2 } from "fs";
 import { homedir as homedir2 } from "os";
-import { basename, join as join2 } from "path";
+import { basename as basename2, join as join2 } from "path";
 
 // src/providers.ts
 import { Database } from "bun:sqlite";
 import { createHash } from "crypto";
-import { closeSync, existsSync, mkdtempSync, openSync, readdirSync, readSync, rmSync, writeFileSync, writeSync } from "fs";
+import {
+  closeSync,
+  existsSync,
+  mkdtempSync,
+  openSync,
+  readdirSync,
+  readSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+  writeSync
+} from "fs";
 import { open } from "fs/promises";
 import { homedir, tmpdir } from "os";
-import { join } from "path";
+import { basename, dirname, join } from "path";
 var MAX_READ_BYTES = 1024 * 1024;
 var COMMAND_TIMEOUT_MS = 4000;
 var HTTP_TIMEOUT_MS = 3500;
@@ -301,7 +312,25 @@ function unlockedSignIns(found) {
 function claudeAccount(path) {
   const oauth = record(record(parseJson(readText(path)))["oauthAccount"]);
   const id = text(oauth["accountUuid"]);
-  return id ? { id, label: text(oauth["emailAddress"]) } : null;
+  return id ? { id, label: text(oauth["emailAddress"]), org: text(oauth["organizationUuid"]) } : null;
+}
+var CLAUDE_CODE_VERSION = "2.1.332";
+var VERSION = /^\d+\.\d+\.\d+$/;
+function claudeCodeVersion() {
+  const bin = resolveBinary("claude");
+  if (!bin)
+    return CLAUDE_CODE_VERSION;
+  try {
+    const real = realpathSync(bin);
+    for (const name of [basename(real), basename(dirname(real))]) {
+      if (VERSION.test(name))
+        return name;
+    }
+    const version = text(record(parseJson(readText(join(dirname(real), "package.json"))))["version"]);
+    if (version && VERSION.test(version))
+      return version;
+  } catch {}
+  return CLAUDE_CODE_VERSION;
 }
 function claudeSignIn(source) {
   const oauth = record(record(parseJson(source))["claudeAiOauth"]);
@@ -760,6 +789,45 @@ function agyReset(value) {
   const time = Date.parse(value);
   return Number.isFinite(time) && time > 0 ? value : null;
 }
+function money(minor, currency, decimals = 2) {
+  const symbol = currency === "GBP" ? "\xA3" : currency === "EUR" ? "\u20AC" : currency === "USD" ? "$" : `${currency} `;
+  return `${symbol}${(minor / Math.pow(10, decimals)).toFixed(decimals)}`;
+}
+var isoTime2 = (value) => typeof value === "string" && Number.isFinite(Date.parse(value)) ? value : null;
+function claudeLimitResets(body, now = Date.now()) {
+  const grants = Array.isArray(body?.cedar_ember?.grants) ? body.cedar_ember.grants : [];
+  return grants.filter((g) => typeof g?.resets_left === "number" && g.resets_left > 0).map((g) => ({
+    id: String(g.id ?? ""),
+    label: typeof g.label === "string" && g.label.trim() ? g.label.trim() : g.type === "full" ? "Full limit reset" : "Limit reset",
+    left: g.resets_left,
+    total: typeof g.resets_total === "number" ? Math.max(g.resets_total, g.resets_left) : g.resets_left,
+    expires_at: isoTime2(g.ends_at),
+    usable_now: g.usable_now !== false,
+    paused: g.paused === true,
+    needs_limit: g.use_requires_limit === true
+  })).filter((r) => !r.expires_at || Date.parse(r.expires_at) > now).sort((a, b) => (a.expires_at ? Date.parse(a.expires_at) : Infinity) - (b.expires_at ? Date.parse(b.expires_at) : Infinity));
+}
+function claudeCredits(body, now = Date.now()) {
+  if (typeof body?.amount !== "number")
+    return null;
+  const total = body.balance?.money;
+  const currency = total?.currency ?? body.currency ?? "USD";
+  const decimals = typeof total?.exponent === "number" ? total.exponent : 2;
+  const amount = typeof total?.amount_minor === "number" ? total.amount_minor : body.amount;
+  const tranches = [
+    ...Array.isArray(body.tranches) ? body.tranches : [],
+    ...Array.isArray(body.promo_tranches) ? body.promo_tranches : []
+  ];
+  const expiring = tranches.map((t) => ({ t, expires: isoTime2(t?.shown_expires_at) ?? isoTime2(t?.expires_at) })).filter(({ t, expires }) => typeof t?.remaining_amount_minor_units === "number" && t.remaining_amount_minor_units > 0 && expires && Date.parse(expires) > now).sort((a, b) => Date.parse(a.expires) - Date.parse(b.expires)).map(({ t, expires }) => ({
+    amount: money(t.remaining_amount_minor_units, t.currency ?? currency, decimals),
+    expires_at: expires,
+    ...typeof t.name === "string" && t.name.trim() ? { name: t.name.trim() } : {}
+  }));
+  if (amount <= 0 && expiring.length === 0)
+    return null;
+  return { balance: money(amount, currency, decimals), expiring, read_at: now };
+}
+var CREDITS_MAX_AGE_MS = 15 * 60000;
 function saveRateLimits(state) {
   try {
     mkdirSync(CACHE_DIR, { recursive: true });
@@ -770,7 +838,7 @@ async function readCacheFile(path, maxAgeMs) {
   try {
     let file = Bun.file(path);
     if (!await file.exists()) {
-      const legacyPath = join2("/tmp", basename(path));
+      const legacyPath = join2("/tmp", basename2(path));
       const legacyFile = Bun.file(legacyPath);
       if (await legacyFile.exists()) {
         file = legacyFile;
@@ -817,13 +885,24 @@ async function fetchDetailedReport() {
     const s = claudeSignIns[0];
     if (!s)
       return;
+    const headers = {
+      authorization: `Bearer ${s.token}`,
+      accept: "application/json",
+      "anthropic-beta": "oauth-2025-04-20",
+      "user-agent": `claude-cli/${claudeCodeVersion()} (external, cli)`
+    };
+    const account = s.account?.label ?? "default";
+    const previous = (await getCachedReport(24 * 3600000, { allowPartial: true }))?.claude;
+    const recentCredits = previous?.account === account && previous.credits && Date.now() - previous.credits.read_at < CREDITS_MAX_AGE_MS ? previous.credits : undefined;
+    const org = s.account?.org;
+    const creditsPromise = recentCredits || !org ? Promise.resolve(recentCredits) : fetch(`https://api.anthropic.com/api/oauth/organizations/${encodeURIComponent(org)}/prepaid/credits`, {
+      headers,
+      signal: AbortSignal.timeout(3500)
+    }).then(async (r) => r.ok ? claudeCredits(await r.json()) : undefined).catch(() => {
+      return;
+    });
     const res = await fetch("https://api.anthropic.com/api/oauth/usage?cedar_ember=1", {
-      headers: {
-        authorization: `Bearer ${s.token}`,
-        accept: "application/json",
-        "anthropic-beta": "oauth-2025-04-20",
-        "user-agent": "claude-cli/2.1.0 (external, cli)"
-      },
+      headers,
       signal: AbortSignal.timeout(3500)
     }).catch(() => null);
     if (!res)
@@ -858,28 +937,25 @@ async function fetchDetailedReport() {
     let extra_usage = null;
     if (body.extra_usage?.is_enabled || body.spend?.enabled) {
       const currency = body.extra_usage?.currency ?? body.spend?.used?.currency ?? "USD";
-      const curr = currency === "GBP" ? "\xA3" : currency === "EUR" ? "\u20AC" : currency === "USD" ? "$" : `${currency} `;
       const decimals = body.extra_usage?.decimal_places ?? 2;
-      const divisor = Math.pow(10, decimals);
       const usedMinor = body.spend?.used?.amount_minor ?? body.extra_usage?.used_credits ?? 0;
       const limitMinor = body.spend?.limit?.amount_minor ?? body.extra_usage?.monthly_limit ?? 0;
-      const usedStr = `${curr}${(usedMinor / divisor).toFixed(decimals)}`;
-      const limitStr = `${curr}${(limitMinor / divisor).toFixed(decimals)}`;
-      const leftStr = `${curr}${Math.max(0, (limitMinor - usedMinor) / divisor).toFixed(decimals)}`;
       const usedPct = body.extra_usage?.utilization ?? body.spend?.percent ?? 0;
       extra_usage = {
-        used: usedStr,
-        limit: limitStr,
-        balance_left: leftStr,
+        used: money(usedMinor, currency, decimals),
+        limit: money(limitMinor, currency, decimals),
+        balance_left: money(Math.max(0, limitMinor - usedMinor), currency, decimals),
         used_percent: usedPct
       };
     }
     readAt.claude = Date.now();
     report.claude = {
-      account: s.account?.label ?? "default",
+      account,
       plan: s.plan ?? "pro",
       windows,
-      extra_usage
+      extra_usage,
+      limit_resets: claudeLimitResets(body),
+      credits: await creditsPromise
     };
   })().catch(() => {});
   const codexPromise = (async () => {
@@ -1078,6 +1154,10 @@ async function fetchDetailedReport() {
       report.claude = from?.claude;
       carry("claude", from);
     }
+    const prevClaude = prevAny?.claude ?? prevComplete?.claude;
+    if (report.claude && report.claude.credits === undefined && prevClaude?.account === report.claude.account) {
+      report.claude.credits = prevClaude.credits;
+    }
     if (!report.codex) {
       const from = prevComplete?.codex ? prevComplete : prevAny;
       report.codex = from?.codex;
@@ -1116,7 +1196,7 @@ import { existsSync as existsSync3 } from "fs";
 import { Database as Database2 } from "bun:sqlite";
 import { closeSync as closeSync2, mkdirSync as mkdirSync2, openSync as openSync2 } from "fs";
 import { homedir as homedir3 } from "os";
-import { dirname, join as join3 } from "path";
+import { dirname as dirname2, join as join3 } from "path";
 var SCHEMA_VERSION = 2;
 function historyFile() {
   if (process.env.HERDR_USAGE_HISTORY_FILE)
@@ -1215,7 +1295,7 @@ function enableWal(db) {
 var schemaVersion = (db) => db.query("PRAGMA user_version").get()?.user_version ?? 0;
 function openHistoryDatabase(file, readonly = false) {
   if (!readonly) {
-    mkdirSync2(dirname(file), { recursive: true, mode: 448 });
+    mkdirSync2(dirname2(file), { recursive: true, mode: 448 });
     closeSync2(openSync2(file, "a", 384));
   }
   const db = new Database2(file, readonly ? { readonly: true } : { readwrite: true });
@@ -2133,7 +2213,7 @@ import { createHash as createHash3 } from "crypto";
 import { existsSync as existsSync5 } from "fs";
 import { readdir, stat } from "fs/promises";
 import { homedir as homedir4 } from "os";
-import { basename as basename2, dirname as dirname2, join as join4, resolve } from "path";
+import { basename as basename3, dirname as dirname3, join as join4, resolve } from "path";
 var PARSER_VERSION = 2;
 var DEFAULT_SYNC_BUDGET_MS = 3000;
 var CODEX_TWIN_WINDOW_MS = 5 * 60000;
@@ -2276,10 +2356,10 @@ function parseClaudeLine(line, cutoff, logId) {
   };
 }
 function antigravityConversationId(filePath, logId) {
-  const logsDir = dirname2(filePath);
-  const sysDir = dirname2(logsDir);
-  if (basename2(logsDir) === "logs" && basename2(sysDir) === ".system_generated") {
-    const conv = basename2(dirname2(sysDir));
+  const logsDir = dirname3(filePath);
+  const sysDir = dirname3(logsDir);
+  if (basename3(logsDir) === "logs" && basename3(sysDir) === ".system_generated") {
+    const conv = basename3(dirname3(sysDir));
     if (conv)
       return conv;
   }

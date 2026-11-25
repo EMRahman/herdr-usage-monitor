@@ -23,17 +23,19 @@ function paceNote(lit) {
     : lit.level === "tight" ? `≈${points}% short at this pace` : "";
 }
 
-// One allowance: its light, % left, a bar, and a tick where an even pace would be.
-function metric(t, label, percent, caption, lit = { level: null }) {
+// One allowance: its light, % left, a bar, and a tick where an even pace would be. Without a
+// percentage, `amount` (a balance, say) stands in its place, with no bar.
+function metric(t, label, percent, caption, lit = { level: null }, amount = "") {
   const value = Number.isFinite(percent) ? Math.max(0, Math.min(100, percent)) : null;
   const color = lit.level ? lightColor(t, lit.level) : t.muted;
   const note = paceNote(lit);
+  const figure = value !== null ? `${value}% left` : amount;
   return v_flex().gap(5).py(5).child(h_flex().justify_between().gap(12)
     .child(h_flex().min_w(0).gap(6).items_center()
       .when(Boolean(lit.level), (el) => el.child(dot(t, lit.level)))
       .child(div().min_w(0).text_color(t.foreground).child(label)))
-    .when(value !== null, (el) => el.child(div().flex_none().font_semibold()
-      .text_color(lit.level ? color : t.foreground).child(`${value}% left`))))
+    .when(Boolean(figure), (el) => el.child(div().flex_none().font_semibold()
+      .text_color(lit.level ? color : t.foreground).child(figure))))
     .when(value !== null, (el) => el.child(div().relative().h(4).w_full().rounded(2).bg(t.raised)
       .child(div().h_full().w(`${value}%`).rounded(2).bg(color))
       .when(Number.isFinite(lit.timeLeft), (bar) => bar.child(div().absolute().top(-3).h(10).w(2).rounded(1)
@@ -93,11 +95,37 @@ function providerCards(t, report, spares) {
   const claude = report?.claude;
   if (claude) {
     const rows = windows(t, spares, "Claude", claude);
+    const resets = claude.limit_resets ?? [];
+    if (resets.length) {
+      const available = resets.reduce((sum, reset) => sum + (reset.left ?? 0), 0);
+      rows.push(div().mt(4).font_semibold().child(`Limit resets · ${available} available`));
+      for (const reset of resets) {
+        const soon = creditLight({ expiresAt: reset.expires_at });
+        if (soon.level) spares.push({ provider: "Claude", label: reset.label, credit: true, ...soon });
+        const use = reset.paused ? "Paused"
+          : reset.usable_now === false ? "Can't be used right now"
+          : reset.needs_limit ? "Run /limit-reset at a limit to use it" : "Run /limit-reset to use it";
+        const count = reset.total > 1 ? `${reset.left} of ${reset.total} left` : "";
+        rows.push(metric(t, reset.label, null,
+          [timed("Expires", reset.expires_at), use].filter(Boolean).join(" · "), soon, count));
+      }
+    }
     const extra = claude.extra_usage;
     if (extra) {
       const spend = [extra.used, extra.limit].filter(Boolean).join(" / ");
-      const balance = extra.balance_left ? `${extra.balance_left} left` : "";
-      rows.push(metric(t, "Extra usage", remaining(extra.used_percent), [spend, balance].filter(Boolean).join(" · ")));
+      const left = extra.balance_left ? `${extra.balance_left} left` : "";
+      rows.push(metric(t, "Usage credits", remaining(extra.used_percent),
+        [spend && `${spend} this month`, left].filter(Boolean).join(" · ")));
+    }
+    const credits = claude.credits;
+    if (credits) {
+      // The part of the balance that expires first, as Claude Code's /usage-credits shows it.
+      const first = credits.expiring?.[0];
+      const soon = first ? creditLight({ expiresAt: first.expires_at }) : { level: null };
+      if (soon.level) spares.push({ provider: "Claude", label: "Usage credits", credit: true, ...soon });
+      const expiry = first ? [`${first.amount} ${timed("expires", first.expires_at)}`, first.name]
+        .filter(Boolean).join(" · ") : "No expiry";
+      rows.push(metric(t, "Credit balance", null, expiry, soon, credits.balance));
     }
     cards.push(card(t, "Claude", claude.plan, rows));
   }

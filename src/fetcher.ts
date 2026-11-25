@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import {
+  claudeCodeVersion,
   fetchOtherProviders,
   getAntigravitySignIns,
   getClaudeSignIns,
@@ -39,6 +40,29 @@ export interface DetailedCodex {
   };
 }
 
+/** A limit reset Anthropic granted: using one refills the limits it clears at once. */
+export interface ClaudeLimitReset {
+  id: string;
+  label: string;
+  /** Resets of this grant still to use, and how many it came with. */
+  left: number;
+  total: number;
+  /** The last moment it can be used. */
+  expires_at: string | null;
+  usable_now: boolean;
+  paused: boolean;
+  /** Only usable once a limit is reached, not at any time. */
+  needs_limit: boolean;
+}
+
+/** Prepaid usage credits: the balance, and the parts of it that expire, soonest first. */
+export interface ClaudeCredits {
+  balance: string;
+  expiring: Array<{ amount: string; expires_at: string; name?: string }>;
+  /** When the balance was read (ms). */
+  read_at: number;
+}
+
 export interface DetailedClaude {
   account: string;
   plan: string;
@@ -49,6 +73,9 @@ export interface DetailedClaude {
     balance_left?: string;
     used_percent: number;
   } | null;
+  limit_resets?: ClaudeLimitReset[];
+  /** Missing when the balance couldn't be read; null when the account has no prepaid credits. */
+  credits?: ClaudeCredits | null;
 }
 
 export interface AgyBucket {
@@ -113,6 +140,66 @@ function agyReset(value: unknown): string | null {
   const time = Date.parse(value);
   return Number.isFinite(time) && time > 0 ? value : null;
 }
+
+// Amounts come in minor units ("839" GBP with 2 decimals is £8.39).
+function money(minor: number, currency: string, decimals = 2): string {
+  const symbol = currency === "GBP" ? "£" : currency === "EUR" ? "€" : currency === "USD" ? "$" : `${currency} `;
+  return `${symbol}${(minor / Math.pow(10, decimals)).toFixed(decimals)}`;
+}
+
+const isoTime = (value: unknown): string | null =>
+  typeof value === "string" && Number.isFinite(Date.parse(value)) ? value : null;
+
+/** The limit resets in Claude's usage answer (its cedar_ember block) still to use, soonest to
+ *  expire first. Anthropic lists them only to a recent Claude Code version. */
+export function claudeLimitResets(body: any, now = Date.now()): ClaudeLimitReset[] {
+  const grants = Array.isArray(body?.cedar_ember?.grants) ? body.cedar_ember.grants : [];
+  return grants
+    .filter((g: any) => typeof g?.resets_left === "number" && g.resets_left > 0)
+    .map((g: any): ClaudeLimitReset => ({
+      id: String(g.id ?? ""),
+      label: typeof g.label === "string" && g.label.trim() ? g.label.trim()
+        : g.type === "full" ? "Full limit reset" : "Limit reset",
+      left: g.resets_left,
+      total: typeof g.resets_total === "number" ? Math.max(g.resets_total, g.resets_left) : g.resets_left,
+      expires_at: isoTime(g.ends_at),
+      usable_now: g.usable_now !== false,
+      paused: g.paused === true,
+      needs_limit: g.use_requires_limit === true,
+    }))
+    .filter((r: ClaudeLimitReset) => !r.expires_at || Date.parse(r.expires_at) > now)
+    .sort((a: ClaudeLimitReset, b: ClaudeLimitReset) =>
+      (a.expires_at ? Date.parse(a.expires_at) : Infinity) - (b.expires_at ? Date.parse(b.expires_at) : Infinity));
+}
+
+/** The prepaid credit balance from Claude's prepaid/credits answer, with the parts of it that
+ *  expire (bought and promotional credit alike), or null when the account has none. */
+export function claudeCredits(body: any, now = Date.now()): ClaudeCredits | null {
+  if (typeof body?.amount !== "number") return null;
+  const total = body.balance?.money;
+  const currency = total?.currency ?? body.currency ?? "USD";
+  const decimals = typeof total?.exponent === "number" ? total.exponent : 2;
+  const amount = typeof total?.amount_minor === "number" ? total.amount_minor : body.amount;
+  const tranches = [
+    ...(Array.isArray(body.tranches) ? body.tranches : []),
+    ...(Array.isArray(body.promo_tranches) ? body.promo_tranches : []),
+  ];
+  const expiring = tranches
+    .map((t: any) => ({ t, expires: isoTime(t?.shown_expires_at) ?? isoTime(t?.expires_at) }))
+    .filter(({ t, expires }) => typeof t?.remaining_amount_minor_units === "number"
+      && t.remaining_amount_minor_units > 0 && expires && Date.parse(expires) > now)
+    .sort((a, b) => Date.parse(a.expires!) - Date.parse(b.expires!))
+    .map(({ t, expires }) => ({
+      amount: money(t.remaining_amount_minor_units, t.currency ?? currency, decimals),
+      expires_at: expires!,
+      ...(typeof t.name === "string" && t.name.trim() ? { name: t.name.trim() } : {}),
+    }));
+  if (amount <= 0 && expiring.length === 0) return null;
+  return { balance: money(amount, currency, decimals), expiring, read_at: now };
+}
+
+// The credit balance only moves once a limit is reached, so it's read less often than the limits.
+const CREDITS_MAX_AGE_MS = 15 * 60_000;
 
 function saveRateLimits(state: RateLimitState): void {
   try {
@@ -180,13 +267,28 @@ export async function fetchDetailedReport(): Promise<FullReport> {
     const claudeSignIns = await getClaudeSignIns().catch(() => []);
     const s = claudeSignIns[0];
     if (!s) return;
+    const headers = {
+      authorization: `Bearer ${s.token}`,
+      accept: "application/json",
+      "anthropic-beta": "oauth-2025-04-20",
+      "user-agent": `claude-cli/${claudeCodeVersion()} (external, cli)`,
+    };
+    const account = s.account?.label ?? "default";
+
+    // The credit balance, alongside the limits: the one read last time while it's recent.
+    const previous = (await getCachedReport(24 * 3600_000, { allowPartial: true }))?.claude;
+    const recentCredits = previous?.account === account && previous.credits
+      && Date.now() - previous.credits.read_at < CREDITS_MAX_AGE_MS ? previous.credits : undefined;
+    const org = s.account?.org;
+    const creditsPromise: Promise<ClaudeCredits | null | undefined> = recentCredits || !org
+      ? Promise.resolve(recentCredits)
+      : fetch(`https://api.anthropic.com/api/oauth/organizations/${encodeURIComponent(org)}/prepaid/credits`, {
+          headers,
+          signal: AbortSignal.timeout(3500),
+        }).then(async (r) => (r.ok ? claudeCredits(await r.json()) : undefined)).catch(() => undefined);
+
     const res = await fetch("https://api.anthropic.com/api/oauth/usage?cedar_ember=1", {
-      headers: {
-        authorization: `Bearer ${s.token}`,
-        accept: "application/json",
-        "anthropic-beta": "oauth-2025-04-20",
-        "user-agent": "claude-cli/2.1.0 (external, cli)",
-      },
+      headers,
       signal: AbortSignal.timeout(3500),
     }).catch(() => null);
 
@@ -226,29 +328,26 @@ export async function fetchDetailedReport(): Promise<FullReport> {
     let extra_usage = null;
     if (body.extra_usage?.is_enabled || body.spend?.enabled) {
       const currency = body.extra_usage?.currency ?? body.spend?.used?.currency ?? "USD";
-      const curr = currency === "GBP" ? "£" : currency === "EUR" ? "€" : currency === "USD" ? "$" : `${currency} `;
       const decimals = body.extra_usage?.decimal_places ?? 2;
-      const divisor = Math.pow(10, decimals);
       const usedMinor = body.spend?.used?.amount_minor ?? body.extra_usage?.used_credits ?? 0;
       const limitMinor = body.spend?.limit?.amount_minor ?? body.extra_usage?.monthly_limit ?? 0;
-      const usedStr = `${curr}${(usedMinor / divisor).toFixed(decimals)}`;
-      const limitStr = `${curr}${(limitMinor / divisor).toFixed(decimals)}`;
-      const leftStr = `${curr}${Math.max(0, (limitMinor - usedMinor) / divisor).toFixed(decimals)}`;
       const usedPct = body.extra_usage?.utilization ?? body.spend?.percent ?? 0;
       extra_usage = {
-        used: usedStr,
-        limit: limitStr,
-        balance_left: leftStr,
+        used: money(usedMinor, currency, decimals),
+        limit: money(limitMinor, currency, decimals),
+        balance_left: money(Math.max(0, limitMinor - usedMinor), currency, decimals),
         used_percent: usedPct,
       };
     }
 
     readAt.claude = Date.now();
     report.claude = {
-      account: s.account?.label ?? "default",
+      account,
       plan: s.plan ?? "pro",
       windows,
       extra_usage,
+      limit_resets: claudeLimitResets(body),
+      credits: await creditsPromise,
     };
   })().catch(() => {});
 
@@ -471,6 +570,11 @@ export async function fetchDetailedReport(): Promise<FullReport> {
       const from = prevAny?.claude ? prevAny : prevComplete;
       report.claude = from?.claude;
       carry("claude", from);
+    }
+    // A credit balance that couldn't be read this time keeps the last one read.
+    const prevClaude = prevAny?.claude ?? prevComplete?.claude;
+    if (report.claude && report.claude.credits === undefined && prevClaude?.account === report.claude.account) {
+      report.claude.credits = prevClaude.credits;
     }
     if (!report.codex) {
       const from = prevComplete?.codex ? prevComplete : prevAny;
