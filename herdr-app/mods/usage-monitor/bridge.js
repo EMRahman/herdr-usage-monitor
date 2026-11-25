@@ -1988,6 +1988,9 @@ function readHistorical(options = {}, file = historyFile(), backfill = { pending
 import { existsSync as existsSync4 } from "fs";
 import { createHash as createHash2 } from "crypto";
 
+// herdr-app/mods/usage-monitor/time.js
+var STALE_MS = 5 * 60000;
+
 // herdr-app/mods/usage-monitor/pace.js
 var HOUR = 3600000;
 var DAY = 24 * HOUR;
@@ -2004,12 +2007,13 @@ function windowLength(text) {
     return 30 * DAY;
   return null;
 }
+var WEEK = 7 * DAY;
 
 // src/history/burndown.ts
 var MINUTE = 60000;
 var HOUR2 = 60 * MINUTE;
 var DAY2 = 24 * HOUR2;
-var WEEK = 7 * DAY2;
+var WEEK2 = 7 * DAY2;
 var BUCKETS = 180;
 var round = (value) => Math.round(value * 10) / 10;
 function accountId(account) {
@@ -2122,9 +2126,9 @@ function readHistory(file = historyFile(), since = 0) {
 var windowOf = (s) => s.p === "antigravity" ? windowLength(s.w) ?? s.w : s.w;
 var limitOf = (s) => `${s.p}\x00${s.g ?? ""}\x00${windowOf(s)}`;
 var ROLLING = MINUTE;
-var CHARTED = new Set([5 * HOUR2, WEEK]);
+var CHARTED = new Set([5 * HOUR2, WEEK2]);
 function readBurndowns(file = historyFile(), now = Date.now()) {
-  return burndowns(readHistory(file, now - WEEK - DAY2), now);
+  return burndowns(readHistory(file, now - WEEK2 - DAY2), now);
 }
 function burndowns(entries, now = Date.now()) {
   const accounts = new Map;
@@ -2933,13 +2937,13 @@ function summaryParts(report) {
   if (report.claude) {
     const s = report.claude.windows.find((w) => w.label.includes("5h")) ?? report.claude.windows[0];
     if (s) {
-      parts.push({ name: "Claude", remaining: Math.max(0, 100 - Math.round(s.used_percent)) });
+      parts.push({ id: "claude", name: "Claude", remaining: Math.max(0, 100 - Math.round(s.used_percent)) });
     }
   }
   if (report.codex) {
     const s = report.codex.windows.find((w) => w.label.includes("5h")) ?? report.codex.windows[0];
     if (s) {
-      parts.push({ name: "Codex", remaining: Math.max(0, 100 - Math.round(s.used_percent)) });
+      parts.push({ id: "codex", name: "Codex", remaining: Math.max(0, 100 - Math.round(s.used_percent)) });
     }
   }
   if (report.antigravity) {
@@ -2952,20 +2956,20 @@ function summaryParts(report) {
       }
     }
     if (fiveHourValues.length > 0) {
-      parts.push({ name: "AGY", remaining: Math.max(...fiveHourValues) });
+      parts.push({ id: "antigravity", name: "AGY", remaining: Math.max(...fiveHourValues) });
     }
   }
   if (parts.length === 0 && report.others?.length) {
     for (const p of report.others) {
       const name = SHORT_NAMES[p.id] ?? p.id.charAt(0).toUpperCase() + p.id.slice(1);
       if (p.problem === "expired") {
-        parts.push({ name, remaining: null, note: "auth expired" });
+        parts.push({ id: p.id, name, remaining: null, note: "auth expired" });
         continue;
       }
       const sessionWindow = p.windows.find((w) => w.kind === "session") ?? p.windows[0];
       if (!sessionWindow)
         continue;
-      parts.push({ name, remaining: Math.max(0, 100 - Math.round(sessionWindow.used_percent)) });
+      parts.push({ id: p.id, name, remaining: Math.max(0, 100 - Math.round(sessionWindow.used_percent)) });
     }
   }
   return parts;

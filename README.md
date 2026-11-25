@@ -10,9 +10,9 @@ Claude Code · Codex · Antigravity · Cursor · GitHub Copilot · Grok · OpenC
 
 ![Usage Monitor shows remaining allowances alongside burndown charts, spare-allowance highlights, and historical token usage by model](herdr-app/preview.png)
 
-**Always on screen.** What's left of each subscription sits at the bottom left of the Herdr app's sidebar, above Settings. A figure turns yellow at 30% or less and red at 10% or less.
+**Always on screen.** What's left of each subscription sits at the bottom left of the Herdr app's sidebar, above Settings, beside each coding agent's logo. A figure turns yellow at 30% or less and red at 10% or less. A blue ↻ after a figure means you hold a limit reset for that agent. Hover over an agent to see its limits and resets, and whether a reset is worth using soon (see [Spot unused allowance](#spot-unused-allowance)). When the sidebar is folded, a blue dot on the gauge stands in for the ↻.
 
-<img src="docs/herdr-app-sidebar.png" width="456" alt="The Herdr app's sidebar, bottom left: a gauge icon, then Claude 80%, Codex 100%, AGY 100%, above Settings and Add machine">
+<img src="docs/herdr-app-sidebar.png" width="534" alt="The Herdr app's sidebar, bottom left: a gauge icon, then the Claude logo and 62% with a blue reset mark, the Codex logo and 82% with a blue reset mark, and the Antigravity logo and 64%, above Settings and Add machine">
 
 **One shortcut for the full breakdown.** Press <kbd>Cmd</kbd>+<kbd>U</kbd>, or click the readout, to see every limit, when it resets, and where allowance is going unused:
 
@@ -54,11 +54,17 @@ Every limit resets on a clock. If you used it evenly, the share left would match
 
 | Light | Meaning |
 |---|---|
-| 🟢 **Untapped** | At least 20 points more allowance left than time left: at this pace, some of it resets unused. Also Codex reset credits, Claude limit resets and Claude usage credits expiring within 3 days. |
+| 🟢 **Untapped** | At least 20 points more allowance left than time left: at this pace, some of it resets unused. Also Claude usage credits expiring within 3 days. |
 | 🟡 **On pace** | Within 20 points either way. |
 | 🔴 **Tight** | 10% or less left, or 20 points behind: it runs out before the reset. |
 
 Everything green is listed in the **Untapped allowance** panel at the top, soonest reset first. A white tick on each bar marks where an even pace would be.
+
+Below that, **Resets you hold** lists every Claude limit reset (use it with `/limit-reset`) and Codex reset credit, however far off its expiry. A reset refills whole limits, so an unused one is a lot of allowance on the table. Resets worth using soon are listed first, with the reason in blue. A reset is worth using soon when:
+
+- one of that provider's limits is tight,
+- it expires within 3 days, or
+- it expires before the weekly limit resets, so this week is the last one it can be used in.
 
 ## Burndown charts
 

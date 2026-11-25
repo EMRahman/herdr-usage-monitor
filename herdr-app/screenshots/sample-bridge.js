@@ -238,7 +238,8 @@ if (import.meta.main) {
     : process.argv.includes("--history")
       ? { burndowns }
       : { report, parts: [
-          { name: "Claude", remaining: 62 }, { name: "Codex", remaining: 82 }, { name: "AGY", remaining: 64 },
+          { id: "claude", name: "Claude", remaining: 62 }, { id: "codex", name: "Codex", remaining: 82 },
+          { id: "antigravity", name: "AGY", remaining: 64 },
         ] };
   console.log(JSON.stringify(payload));
 }
