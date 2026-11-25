@@ -2,9 +2,12 @@
 //
 //   img crop <in.png> <x> <y> <w> <h> <out.png>
 //   img paste <src.png> <x> <y> <w> <h> <scale> <at-x> <at-y> <dst.png>
+//   img fill <dst.png> <x> <y> <w> <h> <sample-x> <sample-y>
 //
 // paste draws the source rect scaled at (at-x, at-y) over dst, in place. Only whole pixels inside
 // the scaled rect are replaced, so its edges, which sit on a card's plain background, leave no seam.
+// fill clears a rect of dst, in place, to the color at the sample point: a card's own background,
+// so a smaller paste leaves nothing of the last one around it.
 import CoreGraphics
 import Foundation
 import ImageIO
@@ -69,6 +72,23 @@ case "paste":
     }
   }
   save(out.makeImage()!, path)
+case "fill":
+  let path = args[2]
+  let target = load(path)
+  let (w, h) = (target.width, target.height)
+  let out = canvas(w, h)
+  out.draw(target, in: CGRect(x: 0, y: 0, width: w, height: h))
+  let into = pixels(out)
+  let sample = (Int(number(8)) * w + Int(number(7))) * 4
+  let color = (0..<4).map { into[sample + $0] }
+  for y in Int(number(4))..<Int(number(4) + number(6)) {
+    for x in Int(number(3))..<Int(number(3) + number(5)) {
+      let i = (y * w + x) * 4
+      for c in 0..<4 { into[i + c] = color[c] }
+    }
+  }
+  save(out.makeImage()!, path)
 default:
-  fatalError("Usage: img crop <in> <x> <y> <w> <h> <out> | img paste <src> <x> <y> <w> <h> <scale> <at-x> <at-y> <dst>")
+  fatalError("Usage: img crop <in> <x> <y> <w> <h> <out> | img paste <src> <x> <y> <w> <h> <scale> <at-x> <at-y> <dst>"
+    + " | img fill <dst> <x> <y> <w> <h> <sample-x> <sample-y>")
 }

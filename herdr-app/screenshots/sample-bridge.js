@@ -68,7 +68,12 @@ const report = {
   },
   codex: {
     plan: "Plus", windows: windows("codex"),
-    resets: { available: 1, items: [{ title: "Full reset (Weekly + 5 hr)", expires_at: iso(now + 8 * day) }] },
+    // One credit for each state: use it or lose it, its last week, and quiet.
+    resets: { available: 3, items: [
+      { title: "Full reset (Weekly + 5 hr)", expires_at: iso(now + 2 * day) },
+      { title: "Full reset (Weekly + 5 hr)", expires_at: iso(now + 3.5 * day) },
+      { title: "Full reset (Weekly + 5 hr)", expires_at: iso(now + 8 * day) },
+    ] },
   },
   antigravity: { groups: [
     { name: gemini, models: "Gemini 4 Neon, Gemini 4 Hydrogen", buckets: buckets(gemini) },

@@ -6,8 +6,9 @@
 //
 // It writes docs/herdr-app-allowances.png, docs/herdr-app-burndown.png,
 // docs/herdr-app-historical.png and docs/herdr-app-sidebar.png (the readout, at 2x), and repaints
-// the Claude Allowances and Burndown cards inside herdr-app/preview.png. The rest of the preview (its paper, headline, the "spare at this pace"
-// callout, and the compact History card) is a fixed design and stays as it is.
+// two cards inside herdr-app/preview.png: Allowances, which features the Untapped panel with the
+// resets you hold, and Burndown. The rest of the preview (its paper, headline, the "spare at this
+// pace" callout, and the compact History card) is a fixed design and stays as it is.
 //
 // Nothing real is read or changed. The window gets its own Herdr home, terminal core, data and
 // cache folders, with telemetry off. The installer puts the readout into that home's layout, then
@@ -29,12 +30,17 @@ const DIALOG = [WIDTH * 0.05, HEIGHT * 0.05, WIDTH * 0.9, HEIGHT * 0.9];
 // The sidebar's foot at 200%: the readout's row, then Settings and Add machine.
 const SIDEBAR = [0, 826, 534, 204];
 
-// Where each view's Claude card goes in the preview: a rect of the window shot, scaled and placed
-// as the preview was laid out. Each rect's edges sit on the card's plain background.
+// Where a view's card goes in the preview: a rect of the window shot, scaled and placed as the
+// preview was laid out. Each rect's edges sit on the card's plain background.
 const PREVIEW: Record<string, Array<{ from: number[]; scale: number; at: number[] }>> = {
-  allowances: [{ from: [109, 358, 490, 248], scale: 0.895, at: [85.225, 266.02] }],
-  burndown: [{ from: [109, 196, 486, 156], scale: 0.825, at: [607.025, 256.15] }], // 5h session
+  burndown: [{ from: [109, 196, 486, 156], scale: 0.825, at: [607.025, 256.15] }], // Claude 5h session
 };
+
+// The preview's Allowances card shows the Untapped panel, drawn in a dialog narrowed to about the
+// card's width (this share of the window). `from` is inside the panel's border in that shot; the
+// card's slot is cleared to its own background (`sample`) first, then the panel goes in its middle.
+const RESETS_DIALOG = 0.34;
+const RESETS = { from: [596, 163, 548, 263], scale: 0.8, at: [85.3, 271.8], clear: [81, 261, 446, 232], sample: [80, 380] };
 
 const need = (name: string) => {
   const found = Bun.which(name);
@@ -117,6 +123,26 @@ async function waitForWindow() {
   throw new Error("The Herdr window didn't start within 30 seconds.");
 }
 
+// The Untapped panel, with the resets you hold, into the preview's Allowances card.
+async function capturePreviewResets() {
+  const manifestFile = join(mod, "mod.json");
+  const manifest = readFileSync(manifestFile, "utf8");
+  writeFileSync(manifestFile, JSON.stringify({ ...JSON.parse(manifest), overlay: { width: RESETS_DIALOG, height: 0.9 } }));
+  writeFileSync(join(mod, "main.js"), mainFor("allowances"));
+  await Bun.sleep(1000);
+  run(herdr, "do", "mod.open", "--name", "usage-monitor");
+  await Bun.sleep(3000);
+  const problems = errors();
+  if (problems.length) throw new Error(`Herdr reported: ${JSON.stringify(problems)}`);
+  const shot = join(root, "resets.png");
+  run(herdr, "shot", shot);
+  run(herdr, "do", "mod.open", "--name", "usage-monitor");
+  writeFileSync(manifestFile, manifest);
+  const img = join(root, "img");
+  run(img, "fill", preview, ...RESETS.clear.map(String), ...RESETS.sample.map(String));
+  run(img, "paste", shot, ...RESETS.from.map(String), String(RESETS.scale), ...RESETS.at.map(String), preview);
+}
+
 // The readout sits in the sidebar of the layout the installer makes. The installer copies the
 // real mod, so the sample bridge and the frozen main.js go back in after it.
 async function installReadout() {
@@ -177,6 +203,7 @@ try {
   await capture("allowances");
   await capture("burndown");
   await capture("historical");
+  await capturePreviewResets();
   console.log(`Updated ${preview}`);
   await captureSidebar();
 } finally {

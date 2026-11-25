@@ -12,7 +12,7 @@ Claude Code · Codex · Antigravity · Cursor · GitHub Copilot · Grok · OpenC
 
 **Always on screen.** What's left of each subscription sits at the bottom left of the Herdr app's sidebar, above Settings, beside each coding agent's logo. A figure turns yellow at 30% or less and red at 10% or less. A blue ↻ after a figure means you hold a limit reset for that agent. Hover over an agent to see its limits and resets, and whether a reset is worth using soon (see [Spot unused allowance](#spot-unused-allowance)). When the sidebar is folded, a blue dot on the gauge stands in for the ↻.
 
-<img src="docs/herdr-app-sidebar.png" width="534" alt="The Herdr app's sidebar, bottom left: a gauge icon, then the Claude logo and 62% with a blue reset mark, the Codex logo and 82% with a blue reset mark, and the Antigravity logo and 64%, above Settings and Add machine">
+<img src="docs/herdr-app-sidebar.png" width="534" alt="The Herdr app's sidebar, bottom left: a gauge icon, then the Claude logo and 62% with a blue reset mark, the Codex logo and 82% with a blue reset mark counting 3, and the Antigravity logo and 64%, above Settings and Add machine">
 
 **One shortcut for the full breakdown.** Press <kbd>Cmd</kbd>+<kbd>U</kbd>, or click the readout, to see every limit, when it resets, and where allowance is going unused:
 
