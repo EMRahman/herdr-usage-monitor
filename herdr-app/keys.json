@@ -1,5 +1,6 @@
 {
   "global": {
-    "cmd-u": "mod.open:usage-monitor"
+    "cmd-u": "mod.open:usage-monitor",
+    "cmd-shift-u": "usage-monitor.panel"
   }
 }
