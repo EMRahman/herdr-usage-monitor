@@ -1,5 +1,8 @@
 {
   "title": "Usage Monitor",
   "place": "none",
-  "overlay": { "width": 0.9, "height": 0.9 }
+  "overlay": { "width": 0.9, "height": 0.9 },
+  "palette": [
+    { "title": "Usage Monitor", "command": "mod.open", "args": { "name": "usage-monitor" }, "words": "allowance burndown readout quota" }
+  ]
 }

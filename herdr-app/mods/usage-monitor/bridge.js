@@ -2986,8 +2986,14 @@ if (mode === "--history") {
   const cached = await getCachedReport(DAY_MS, { allowPartial: true });
   const now = Date.now();
   const burndowns = labelAccounts(readBurndowns(undefined, now), accountNames(cached));
+  const activeAccounts = Object.fromEntries([
+    ["claude", accountId(cached?.claude?.account)],
+    ["codex", accountId(cached?.codex?.account)],
+    ["antigravity", accountId(cached?.antigravity?.account)],
+    ...(cached?.others ?? []).map((provider) => [provider.id, accountId(provider.account)])
+  ]);
   const start = Math.min(...burndowns.map((chart) => chart.start));
-  console.log(JSON.stringify({ burndowns, modelUsage: readModelUsage(start, now) }));
+  console.log(JSON.stringify({ burndowns, activeAccounts, modelUsage: readModelUsage(start, now) }));
   process.exit(0);
 }
 if (mode === "--historical") {

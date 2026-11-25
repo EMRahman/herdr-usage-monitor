@@ -1,7 +1,7 @@
 // JSON bridge for the desktop mod.
 import { fetchDetailedReport, getCachedReport } from "../src/fetcher.ts";
 import { readHistorical, type Horizon } from "../src/history/historical.ts";
-import { accountNames, labelAccounts, readBurndowns, recordReport } from "../src/history/burndown.ts";
+import { accountId, accountNames, labelAccounts, readBurndowns, recordReport } from "../src/history/burndown.ts";
 import { readModelUsage, syncModelUsage } from "../src/history/model-usage.ts";
 import { formatSummary, summaryParts } from "../src/usage-summary.ts";
 
@@ -19,8 +19,13 @@ if (mode === "--history") {
   const cached = await getCachedReport(DAY_MS, { allowPartial: true });
   const now = Date.now();
   const burndowns = labelAccounts(readBurndowns(undefined, now), accountNames(cached));
+  const activeAccounts = Object.fromEntries([
+    ["claude", accountId(cached?.claude?.account)], ["codex", accountId(cached?.codex?.account)],
+    ["antigravity", accountId(cached?.antigravity?.account)],
+    ...(cached?.others ?? []).map((provider) => [provider.id, accountId(provider.account)]),
+  ]);
   const start = Math.min(...burndowns.map((chart) => chart.start));
-  console.log(JSON.stringify({ burndowns, modelUsage: readModelUsage(start, now) }));
+  console.log(JSON.stringify({ burndowns, activeAccounts, modelUsage: readModelUsage(start, now) }));
   process.exit(0);
 }
 

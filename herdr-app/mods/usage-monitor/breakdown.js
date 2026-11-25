@@ -25,32 +25,34 @@ function paceNote(lit) {
 
 // One allowance: its light, % left, a bar, and a tick where an even pace would be. Without a
 // percentage, `amount` (a balance, say) stands in its place, with no bar.
-function metric(t, label, percent, caption, lit = { level: null }, amount = "") {
+function metric(t, label, percent, caption, lit = { level: null }, amount = "", compact = false) {
   const value = Number.isFinite(percent) ? Math.max(0, Math.min(100, percent)) : null;
   const color = lit.level ? lightColor(t, lit.level) : t.muted;
-  const note = paceNote(lit);
+  const note = compact ? (lit.level === "tight" ? LIGHT_LABEL.tight : "") : paceNote(lit);
   const figure = value !== null ? `${value}% left` : amount;
-  return v_flex().gap(5).py(5).child(h_flex().justify_between().gap(12)
+  return v_flex().gap(compact ? 2 : 5).py(compact ? 3 : 5).child(h_flex().justify_between().gap(12)
     .child(h_flex().min_w(0).gap(6).items_center()
       .when(Boolean(lit.level), (el) => el.child(dot(t, lit.level)))
-      .child(div().min_w(0).text_color(t.foreground).child(label)))
+      .child(div().min_w(0).text_color(t.foreground)
+        .when(compact, (el) => el.truncate().tooltip(label)).child(label)))
     .when(Boolean(figure), (el) => el.child(div().flex_none().font_semibold()
       .text_color(lit.level ? color : t.foreground).child(figure))))
-    .when(value !== null, (el) => el.child(div().relative().h(4).w_full().rounded(2).bg(t.raised)
+    .when(value !== null && !compact, (el) => el.child(div().relative().h(4).w_full().rounded(2).bg(t.raised)
       .child(div().h_full().w(`${value}%`).rounded(2).bg(color))
       .when(Number.isFinite(lit.timeLeft), (bar) => bar.child(div().absolute().top(-3).h(10).w(2).rounded(1)
         .left(`${Math.max(0, Math.min(99, lit.timeLeft))}%`).bg(t.foreground)))))
     .when(Boolean(caption || note), (el) => el.child(h_flex().gap(6).text_size(11)
-      .child(div().min_w(0).text_color(t.muted).child(caption || ""))
+      .when(!compact || Boolean(caption), (row) => row.child(div().min_w(0).text_color(t.muted)
+        .when(compact, (el) => el.truncate().tooltip(caption)).child(caption || "")))
       .when(Boolean(note), (row) => row.child(div().flex_none().text_color(color).child(note)))));
 }
 
 // A card and its rough height in rows, used to balance the columns.
-function card(t, title, subtitle, rows, weight = rows.length) {
+function card(t, title, subtitle, rows, weight = rows.length, compact = false) {
   return {
     weight: weight + 1,
-    el: v_flex().gap(6).p(12).rounded(8).bg(t.surface).border(1).border_color(t.border)
-      .child(div().font_semibold().text_size(14).child(title))
+    el: v_flex().gap(compact ? 3 : 6).p(compact ? 8 : 12).rounded(8).bg(t.surface).border(1).border_color(t.border)
+      .child(div().font_semibold().text_size(compact ? 12 : 14).child(title))
       .when(Boolean(subtitle), (el) => el.child(div().text_size(11).text_color(t.muted).child(subtitle)))
       .children(rows),
   };
@@ -82,19 +84,21 @@ function lit(spares, provider, label, remainingPercent, resetsAt, length) {
   return result;
 }
 
-function windows(t, spares, name, provider) {
+function windows(row, spares, name, provider) {
   return (provider.windows ?? []).map((entry) => {
     const left = remaining(entry.used_percent);
-    return metric(t, entry.label, left, timed("Resets", entry.resets_at),
+    return row(entry.label, left, timed("Resets", entry.resets_at),
       lit(spares, name, entry.label, left, entry.resets_at, windowLength(entry.label)));
   });
 }
 
-function providerCards(t, report, spares) {
+function providerCards(t, report, spares, compact = false) {
   const cards = [];
+  const row = (label, value, caption, pace, amount) => metric(t, label, value, caption, pace, amount, compact);
+  const addCard = (title, subtitle, rows, weight) => cards.push(card(t, title, subtitle, rows, weight, compact));
   const claude = report?.claude;
   if (claude) {
-    const rows = windows(t, spares, "Claude", claude);
+    const rows = windows(row, spares, "Claude", claude);
     const resets = claude.limit_resets ?? [];
     if (resets.length) {
       const available = resets.reduce((sum, reset) => sum + (reset.left ?? 0), 0);
@@ -106,7 +110,7 @@ function providerCards(t, report, spares) {
           : reset.usable_now === false ? "Can't be used right now"
           : reset.needs_limit ? "Run /limit-reset at a limit to use it" : "Run /limit-reset to use it";
         const count = reset.total > 1 ? `${reset.left} of ${reset.total} left` : "";
-        rows.push(metric(t, reset.label, null,
+        rows.push(row(reset.label, null,
           [timed("Expires", reset.expires_at), use].filter(Boolean).join(" · "), soon, count));
       }
     }
@@ -114,7 +118,7 @@ function providerCards(t, report, spares) {
     if (extra) {
       const spend = [extra.used, extra.limit].filter(Boolean).join(" / ");
       const left = extra.balance_left ? `${extra.balance_left} left` : "";
-      rows.push(metric(t, "Usage credits", remaining(extra.used_percent),
+      rows.push(row("Usage credits", remaining(extra.used_percent),
         [spend && `${spend} this month`, left].filter(Boolean).join(" · ")));
     }
     const credits = claude.credits;
@@ -125,60 +129,79 @@ function providerCards(t, report, spares) {
       if (soon.level) spares.push({ provider: "Claude", label: "Usage credits", credit: true, ...soon });
       const expiry = first ? [`${first.amount} ${timed("expires", first.expires_at)}`, first.name]
         .filter(Boolean).join(" · ") : "No expiry";
-      rows.push(metric(t, "Credit balance", null, expiry, soon, credits.balance));
+      rows.push(row("Credit balance", null, expiry, soon, credits.balance));
     }
-    cards.push(card(t, "Claude", claude.plan, rows));
+    addCard("Claude", claude.plan, rows);
   }
   const codex = report?.codex;
   if (codex) {
-    const rows = windows(t, spares, "Codex", codex);
+    const rows = windows(row, spares, "Codex", codex);
     const credits = codex.resets;
     if (credits?.available || credits?.items?.length) {
       rows.push(div().mt(4).font_semibold().child(`Reset credits · ${credits.available} available`));
       for (const item of credits.items ?? []) {
         const soon = creditLight({ expiresAt: item.expires_at });
         if (soon.level) spares.push({ provider: "Codex", label: item.title || "Reset credit", credit: true, ...soon });
-        rows.push(metric(t, item.title || "Reset credit", null, timed("Expires", item.expires_at), soon));
+        rows.push(row(item.title || "Reset credit", null, timed("Expires", item.expires_at), soon));
       }
     }
-    cards.push(card(t, "Codex", codex.plan, rows));
+    addCard("Codex", codex.plan, rows);
   }
   const antigravity = report?.antigravity;
   if (antigravity) {
     const groups = (antigravity.groups ?? []).map((group) => v_flex().gap(3).py(4)
-      .child(div().font_semibold().child(group.name))
-      .when(Boolean(group.models), (el) => el.child(div().text_size(11).text_color(t.muted).child(group.models)))
-      .children((group.buckets ?? []).map((entry) => metric(
-        t, entry.label, entry.remaining_percent,
+      .child(div().font_semibold()
+        .when(compact && Boolean(group.models), (el) => el.tooltip(group.models)).child(group.name))
+      .when(Boolean(group.models) && !compact, (el) => el.child(div().text_size(11).text_color(t.muted).child(group.models)))
+      .children((group.buckets ?? []).map((entry) => row(
+        entry.label, entry.remaining_percent,
         [timed("Resets", entry.resets_at) || NOT_STARTED, entry.description].filter(Boolean).join(" · "),
         lit(spares, "Antigravity", `${group.name} · ${entry.label}`, entry.remaining_percent,
           entry.resets_at, windowLength(entry.label)),
       ))));
     const weight = (antigravity.groups ?? [])
       .reduce((sum, group) => sum + 1.5 + (group.buckets ?? []).length * 1.5, 0);
-    cards.push(card(t, "Antigravity", antigravity.tier, groups, weight));
+    addCard("Antigravity", antigravity.tier, groups, weight);
   }
   for (const provider of report?.others ?? []) {
     const name = PROVIDERS[provider.id] ?? provider.id;
     const rows = (provider.windows ?? []).map((entry) => {
       const label = [WINDOWS[entry.kind] ?? entry.kind, entry.scope].filter(Boolean).join(" · ");
       const left = remaining(entry.used_percent);
-      return metric(t, label, left, timed("Resets", entry.resets_at),
+      return row(label, left, timed("Resets", entry.resets_at),
         lit(spares, name, label, left, entry.resets_at, windowLength(entry.kind)));
     });
     if (provider.credits) {
       const credits = provider.credits;
-      rows.push(metric(t, credits.label || "Credits", remaining(credits.used_percent ?? NaN), credits.balance));
+      rows.push(row(credits.label || "Credits", remaining(credits.used_percent ?? NaN), credits.balance));
     }
     if (provider.resets?.available) {
-      rows.push(metric(t, `Reset credits · ${provider.resets.available} available`, null,
+      rows.push(row(`Reset credits · ${provider.resets.available} available`, null,
         timed("Expires", provider.resets.expires_at)));
     }
     const problem = provider.problem === "expired" ? "Sign-in expired" : provider.problem;
     const subtitle = [provider.plan, problem].filter(Boolean).join(" · ");
-    cards.push(card(t, name, subtitle, rows));
+    addCard(name, subtitle, rows);
   }
   return cards;
+}
+
+export function compactAllowances(t, report, provider) {
+  const scopedReport = report && {
+    timestamp: report.timestamp,
+    read_at: report.read_at,
+    [provider]: report[provider],
+    others: (report.others ?? []).filter(({ id }) => id === provider),
+  };
+  const cards = providerCards(t, scopedReport, [], true);
+  const sample = sampleStatus(scopedReport);
+  return v_flex().gap(8).pt(6)
+    .child(h_flex().gap(8).justify_between().items_center()
+      .child(div().font_semibold().text_size(13).child("Allowances"))
+      .when(cards.length > 0, (el) => el.child(div().min_w(0).truncate().text_size(11)
+        .text_color(sample.stale ? t.ansi3 : t.muted).tooltip(sample.detail ?? sample.label).child(sample.label))))
+    .when(cards.length === 0, (el) => el.child(div().text_color(t.muted).child("No allowance readings yet.")))
+    .children(cards.map(({ el }) => el));
 }
 
 function legend(t) {
@@ -293,6 +316,9 @@ export function breakdown(t, report, state) {
         .child(views(t, view, state.setView)))
       .child(h_flex().flex_none().items_center().gap(8)
         .child(refreshControls(t, report, state))
+        .when(Boolean(state.toggleReadout), (el) => el.child(button(t, "toggle-usage-readout",
+          state.readoutHidden ? "Show readout" : "Hide readout", state.toggleReadout)
+          .tooltip(state.readoutHidden ? "Show Usage at the bottom left" : "Hide Usage from the bottom left")))
         .child(button(t, "close-usage", "Close", state.close))))
     .child(v_flex().id("usage-scroll").flex_1().min_h(0).overflow_y_scrollbar().p(16).gap(8)
       .when(historical, (el) => el.child(historicalView(t, state)))

@@ -26,6 +26,7 @@ function element() {
 
 mock.module("gpui-kit", () => ({
   div: element,
+  svg: element,
   PathBuilder: { stroke: () => element(), fill: () => element() },
   Background: { solid: () => ({ opacity: () => ({}) }) },
 }));
@@ -37,6 +38,7 @@ mock.module("gpui-base", () => ({
   Popover: { new: (id: string) => element().id(id) },
 }));
 const { burndownCards } = await import("../../herdr-app/mods/usage-monitor/burndown.js");
+const { focusedProvider, panelWindows, rightPanel } = await import("../../herdr-app/mods/usage-monitor/panel.js");
 
 type Element = ReturnType<typeof element>;
 
@@ -180,4 +182,66 @@ test("shades the gap to an even pace: green ahead, yellow a little behind, red w
   // Nothing is shaded in the gaps between runs or after now.
   const lefts = band.map((el) => Number.parseFloat(String(style(el, "left"))));
   expect(lefts.every((at) => at < 10 || (at >= 20 && at < 30) || (at >= 40 && at < 50))).toBe(true);
+});
+
+test("the right panel follows the actual terminal on split panes, peeks and agent blocks", () => {
+  const codex = { address: "t1", program: { key: "codex" } };
+  const claude = { address: "work/t1", report: { app: "claude-code" }, program: { key: "agent" } };
+  const shell = { address: "t2", program: { key: "shell" } };
+  const all = [codex, claude, shell];
+  expect(focusedProvider({ terminal: "t1" }, all)).toBe("codex");
+  expect(focusedProvider({ terminal: "work/t1" }, all)).toBe("claude");
+  expect(focusedProvider({ terminal: "t1", shown: "work/t1" }, all)).toBe("claude");
+  expect(focusedProvider({ agent: "work/t1" }, all)).toBe("claude");
+  expect(focusedProvider({ terminal: "t1", shown: "t2" }, all)).toBeNull();
+  expect(focusedProvider({ terminal: null }, all)).toBeNull();
+});
+
+test("the right panel selects the tracked account's main weekly quota and session quota", () => {
+  const hour = 3_600_000;
+  const series = (label: string, length: number, account: string, provider = "claude") => ({
+    label, length: length * hour, account, provider,
+  });
+  const session = series("5h session", 5, "active");
+  const week = series("7d weekly", 168, "active");
+  const burndowns = [series("7d weekly", 168, "old"), series("7d Opus", 168, "active"),
+    session, week, series("Weekly", 168, "codex-account", "codex")];
+  expect(panelWindows({ activeAccounts: { claude: "active" }, burndowns }, "claude")).toEqual([session, week]);
+  expect(panelWindows({ activeAccounts: { claude: "new" }, burndowns }, "claude")).toEqual([undefined, undefined]);
+  expect(panelWindows({ burndowns }, "codex")).toEqual([undefined, burndowns[4]]);
+});
+
+test("the right panel shows only the selected provider's allowances and freshness", () => {
+  const now = Date.now();
+  const reset = new Date(now + 60 * 60_000).toISOString();
+  const report = {
+    timestamp: now,
+    read_at: { claude: now - 3_600_000, codex: now },
+    claude: { windows: [{ label: "5h session", used_percent: 94, resets_at: reset }] },
+    codex: { resets: { available: 2, items: [{ title: "Full limit reset", expires_at: reset }] } },
+    antigravity: { groups: [{ name: "Gemini models", buckets: [{ label: "Weekly", remaining_percent: 60 }] }] },
+    others: [{ id: "cursor", problem: "expired" }],
+  };
+  const noop = () => {};
+  const render = (provider: string | null) => labels(rightPanel({}, {
+    provider, report, pinned: null, focused: Boolean(provider), history: null, historyError: "",
+    details: noop, close: noop, togglePin: noop,
+  })).join("\n");
+
+  expect(render(null)).not.toContain("Allowances");
+  const claude = render("claude");
+  expect(claude).toContain("Allowances");
+  expect(claude).toContain("6% left");
+  expect(claude).toContain("Resets in");
+  expect(claude).toContain("Tight");
+  expect(claude).toContain("Sampled 1h ago");
+  expect(claude).not.toMatch(/Reset credits|Gemini models|Sign-in expired/);
+
+  const codex = render("codex");
+  expect(codex).toContain("Reset credits · 2 available");
+  expect(codex).toContain("Expires in");
+  expect(codex).toContain("Sampled just now");
+  expect(codex).not.toMatch(/6% left|Gemini models|Sign-in expired/);
+  expect(render("antigravity")).toContain("Gemini models");
+  expect(render("cursor")).toContain("Sign-in expired");
 });
