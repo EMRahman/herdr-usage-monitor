@@ -2220,7 +2220,19 @@ async function fetchDetailedReport(options = {}) {
     }
     mergePrimary("codex");
     mergePrimary("antigravity");
-    const newestOthers = sources.find((src) => src.others?.length > 0) ?? null;
+    const otherKey = (p) => `${p.id}\x00${p.account}`;
+    const othersReadTime = (src) => src.others.reduce((max, p) => Math.max(max, src.read_at?.[p.id] ?? 0), 0);
+    let newestOthers = null;
+    let newestOthersTime = -1;
+    for (const src of sources) {
+      if (!src.others?.length)
+        continue;
+      const t = othersReadTime(src);
+      if (!newestOthers || t > newestOthersTime) {
+        newestOthers = src;
+        newestOthersTime = t;
+      }
+    }
     if (report.others.length === 0) {
       if (newestOthers) {
         report.others = newestOthers.others;
@@ -2231,19 +2243,21 @@ async function fetchDetailedReport(options = {}) {
         }
       }
     } else if (newestOthers) {
-      const byId = new Map;
+      const curOtherReadAt = { ...readAt };
+      const byKey = new Map;
       for (const p of report.others)
-        byId.set(p.id, p);
+        byKey.set(otherKey(p), p);
       for (const p of newestOthers.others) {
+        const key = otherKey(p);
         const fromTime = newestOthers.read_at?.[p.id] ?? 0;
-        const curTime = readAt[p.id] ?? 0;
-        if (byId.has(p.id) && fromTime > curTime) {
-          byId.set(p.id, p);
+        const curTime = curOtherReadAt[p.id] ?? 0;
+        if (byKey.has(key) && fromTime > curTime) {
+          byKey.set(key, p);
           if (fromTime > 0)
             readAt[p.id] = fromTime;
         }
       }
-      report.others = [...byId.values()];
+      report.others = [...byKey.values()];
     }
     for (const src of sources) {
       for (const [id, t] of Object.entries(src.attempted_at ?? {})) {

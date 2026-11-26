@@ -696,8 +696,23 @@ export async function fetchDetailedReport(options: FetchReportOptions = {}): Pro
     mergePrimary("codex");
     mergePrimary("antigravity");
 
-    // Merge secondary providers, keeping the newest per-provider reading if a concurrent refresh ran.
-    const newestOthers = sources.find((src) => src.others?.length > 0) ?? null;
+    // Merge secondary providers by (id, account) so multi-account providers (e.g. Copilot, Cursor)
+    // are never collapsed, while still preserving newer readings from concurrent refreshes.
+    const otherKey = (p: GenericProvider) => `${p.id}\u0000${p.account}`;
+    const othersReadTime = (src: FullReport) =>
+      src.others.reduce((max, p) => Math.max(max, src.read_at?.[p.id] ?? 0), 0);
+
+    let newestOthers: FullReport | null = null;
+    let newestOthersTime = -1;
+    for (const src of sources) {
+      if (!src.others?.length) continue;
+      const t = othersReadTime(src);
+      if (!newestOthers || t > newestOthersTime) {
+        newestOthers = src;
+        newestOthersTime = t;
+      }
+    }
+
     if (report.others.length === 0) {
       if (newestOthers) {
         report.others = newestOthers.others;
@@ -707,17 +722,19 @@ export async function fetchDetailedReport(options: FetchReportOptions = {}): Pro
         }
       }
     } else if (newestOthers) {
-      const byId = new Map<string, GenericProvider>();
-      for (const p of report.others) byId.set(p.id, p);
+      const curOtherReadAt = { ...readAt };
+      const byKey = new Map<string, GenericProvider>();
+      for (const p of report.others) byKey.set(otherKey(p), p);
       for (const p of newestOthers.others) {
+        const key = otherKey(p);
         const fromTime = newestOthers.read_at?.[p.id] ?? 0;
-        const curTime = readAt[p.id] ?? 0;
-        if (byId.has(p.id) && fromTime > curTime) {
-          byId.set(p.id, p);
+        const curTime = curOtherReadAt[p.id] ?? 0;
+        if (byKey.has(key) && fromTime > curTime) {
+          byKey.set(key, p);
           if (fromTime > 0) readAt[p.id] = fromTime;
         }
       }
-      report.others = [...byId.values()];
+      report.others = [...byKey.values()];
     }
 
     // Preserve the newest attempted_at timestamps across concurrent polls.

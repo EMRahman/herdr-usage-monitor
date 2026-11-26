@@ -465,4 +465,63 @@ describe("fetchDetailedReport adaptive refresh integration", () => {
       cleanup();
     }
   });
+
+  test("preserves multiple accounts for the same secondary provider across consecutive and concurrent refreshes", async () => {
+    const { dir, cleanup } = makeTempCache();
+    try {
+      let alicePct = 10;
+      let bobPct = 20;
+      let releaseSlow: (() => void) | null = null;
+      let slowStarted: (() => void) | null = null;
+      const slowStartedPromise = new Promise<void>((resolve) => {
+        slowStarted = resolve;
+      });
+
+      const makeDeps = (slow: boolean) => ({
+        fetch: (async () => jsonResponse({}, 404)) as typeof fetch,
+        getClaudeSignIns: async () => [],
+        getCodexSignIns: async () => [],
+        getAntigravitySignIns: async () => [],
+        fetchOtherProviders: async () => {
+          const snapshot = [
+            { id: "copilot", account: "alice", plan: "Pro", windows: [{ kind: "month", scope: "chat", used_percent: alicePct, resets_at: null }], problem: null },
+            { id: "copilot", account: "bob", plan: "Pro", windows: [{ kind: "month", scope: "chat", used_percent: bobPct, resets_at: null }], problem: null },
+          ];
+          if (slow) {
+            slowStarted?.();
+            await new Promise<void>((resolve) => {
+              releaseSlow = resolve;
+            });
+          }
+          return snapshot;
+        },
+        resolveBinary: () => null,
+      });
+
+      // First forced refresh: keeps both alice and bob
+      const first = await fetchDetailedReport({ cacheDir: dir, now: NOW, force: true, activity: {}, deps: makeDeps(false) });
+      expect(first.others.map((p) => p.account)).toEqual(["alice", "bob"]);
+
+      // Second forced refresh with cache present: must still retain both alice and bob
+      alicePct = 15;
+      bobPct = 25;
+      const second = await fetchDetailedReport({ cacheDir: dir, now: NOW + MINUTE, force: true, activity: {}, deps: makeDeps(false) });
+      expect(second.others.map((p) => [p.account, p.windows[0]?.used_percent])).toEqual([["alice", 15], ["bob", 25]]);
+
+      // Concurrent slower refresh (captures 15/25 at NOW+2m) overlapped by a newer refresh (35/45 at NOW+3m)
+      const slowPoll = fetchDetailedReport({ cacheDir: dir, now: NOW + 2 * MINUTE, force: true, activity: {}, deps: makeDeps(true) });
+      await slowStartedPromise;
+
+      alicePct = 35;
+      bobPct = 45;
+      await fetchDetailedReport({ cacheDir: dir, now: NOW + 3 * MINUTE, force: true, activity: {}, deps: makeDeps(false) });
+
+      releaseSlow!();
+      const merged = await slowPoll;
+      expect(merged.others.map((p) => [p.account, p.windows[0]?.used_percent])).toEqual([["alice", 35], ["bob", 45]]);
+      expect(merged.read_at?.copilot).toBe(NOW + 3 * MINUTE);
+    } finally {
+      cleanup();
+    }
+  });
 });
