@@ -91,6 +91,7 @@ export function heldResets(report, now = Date.now()) {
       total: reset.total ?? reset.left ?? 1,
       expiresAt: reset.expires_at,
       usable: !reset.paused && reset.usable_now !== false,
+      paused: Boolean(reset.paused),
       status: reset.paused ? "Paused" : reset.usable_now === false ? "Can't be used right now" : null,
       needsLimit: Boolean(reset.needs_limit),
       command: "/limit-reset",
@@ -124,6 +125,11 @@ function isWeeklyLow(weekly) {
   return weekly.level === "tight" || weekly.remaining <= (weekly.msLeft < CREDIT_SOON ? 25 : 30);
 }
 
+function pickBindingWeekly(list) {
+  if (!list.length) return null;
+  return [...list].sort((a, b) => a.remaining - b.remaining || (a.spare ?? 0) - (b.spare ?? 0))[0];
+}
+
 // One provider's resets, each with how long it has left and whether it's pressing.
 function pressing(provider, windows, entries, now) {
   const limits = (windows ?? []).map((entry) => {
@@ -132,22 +138,25 @@ function pressing(provider, windows, entries, now) {
       remaining: 100 - Math.round(entry.used_percent),
       ...light({ remaining: 100 - Math.round(entry.used_percent), resetsAt: entry.resets_at, length, now }) };
   });
-  const weekly = limits.find((limit) => limit.length === WEEK && Date.parse(limit.resetsAt ?? "") > now);
+  const activeWeeks = limits.filter((limit) => limit.length === WEEK && Date.parse(limit.resetsAt ?? "") > now);
+  const weekly = pickBindingWeekly(activeWeeks);
   const weekEnds = weekly ? Date.parse(weekly.resetsAt) : null;
   const saveForSoonWeekly = weekly && isWeeklyLow(weekly) && weekly.msLeft < WAIT_SOON;
-  const tight = limits.find((limit) => limit.level === "tight" && !(saveForSoonWeekly && limit.length === WEEK));
   const lowWeekly = weekly && isWeeklyLow(weekly) && weekly.msLeft >= CREDIT_SOON;
   return entries.map((entry) => {
     const expiry = Date.parse(entry.expiresAt ?? "");
     const msLeft = Number.isFinite(expiry) ? expiry - now : null;
     const usable = entry.usable ?? true;
+    const expiresBeforeWeekly = msLeft !== null && weekEnds !== null && expiry <= weekEnds;
+    const tight = limits.find((limit) => limit.level === "tight"
+      && !(!expiresBeforeWeekly && saveForSoonWeekly && limit.length === WEEK));
     const urgent = !usable ? null
       : tight ? "tight"
       : lowWeekly ? "lowWeekly"
       : msLeft !== null && msLeft <= CREDIT_SOON ? "expiring"
-      : msLeft !== null && weekEnds !== null && expiry < weekEnds ? "lastWeek" : null;
+      : expiresBeforeWeekly ? "lastWeek" : null;
     return {
-      provider, total: entry.count, status: null, needsLimit: false, command: null,
+      provider, total: entry.count, status: null, paused: false, needsLimit: false, command: null,
       ...entry, usable, msLeft, urgent, tightLimit: urgent === "tight" ? tight.label : null,
     };
   }).filter((entry) => entry.msLeft === null || entry.msLeft > 0);
@@ -155,15 +164,18 @@ function pressing(provider, windows, entries, now) {
 
 function weeklyFor(report, provider, group, now) {
   const fromWindows = (entries) => {
+    const weeks = [];
     for (const entry of entries ?? []) {
-      const length = windowLength(entry.label ?? entry.kind);
+      const label = entry.label ?? entry.kind;
+      const length = windowLength(label);
       if (length !== WEEK) continue;
       const remaining = Number.isFinite(entry.remaining_percent)
         ? entry.remaining_percent
         : 100 - Math.round(entry.used_percent);
-      return { remaining, ...light({ remaining, resetsAt: entry.resets_at, length, now }) };
+      weeks.push({ label, remaining, ...light({ remaining, resetsAt: entry.resets_at, length, now }) });
     }
-    return null;
+    const active = weeks.filter((w) => Number.isFinite(w.msLeft) && w.msLeft > 0);
+    return pickBindingWeekly(active) ?? weeks[0] ?? null;
   };
   if (provider === "Claude" || provider === "claude") return fromWindows(report?.claude?.windows);
   if (provider === "Codex" || provider === "codex") return fromWindows(report?.codex?.windows);
@@ -191,10 +203,16 @@ function providerKey(provider) {
   return s;
 }
 
-export function usableResetsFor(report, provider, now = Date.now()) {
+// Resets that count toward planning: currently usable ones, plus non-paused resets that require
+// hitting a limit before they unlock.
+function planResetsFor(report, provider, now = Date.now()) {
   const id = providerKey(provider);
   return heldResets(report, now)
-    .filter((entry) => entry.provider === id && entry.usable)
+    .filter((entry) => entry.provider === id && !entry.paused && (entry.usable || entry.needsLimit));
+}
+
+export function usableResetsFor(report, provider, now = Date.now()) {
+  return planResetsFor(report, provider, now)
     .reduce((sum, entry) => sum + entry.count, 0);
 }
 
@@ -232,7 +250,12 @@ export function adviseUntapped(spares, report, now = Date.now()) {
     if (!isWeeklyLow(weekly)) {
       return { ...spare, kind: "use" };
     }
-    const resets = usableResetsFor(report, spare.provider, now);
+    const planResets = planResetsFor(report, spare.provider, now);
+    const resets = planResets.reduce((sum, entry) => sum + entry.count, 0);
+    const expiresBeforeWeekly = planResets.some((entry) => entry.msLeft !== null && entry.msLeft <= weekly.msLeft);
+    if (resets > 0 && expiresBeforeWeekly) {
+      return { ...spare, kind: "reset", weeklyMsLeft: weekly.msLeft, weeklyRemaining: weekly.remaining, resets };
+    }
     if (weekly.msLeft < WAIT_SOON || (weekly.msLeft < CREDIT_SOON && resets <= 1)) {
       return { ...spare, kind: "wait", weeklyMsLeft: weekly.msLeft, weeklyRemaining: weekly.remaining, resets };
     }
@@ -243,21 +266,39 @@ export function adviseUntapped(spares, report, now = Date.now()) {
   }).sort((a, b) => rank[a.kind] - rank[b.kind] || (a.msLeft ?? Infinity) - (b.msLeft ?? Infinity));
 }
 
-function suggestionForWeekly(weekly, resets, resetNoun) {
+function weeklyScopeLabel(weekly) {
+  const label = String(weekly?.label ?? "").trim();
+  if (!label || /^(7\s*d\s+)?weekly(\s+limit(\s+remaining)?)?$/i.test(label)) return "weekly";
+  return label;
+}
+
+function suggestionForWeekly(weekly, planResets, resetNoun) {
+  const resets = planResets.reduce((sum, entry) => sum + entry.count, 0);
+  const scope = weeklyScopeLabel(weekly);
+  const expiring = planResets.find((entry) => entry.msLeft !== null && entry.msLeft <= weekly.msLeft);
   if (isWeeklyLow(weekly)) {
     if (resets > 0) {
+      if (expiring) {
+        return {
+          kind: "reset",
+          level: "reset",
+          text: weekly.remaining > 0
+            ? `Use up remaining ${scope} (${Math.round(weekly.remaining)}% left), then use a reset (expires in ${duration(expiring.msLeft)})`
+            : `Use a reset before it expires in ${duration(expiring.msLeft)}`,
+        };
+      }
       if (weekly.msLeft < WAIT_SOON || (weekly.msLeft < CREDIT_SOON && resets === 1)) {
         return {
           kind: "wait",
           level: "pace",
-          text: `Save the reset: Wait for weekly reset in ${duration(weekly.msLeft)}`,
+          text: `Save the reset: Wait for ${scope} reset in ${duration(weekly.msLeft)}`,
         };
       }
       return {
         kind: "reset",
         level: "reset",
         text: weekly.remaining > 0
-          ? `Use up remaining weekly (${Math.round(weekly.remaining)}% left), then use a reset`
+          ? `Use up remaining ${scope} (${Math.round(weekly.remaining)}% left), then use a reset`
           : "Use a reset",
       };
     }
@@ -265,8 +306,8 @@ function suggestionForWeekly(weekly, resets, resetNoun) {
       kind: "pace",
       level: "tight",
       text: weekly.remaining > 0
-        ? `Stay steady on weekly (${Math.round(weekly.remaining)}% left · resets in ${duration(weekly.msLeft)})`
-        : `Wait for weekly reset in ${duration(weekly.msLeft)}`,
+        ? `Stay steady on ${scope} (${Math.round(weekly.remaining)}% left · resets in ${duration(weekly.msLeft)})`
+        : `Wait for ${scope} reset in ${duration(weekly.msLeft)}`,
     };
   }
   if (resets > 0) {
@@ -274,12 +315,12 @@ function suggestionForWeekly(weekly, resets, resetNoun) {
       kind: "reset",
       level: "untapped",
       text: weekly.level === "pace"
-        ? `Aggressively use; you are on pace weekly but you have ${resetNoun} available`
-        : `Aggressively use; weekly is untapped and you have ${resetNoun} available`,
+        ? `Aggressively use; you are on pace ${scope === "weekly" ? "weekly" : `on ${scope}`} but you have ${resetNoun} available`
+        : `Aggressively use; ${scope} is untapped and you have ${resetNoun} available`,
     };
   }
   if (weekly.level === "untapped") {
-    return { kind: "use", level: "untapped", text: "Untapped: use remaining weekly allowance" };
+    return { kind: "use", level: "untapped", text: `Untapped: use remaining ${scope} allowance` };
   }
   return { kind: "pace", level: "pace", text: "On pace" };
 }
@@ -308,7 +349,8 @@ function suggestionForWindows(rawWindows, resets, resetNoun, now) {
  * For Antigravity, returns a suggestion per model group (e.g. Gemini vs Claude & GPT).
  */
 export function providerSuggestion(report, id, now = Date.now()) {
-  const resets = usableResetsFor(report, id, now);
+  const planResets = planResetsFor(report, id, now);
+  const resets = planResets.reduce((sum, entry) => sum + entry.count, 0);
   const resetNoun = `${resets} reset${resets === 1 ? "" : "s"}`;
 
   if (id === "antigravity" || id === "Antigravity") {
@@ -316,7 +358,7 @@ export function providerSuggestion(report, id, now = Date.now()) {
     const results = groups.map((group) => {
       const weekly = weeklyFor(report, "antigravity", group.name, now);
       const base = weekly && Number.isFinite(weekly.msLeft) && weekly.msLeft > 0
-        ? suggestionForWeekly(weekly, 0, resetNoun)
+        ? suggestionForWeekly(weekly, [], resetNoun)
         : suggestionForWindows((group.buckets ?? []).map((b) => ({
           remaining: b.remaining_percent, resetsAt: b.resets_at, length: windowLength(b.label),
         })), 0, resetNoun, now);
@@ -327,7 +369,7 @@ export function providerSuggestion(report, id, now = Date.now()) {
 
   const weekly = weeklyFor(report, id, null, now);
   if (weekly && Number.isFinite(weekly.msLeft) && weekly.msLeft > 0) {
-    return suggestionForWeekly(weekly, resets, resetNoun);
+    return suggestionForWeekly(weekly, planResets, resetNoun);
   }
 
   const rawWindows = id === "claude" || id === "codex"

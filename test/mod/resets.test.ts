@@ -287,4 +287,46 @@ test("providerSuggestion implements the three guiding rules across coding agents
     level: "tight",
     text: "Stay steady on weekly (18% left · resets in 3d 12h)",
   });
+
+  // Expiry override: when a reset expires before the weekly refresh, use it instead of saving it
+  const expiringBeforeWeekly = {
+    claude: {
+      windows: [{ label: "7d weekly", used_percent: 100, resets_at: at(36 * HOUR) }],
+      limit_resets: [claudeReset(12 * HOUR)],
+    },
+  };
+  expect(providerSuggestion(expiringBeforeWeekly, "claude", now)).toEqual({
+    kind: "reset",
+    level: "reset",
+    text: "Use a reset before it expires in 12h 0m",
+  });
+
+  // Limit-gated reset: needs_limit=true, usable_now=false, paused=false still counts toward planning
+  const limitGatedReport = {
+    claude: {
+      windows: [{ label: "7d weekly", used_percent: 85, resets_at: at(4 * DAY) }],
+      limit_resets: [claudeReset(15 * DAY, { needs_limit: true, usable_now: false, paused: false })],
+    },
+  };
+  expect(providerSuggestion(limitGatedReport, "claude", now)).toEqual({
+    kind: "reset",
+    level: "reset",
+    text: "Use up remaining weekly (15% left), then use a reset",
+  });
+
+  // Model-specific weekly limit: an exhausted 7d Opus window is the binding weekly limit
+  const modelScopedReport = {
+    claude: {
+      windows: [
+        { label: "7d weekly", used_percent: 20, resets_at: at(4 * DAY) },
+        { label: "7d Opus", used_percent: 95, resets_at: at(1.5 * DAY) },
+      ],
+      limit_resets: [claudeReset(15 * DAY)],
+    },
+  };
+  expect(providerSuggestion(modelScopedReport, "claude", now)).toEqual({
+    kind: "wait",
+    level: "pace",
+    text: "Save the reset: Wait for 7d Opus reset in 36h 0m",
+  });
 });
