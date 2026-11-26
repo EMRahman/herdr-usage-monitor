@@ -329,4 +329,33 @@ test("providerSuggestion implements the three guiding rules across coding agents
     level: "pace",
     text: "Save the reset: Wait for 7d Opus reset in 36h 0m",
   });
+
+  // Session exhaustion while weekly has room: wait for 5h refresh instead of recommending aggressive use
+  const sessionExhaustedReport = {
+    claude: {
+      windows: [
+        { label: "5h session", used_percent: 100, resets_at: at(0.5 * HOUR) },
+        { label: "7d weekly", used_percent: 20, resets_at: at(5 * DAY) },
+      ],
+      limit_resets: [claudeReset(15 * DAY)],
+    },
+  };
+  expect(providerSuggestion(sessionExhaustedReport, "claude", now)).toEqual({
+    kind: "wait",
+    level: "pace",
+    text: "Save the reset: Wait for 5h refresh in 30m",
+  });
+
+  // Last-chance override: eligible limit-gated reset expiring < 2 days after weekly refresh
+  const lastChanceReport = {
+    claude: {
+      windows: [{ label: "7d weekly", used_percent: 100, resets_at: at(36 * HOUR) }],
+      limit_resets: [claudeReset(48 * HOUR, { needs_limit: true, usable_now: true })],
+    },
+  };
+  expect(providerSuggestion(lastChanceReport, "claude", now)).toEqual({
+    kind: "reset",
+    level: "reset",
+    text: "Last chance: use a reset before weekly refreshes (expires in 2d 0h)",
+  });
 });
