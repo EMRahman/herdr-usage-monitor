@@ -211,6 +211,64 @@ test("the right panel selects the tracked account's main weekly quota and sessio
   expect(panelWindows({ burndowns }, "codex")).toEqual([undefined, burndowns[4]]);
 });
 
+test("detailed burndown cards put 5-hour before weekly within each group", () => {
+  const start = Date.parse("2026-11-23T12:00:00Z");
+  const hour = 3_600_000;
+  const series = (label: string, lengthHours: number, group?: string) => ({
+    provider: "antigravity", group, label, length: lengthHours * hour, start,
+    end: start + lengthHours * hour, left: 80, reset: new Date(start + lengthHours * hour).toISOString(),
+    runs: [[start, start + 60_000, 80]],
+  });
+  const [card] = burndownCards({}, [
+    series("Weekly limit", 168, "Gemini models"),
+    series("5h limit", 5, "Gemini models"),
+    series("Weekly limit", 168, "Claude and GPT models"),
+    series("5h limit", 5, "Claude and GPT models"),
+  ], [], start + 60_000);
+  const titles = card!.rows.map((row) => labels(row)[0]);
+  expect(titles).toEqual([
+    "Gemini models · 5h limit",
+    "Gemini models · Weekly limit",
+    "Claude and GPT models · 5h limit",
+    "Claude and GPT models · Weekly limit",
+  ]);
+});
+
+test("the right panel shows both Gemini and Claude/GPT graphs for Antigravity, 5-hour first", () => {
+  const start = Date.parse("2026-11-23T12:00:00Z");
+  const hour = 3_600_000;
+  const series = (group: string, label: string, lengthHours: number) => ({
+    provider: "antigravity", group, label, length: lengthHours * hour, start,
+    end: start + lengthHours * hour, left: 70, reset: new Date(start + lengthHours * hour).toISOString(),
+    runs: [[start, start + 60_000, 70]],
+  });
+  const history = {
+    burndowns: [
+      series("Gemini models", "Weekly limit", 168),
+      series("Gemini models", "5h limit", 5),
+      series("Claude and GPT models", "Weekly limit", 168),
+      series("Claude and GPT models", "5h limit", 5),
+    ],
+    modelUsage: [],
+  };
+  const windows = panelWindows(history, "antigravity");
+  expect(windows.map((w) => `${w.group} · ${w.label}`)).toEqual([
+    "Gemini models · 5h limit",
+    "Gemini models · Weekly limit",
+    "Claude and GPT models · 5h limit",
+    "Claude and GPT models · Weekly limit",
+  ]);
+  const noop = () => {};
+  const rendered = labels(rightPanel({}, {
+    provider: "antigravity", report: null, pinned: null, focused: true, history, historyError: "",
+    details: noop, close: noop, togglePin: noop,
+  })).join("\n");
+  expect(rendered).toContain("Gemini models · 5h limit");
+  expect(rendered).toContain("Gemini models · Weekly limit");
+  expect(rendered).toContain("Claude and GPT models · 5h limit");
+  expect(rendered).toContain("Claude and GPT models · Weekly limit");
+});
+
 test("the right panel shows only the selected provider's allowances and freshness", () => {
   const now = Date.now();
   const reset = new Date(now + 60 * 60_000).toISOString();

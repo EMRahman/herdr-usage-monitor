@@ -24,7 +24,8 @@ export function focusedProvider(focus, terminals) {
     ?? PROGRAM_PROVIDERS.get(terminal?.program?.key?.toLowerCase()) ?? null;
 }
 
-// Use one account and prefer a matching model group across the two windows.
+// Use one account, 5-hour before weekly, and for Antigravity include every model group
+// (e.g. Gemini and Claude & GPT).
 export function panelWindows(history, provider) {
   const charts = (history.burndowns ?? []).filter((chart) => chart.provider === provider);
   const account = history.activeAccounts?.[provider];
@@ -33,10 +34,21 @@ export function panelWindows(history, provider) {
     : charts.filter((chart) => chart.account === account);
   const sessions = active.filter((chart) => chart.length === 5 * HOUR);
   const weeks = active.filter((chart) => chart.length === 168 * HOUR);
+  const pickWeekly = (list) => list.find((chart) => /\bweekly\b/i.test(chart.label)) ?? list[0];
+
+  if (provider === "antigravity" && active.length) {
+    const groups = [...new Set(active.map((chart) => chart.group))];
+    const pairFor = (group) => [
+      sessions.find((chart) => chart.group === group),
+      pickWeekly(weeks.filter((chart) => chart.group === group)),
+    ];
+    return groups.length === 1 ? pairFor(groups[0]) : groups.flatMap((group) => pairFor(group).filter(Boolean));
+  }
+
   const session = sessions.find((chart) => weeks.some((week) => week.group === chart.group)) ?? sessions[0];
   const groupWeeks = weeks.filter((chart) => chart.group === session?.group);
   const weekly = groupWeeks.length ? groupWeeks : weeks;
-  return [session, weekly.find((chart) => /\bweekly\b/i.test(chart.label)) ?? weekly[0]];
+  return [session, pickWeekly(weekly)];
 }
 
 function button(t, id, label, action, tooltip = label) {
@@ -98,8 +110,9 @@ function burndownSection(t, state) {
   const now = Date.now();
   const windows = panelWindows(history, provider);
   const activity = (history.modelUsage ?? []).filter((event) => event.provider === provider);
-  for (const [index, label] of ["5-hour", "Weekly"].entries()) {
-    const chart = windows[index];
+  const fallbackLabels = ["5-hour", "Weekly"];
+  for (const [index, chart] of windows.entries()) {
+    const label = fallbackLabels[index] ?? "Burndown";
     content.child(v_flex().min_w(0).px(8).py(4).rounded(6).border_1().border_color(t.border).bg(t.surface)
       .child(chart ? burndownChart(t, chart, activity, `usage-panel-${provider}-${index}`, now, true)
         : div().py(8).child(muted(`${label} burndown unavailable`))));

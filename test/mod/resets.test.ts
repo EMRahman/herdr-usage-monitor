@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { heldResets, providerDetail, resetNote } from "../../herdr-app/mods/usage-monitor/pace.js";
+import { adviseUntapped, heldResets, providerDetail, resetNote } from "../../herdr-app/mods/usage-monitor/pace.js";
 
 const HOUR = 3_600_000;
 const DAY = 24 * HOUR;
@@ -122,4 +122,72 @@ test("Antigravity's hover lists each group's limits, and a limit with no window 
     "Gemini models · 5h limit: 64% left · resets in 3h 0m",
     "Gemini models · Weekly limit: 100% left",
   ].join("\n"));
+});
+
+test("smart untapped advises waiting when 5h is high, weekly is low, and reset is soon (< 3d)", () => {
+  const report = {
+    claude: { windows: [
+      { label: "5h session", used_percent: 10, resets_at: at(4 * HOUR) },
+      { label: "7d weekly", used_percent: 82, resets_at: at(1.5 * DAY) },
+    ] },
+  };
+  const [advice] = adviseUntapped([
+    { provider: "Claude", label: "5h session", group: null, length: 5 * HOUR, remaining: 90, msLeft: 4 * HOUR, spare: 10 },
+  ], report, now);
+  expect(advice).toMatchObject({ provider: "Claude", kind: "wait", weeklyRemaining: 18 });
+  expect(advice.weeklyMsLeft).toBe(1.5 * DAY);
+});
+
+test("smart untapped advises using 5h when both weekly and 5h have lots left", () => {
+  const report = {
+    claude: { windows: [
+      { label: "5h session", used_percent: 10, resets_at: at(4 * HOUR) },
+      { label: "7d weekly", used_percent: 20, resets_at: at(4 * DAY) },
+    ] },
+  };
+  const [advice] = adviseUntapped([
+    { provider: "Claude", label: "5h session", group: null, length: 5 * HOUR, remaining: 90, msLeft: 4 * HOUR, spare: 10 },
+  ], report, now);
+  expect(advice).toMatchObject({ provider: "Claude", kind: "use" });
+});
+
+test("smart untapped and heldResets advise looking towards a reset when weekly is low with 3-4 days left", () => {
+  const report = {
+    claude: {
+      windows: [
+        { label: "5h session", used_percent: 10, resets_at: at(4 * HOUR) },
+        { label: "7d weekly", used_percent: 72, resets_at: at(3.5 * DAY) },
+      ],
+      limit_resets: [claudeReset(15 * DAY)],
+    },
+  };
+  const [advice] = adviseUntapped([
+    { provider: "Claude", label: "5h session", group: null, length: 5 * HOUR, remaining: 90, msLeft: 4 * HOUR, spare: 10 },
+  ], report, now);
+  expect(advice).toMatchObject({ provider: "Claude", kind: "reset", weeklyRemaining: 28 });
+
+  const [held] = heldResets({
+    claude: {
+      windows: [
+        { label: "5h session", used_percent: 10, resets_at: at(4 * HOUR) },
+        { label: "7d weekly", used_percent: 70, resets_at: at(3.1 * DAY) },
+      ],
+      limit_resets: [claudeReset(15 * DAY)],
+    },
+  }, now);
+  expect(held.urgent).toBe("lowWeekly");
+  expect(resetNote(held)).toContain("Weekly is low · consider using a reset");
+});
+
+test("smart untapped ignores expired weekly windows so stale cached resets do not trigger reset advice", () => {
+  const report = {
+    claude: { windows: [
+      { label: "5h session", used_percent: 10, resets_at: at(4 * HOUR) },
+      { label: "7d weekly", used_percent: 90, resets_at: at(-60_000) },
+    ] },
+  };
+  const [advice] = adviseUntapped([
+    { provider: "Claude", label: "5h session", group: null, length: 5 * HOUR, remaining: 90, msLeft: 4 * HOUR, spare: 10 },
+  ], report, now);
+  expect(advice).toMatchObject({ provider: "Claude", kind: "use" });
 });

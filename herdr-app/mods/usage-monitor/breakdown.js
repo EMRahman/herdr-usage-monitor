@@ -1,7 +1,7 @@
 import { div, svg } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
-import { LIGHT_LABEL, RESET_COLOR, WINDOW_NAMES, creditLight, heldResets, light, lightColor, resetNote,
-  windowLength } from "./pace.js";
+import { LIGHT_LABEL, RESET_COLOR, WINDOW_NAMES, adviseUntapped, creditLight, heldResets, light, lightColor,
+  resetNote, windowLength } from "./pace.js";
 import { burndownCards } from "./burndown.js";
 import { historicalView } from "./historical.js";
 import { duration, refreshDuration, sampleStatus, timed } from "./time.js";
@@ -86,9 +86,9 @@ function columns(cards, width) {
 const NOT_STARTED = "No window running: it starts with the next request";
 
 // Lights a window and notes it for the summary when it's untapped.
-function lit(spares, provider, label, remainingPercent, resetsAt, length) {
+function lit(spares, provider, label, remainingPercent, resetsAt, length, group = null) {
   const result = light({ remaining: remainingPercent, resetsAt, length });
-  if (result.level === "untapped") spares.push({ provider, label, remaining: remainingPercent, ...result });
+  if (result.level === "untapped") spares.push({ provider, label, group, length, remaining: remainingPercent, ...result });
   return result;
 }
 
@@ -160,7 +160,7 @@ function providerCards(t, report, spares, compact = false) {
         entry.label, entry.remaining_percent,
         [timed("Resets", entry.resets_at) || NOT_STARTED, entry.description].filter(Boolean).join(" · "),
         lit(spares, "Antigravity", `${group.name} · ${entry.label}`, entry.remaining_percent,
-          entry.resets_at, windowLength(entry.label)),
+          entry.resets_at, windowLength(entry.label), group.name),
       ))));
     const weight = (antigravity.groups ?? [])
       .reduce((sum, group) => sum + 1.5 + (group.buckets ?? []).length * 1.5, 0);
@@ -234,9 +234,12 @@ function heldSection(t, held) {
 }
 
 // What would otherwise reset unused, soonest first, then the resets you hold.
-function untapped(t, spares, held) {
-  const rows = [...spares].sort((a, b) => (a.msLeft ?? Infinity) - (b.msLeft ?? Infinity));
-  const border = rows.length ? lightColor(t, "untapped") : held.some((entry) => entry.urgent) ? RESET_COLOR : t.border;
+function untapped(t, spares, held, report) {
+  const rows = adviseUntapped(spares, report);
+  const hasUse = rows.some((row) => row.kind === "use");
+  const hasResetAdvice = rows.some((row) => row.kind === "reset");
+  const border = hasUse ? lightColor(t, "untapped")
+    : (hasResetAdvice || held.some((entry) => entry.urgent)) ? RESET_COLOR : t.border;
   return v_flex().flex_none().gap(8).p(12).rounded(8).bg(t.surface).border(1)
     .border_color(border)
     .child(h_flex().justify_between().items_center().gap(12)
@@ -246,14 +249,20 @@ function untapped(t, spares, held) {
       ? "Every allowance is on pace or tight."
       : "Nothing is going unused: every allowance is on pace or tight.")))
     .children(rows.map((row) => h_flex().gap(8).items_center()
-      .child(dot(t, "untapped"))
+      .child(row.kind === "reset" ? resetIcon(t) : dot(t, row.kind === "wait" ? "pace" : "untapped"))
       .child(div().flex_none().font_semibold().child(row.provider))
       .child(div().min_w(0).flex_1().truncate().text_color(t.muted).child(row.label))
-      .child(div().flex_none().text_color(lightColor(t, "untapped")).child(row.credit
-        ? `expires in ${duration(row.msLeft)}`
-        : [`${row.remaining}% left`, Number.isFinite(row.spare) ? `≈${Math.round(row.spare)}% spare` : "",
-          Number.isFinite(row.msLeft) && row.msLeft > 0 ? `resets in ${duration(row.msLeft)}` : ""]
-          .filter(Boolean).join(" · ")))))
+      .child(div().flex_none()
+        .text_color(row.kind === "reset" ? RESET_COLOR : row.kind === "wait" ? lightColor(t, "pace") : lightColor(t, "untapped"))
+        .child(row.kind === "wait"
+          ? `Wait for weekly reset in ${duration(row.weeklyMsLeft)}`
+          : row.kind === "reset"
+            ? `Weekly low (${Math.round(row.weeklyRemaining)}% left) · look towards using a reset`
+            : row.credit
+              ? `expires in ${duration(row.msLeft)}`
+              : [`${row.remaining}% left`, Number.isFinite(row.spare) ? `≈${Math.round(row.spare)}% spare` : "",
+                Number.isFinite(row.msLeft) && row.msLeft > 0 ? `resets in ${duration(row.msLeft)}` : ""]
+                .filter(Boolean).join(" · ")))))
     .when(held.length > 0, (el) => el.child(heldSection(t, held)));
 }
 
@@ -349,7 +358,7 @@ export function breakdown(t, report, state) {
     .child(v_flex().id("usage-scroll").flex_1().min_h(0).overflow_y_scrollbar().p(16).gap(8)
       .when(historical, (el) => el.child(historicalView(t, state)))
       .when(burndown, (el) => el.child(burndownView(t, state)))
-      .when(!burndown && !historical && cards.length > 0, (el) => el.child(untapped(t, spares, heldResets(report)))
+      .when(!burndown && !historical && cards.length > 0, (el) => el.child(untapped(t, spares, heldResets(report), report))
         .child(columns(cards, state.width ?? 0)))
       .when(!burndown && !historical && cards.length === 0, (el) => el.child(div().text_color(t.muted)
         .child(state.pending ? "Reading provider allowances…" : "No provider allowances available."))))
