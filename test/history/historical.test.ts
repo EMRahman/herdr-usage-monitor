@@ -357,6 +357,22 @@ describe("historical.js UI rendering", () => {
       ]);
       expect(paintedPaths).toHaveLength(3);
 
+      const selectPrompts = mock();
+      const withPrompts = historicalView(t, {
+        ...state, historical: filtered, lineMode: "cumulative", selectPrompts,
+      });
+      for (const id of ["hist-bar-w-0-1", "hist-line-w-0-cumulative-1"]) {
+        const card = findById(withPrompts, id)!;
+        const trigger = card.triggerEl as Element;
+        const choose = trigger.calls.find(([method]) => method === "on_click")![1] as typeof click;
+        choose({}, {});
+        expect(hoverLabels(withPrompts, id)).toContain("Click for Codex prompts in this interval");
+      }
+      expect(selectPrompts.mock.calls.map(([query]) => query)).toEqual(Array(2).fill({
+        mode: "usage", from: filtered.series.buckets[1]!.startMs, to: filtered.series.buckets[1]!.endMs,
+        label: "Tue, Nov 24", horizon: "w", offset: 0, provider: "all", model: "gpt-6.2-sol", includeCache: false,
+      }));
+
       // Hourly D horizon and 52-week Y horizon + stepping backward work cleanly.
       const dayData = readHistorical({ horizon: "d", offset: -1, now }, file);
       expect(dayData.series.buckets).toHaveLength(24);

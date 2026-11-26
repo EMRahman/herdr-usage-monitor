@@ -53,6 +53,7 @@ type ModelUse = {
   sessionId: string | null;
   sourceKind: "usage" | "turn";
   tokens: TokenCounts | null;
+  promptTurnId?: string;
 };
 
 export type ModelActivity = {
@@ -553,6 +554,7 @@ function parseCodexLine(
       sessionId: sessionHash,
       sourceKind: "usage",
       tokens,
+      promptTurnId: nonEmptyString(payload.root_turn_id) || turnId,
     };
   }
 
@@ -662,6 +664,7 @@ function parseCodexLine(
       sessionId: sessionHash,
       sourceKind: "usage",
       tokens,
+      promptTurnId: nonEmptyString(payload.root_turn_id) || turnId,
     };
   }
 }
@@ -676,6 +679,7 @@ async function readLog(
   cutoff: number,
   logId: string,
   codexState: CodexFileState,
+  observe?: (line: string, entry: ModelUse | undefined) => boolean,
 ) {
   const usage: ModelUse[] = [];
   let offset = start;
@@ -692,14 +696,16 @@ async function readLog(
         : provider === "claude"
           ? parseClaudeLine(line, cutoff, logId)
           : parseAntigravityLine(line, cutoff, logId, convId);
-      if (entry) usage.push(entry);
+      if (observe) {
+        if (!observe(line, entry)) return { usage, offset, interrupted: true };
+      } else if (entry) usage.push(entry);
       lineStart = newline + 1;
     }
     offset += lineStart;
     pending = bytes.subarray(lineStart);
   }
   // An active session can be halfway through writing a line. Retry it on the next poll.
-  return { usage, offset };
+  return { usage, offset, interrupted: false };
 }
 
 function unavailable(error: unknown): boolean {
@@ -723,6 +729,164 @@ async function logFiles({ provider, path }: LogRoot): Promise<string[]> {
   return entries
     .filter((entry) => entry.isFile() && entry.name.endsWith(".jsonl"))
     .map((entry) => join(entry.parentPath, entry.name));
+}
+
+type PromptActivity = { at: number; through: number; preview: string; tokens: number };
+
+type PromptQuery = {
+  from: number;
+  to: number;
+  mode: "usage" | "burndown";
+  model?: string;
+  includeCache?: boolean;
+};
+
+// Display only user-authored text. Codex also records injected instructions and
+// environment details as user-role messages.
+function codexPromptText(payload: Record<string, unknown>): string {
+  if (payload.type === "user_message") return nonEmptyString(payload.message);
+  if (payload.type !== "message" || payload.role !== "user" || !Array.isArray(payload.content)) return "";
+  const metadata = object(payload.internal_chat_message_metadata_passthrough);
+  const kinds = metadata?.content_item_kinds;
+  return payload.content.flatMap((item, index) => {
+    const part = object(item);
+    if (part?.type !== "input_text") return [];
+    const value = nonEmptyString(part.text);
+    if (Array.isArray(kinds)) return kinds[index] === "user.text" ? [value] : [];
+    if (/^(?:<environment_context\b|<user_instructions\b|<permissions instructions\b|# AGENTS\.md\b)/i.test(value)) return [];
+    return [value];
+  }).join("\n").trim();
+}
+
+function promptPreview(text: string): string {
+  const clean = text.replace(/[\u0000-\u001f\u007f-\u009f\s]+/g, " ").trim();
+  const prefix = Array.from(clean.slice(0, 361)).slice(0, 180).join("");
+  return clean.length > prefix.length ? `${prefix}…` : prefix;
+}
+
+// Resolve chart details only when selected. The log is the source for prompts
+// and their ordering, and SQLite supplies the same token counts as the chart.
+export async function readCodexPrompts(
+  { from, to, mode, model = "all", includeCache = true }: PromptQuery,
+  file = historyFile(),
+  roots = localLogs(),
+) {
+  const matches = new Map<string, PromptActivity>();
+  const result = (partial = false) => ({
+    prompts: [...matches.values()].sort((a, b) => b.at - a.at).slice(0, 5)
+      .map(({ at, preview, tokens }) => ({ at, preview, ...(mode === "usage" ? { tokens } : {}) })),
+    total: matches.size,
+    partial,
+  });
+  if (!Number.isFinite(from) || !Number.isFinite(to) || from >= to) return result();
+
+  const database = mode === "usage" && existsSync(file) ? openHistoryDatabase(file, true) : null;
+  try {
+    const hasTokens = database?.query<{ name: string }, []>("PRAGMA table_info(model_usage)").all()
+      .some(({ name }) => name === "input_tokens");
+    if (mode === "usage" && !hasTokens) return result();
+    const usage = database?.query<{ tokens: number }, [number, string, number, number, string, string]>(`
+      SELECT input_tokens + coalesce(output_tokens, 0)
+        + ? * (coalesce(cache_read_tokens, 0) + coalesce(cache_write_tokens, 0)) AS tokens
+      FROM model_usage
+      WHERE provider = 'codex' AND event_id = ? AND observed_at >= ? AND observed_at < ?
+        AND (? = 'all' OR model = ?) AND input_tokens IS NOT NULL
+    `);
+    const seenEvents = new Set<string>();
+    const deadline = Date.now() + 2_000;
+    const paths = new Set((await Promise.all(roots.filter(({ provider }) => provider === "codex").map(logFiles))).flat());
+    const candidates = [];
+    for (const path of paths) {
+      if (Date.now() >= deadline) return result(true);
+      try {
+        const info = await stat(path);
+        if (info.isFile() && info.mtimeMs >= from) candidates.push({ path, info });
+      } catch (error) {
+        if (!unavailable(error)) throw error;
+      }
+    }
+    candidates.sort((a, b) => b.info.mtimeMs - a.info.mtimeMs);
+
+    for (const { path, info } of candidates) {
+      if (Date.now() >= deadline) return result(true);
+      const id = hash(`codex:${path}:${info.dev}:${info.ino}:${info.birthtimeMs}`);
+      const state: CodexFileState = {};
+      const prompts: Array<{ key: string; activity: PromptActivity }> = [];
+      const turns = new Map<string, PromptActivity>();
+      let activeTurn = "";
+      let previous: { turn: string; digest: string; source: string } | undefined;
+      const extend = (turn: string, at: number) => {
+        const prompt = turns.get(turn);
+        if (prompt && Number.isFinite(at)) prompt.through = Math.max(prompt.through, at);
+      };
+
+      try {
+        const { interrupted } = await readLog(path, 0, info.size, "codex", from, id, state, (line, entry) => {
+          if (Date.now() >= deadline) return false;
+          if (state.forkReplay) return true;
+          if (entry?.tokens) {
+            const turn = entry.promptTurnId || activeTurn;
+            extend(turn, entry.at);
+            const prompt = turns.get(turn);
+            if (prompt && usage && !seenEvents.has(entry.id)) {
+              const row = usage.get(Number(includeCache), entry.id, from, to, model, model);
+              if (row) {
+                prompt.tokens += row.tokens;
+                seenEvents.add(entry.id);
+              }
+            }
+          }
+          if (!/"type"\s*:\s*"(turn_context|task_started|task_complete|turn_aborted|user_message|response_item)"/.test(line)) return true;
+          if (/"type"\s*:\s*"response_item"/.test(line) && !/"role"\s*:\s*"user"/.test(line)) return true;
+          let event;
+          try {
+            event = object(JSON.parse(line));
+          } catch {
+            return true;
+          }
+          const payload = object(event?.payload);
+          const at = typeof event?.timestamp === "string" ? Date.parse(event.timestamp) : NaN;
+          if (!payload || !Number.isFinite(at)) return true;
+          const eventType = event?.type === "event_msg" ? payload.type : event?.type;
+          const turn = nonEmptyString(payload.root_turn_id ?? payload.turn_id);
+          if ((eventType === "task_started" || eventType === "turn_context") && turn) {
+            activeTurn = turn;
+          } else if (eventType === "task_complete" || eventType === "turn_aborted") {
+            extend(turn || activeTurn, at);
+            if (!turn || activeTurn === turn) activeTurn = "";
+          } else if (eventType === "user_message" || eventType === "response_item") {
+            const text = codexPromptText(payload);
+            const metadata = object(payload.internal_chat_message_metadata_passthrough);
+            const promptTurn = turn || nonEmptyString(metadata?.turn_id) || activeTurn;
+            if (!text || !promptTurn || at >= to) return true;
+            const digest = hash(text);
+            if (previous?.turn === promptTurn && previous.digest === digest && previous.source !== eventType) {
+              previous = undefined;
+              return true;
+            }
+            previous = { turn: promptTurn, digest, source: eventType };
+            extend(promptTurn, at);
+            const activity = { at, through: at, preview: promptPreview(text), tokens: 0 };
+            if (!activity.preview) return true;
+            turns.set(promptTurn, activity);
+            prompts.push({ key: `${state.sessionHash ?? id}:${promptTurn}:${at}:${digest}`, activity });
+          }
+          return true;
+        });
+        for (const { key, activity } of prompts) {
+          if (mode === "usage" ? activity.tokens > 0 : activity.through >= from) {
+            matches.set(key, activity);
+          }
+        }
+        if (interrupted) return result(true);
+      } catch (error) {
+        if (!unavailable(error)) throw error;
+      }
+    }
+    return result();
+  } finally {
+    database?.close();
+  }
 }
 
 export function readModelUsage(from: number, through: number, file = historyFile()): ModelActivity[] {

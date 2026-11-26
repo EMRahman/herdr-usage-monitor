@@ -4,7 +4,67 @@ import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "n
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openHistoryDatabase, SCHEMA_VERSION } from "../../src/history/db.ts";
-import { PARSER_VERSION, syncModelUsage } from "../../src/history/model-usage.ts";
+import { PARSER_VERSION, readCodexPrompts, syncModelUsage } from "../../src/history/model-usage.ts";
+
+test("resolves Codex chart prompts from the log and looks up tokens for the selected interval", async () => {
+  const root = mkdtempSync(join(tmpdir(), "model-prompts-"));
+  try {
+    const file = join(root, "history.sqlite");
+    const log = join(root, "session.jsonl");
+    const roots = [{ provider: "codex" as const, path: root }];
+    const start = Date.now() - 60_000;
+    const event = (seconds: number, type: string, payload: object) => JSON.stringify({
+      type, payload, timestamp: new Date(start + seconds * 1_000).toISOString(),
+    });
+    const user = (seconds: number, text: string, kind: string) => event(seconds, "response_item", {
+      type: "message",
+      role: "user",
+      internal_chat_message_metadata_passthrough: { turn_id: "turn-1", content_item_kinds: [kind] },
+      content: [{ type: "input_text", text }],
+    });
+    writeFileSync(log, [
+      event(0, "session_meta", { id: "session-1" }),
+      event(1, "event_msg", { type: "task_started", turn_id: "turn-1" }),
+      event(2, "turn_context", { turn_id: "turn-1", model: "gpt-6.2-sol" }),
+      user(3, "Injected context", "agents_md.instructions"),
+      user(4, "Review the patch", "user.text"),
+      event(5, "event_msg", { type: "user_message", message: "Review the patch" }),
+      event(6, "token_usage_record", {
+        turn_id: "child-turn", root_turn_id: "turn-1", response_id: "response-1",
+        usage: { input_tokens: 20, cached_input_tokens: 12, output_tokens: 3 },
+      }),
+      event(7, "event_msg", { type: "user_message", message: "Focus on the tests" }),
+      event(8, "event_msg", { type: "token_count", info: { last_token_usage: { input_tokens: 4, output_tokens: 1 } } }),
+      event(9, "event_msg", { type: "task_complete", turn_id: "turn-1" }),
+      event(10, "event_msg", { type: "task_started", turn_id: "turn-2" }),
+      event(11, "event_msg", { type: "user_message", message: "A prompt with no tokens yet" }),
+      "",
+    ].join("\n"));
+    await syncModelUsage(file, roots);
+    expect(Bun.file(file).size).toBeGreaterThan(0);
+    expect(Buffer.from(await Bun.file(file).arrayBuffer()).includes("Review the patch")).toBe(false);
+
+    const query = { from: start + 6_000, to: start + 8_000, mode: "usage" as const, model: "gpt-6.2-sol" };
+    expect((await readCodexPrompts(query, file, roots)).prompts).toEqual([
+      { at: start + 4_000, preview: "Review the patch", tokens: 23 },
+    ]);
+    expect((await readCodexPrompts({ ...query, includeCache: false, to: start + 9_000 }, file, roots)).prompts).toEqual([
+      { at: start + 7_000, preview: "Focus on the tests", tokens: 5 },
+      { at: start + 4_000, preview: "Review the patch", tokens: 11 },
+    ]);
+    expect((await readCodexPrompts({ ...query, model: "another-model" }, file, roots)).total).toBe(0);
+
+    expect((await readCodexPrompts({
+      from: start + 8_000, to: start + 12_000, mode: "burndown",
+    }, file, roots)).prompts.map(({ preview }) => preview)).toEqual([
+      "A prompt with no tokens yet", "Focus on the tests",
+    ]);
+    rmSync(log);
+    expect((await readCodexPrompts(query, file, roots)).total).toBe(0);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 test("collects model, effort, and tokens once, max-upserts streamed Claude chunks, and retries an incomplete log line", async () => {
   const root = mkdtempSync(join(tmpdir(), "model-usage-"));

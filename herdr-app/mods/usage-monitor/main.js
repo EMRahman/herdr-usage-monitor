@@ -132,6 +132,7 @@ export default class UsageMonitor extends View {
     this.historicalError = "";
     this.historicalPending = false;
     this.historicalGeneration = 0;
+    this.promptDetails = null;
     this.backfill = { pendingFiles: 0, totalFiles: 0 };
     this.activeSyncs = 0;
     this.backfillTimer = null;
@@ -231,6 +232,7 @@ export default class UsageMonitor extends View {
   }
 
   setView(view, cx) {
+    if (this.view !== view) this.promptDetails = null;
     this.view = view;
     this.openFilter = null;
     if (view !== "historical") this.cancelBackfill();
@@ -401,6 +403,27 @@ export default class UsageMonitor extends View {
     }
   }
 
+  selectPrompts(query, cx) {
+    const selection = { ...query, pending: true };
+    this.promptDetails = selection;
+    cx.notify();
+    cx.spawn(async (cx) => {
+      try {
+        const result = await runBridge([
+          "--prompts", `--view=${query.mode}`, `--from=${query.from}`, `--to=${query.to}`,
+          `--model=${query.model ?? "all"}`, `--cache=${query.includeCache === false ? "0" : "1"}`,
+        ]);
+        if (result.code !== 0) throw new Error("Couldn’t read the local Codex logs.");
+        selection.result = JSON.parse(result.stdout);
+      } catch {
+        selection.error = "Couldn’t read the local Codex logs.";
+      } finally {
+        selection.pending = false;
+        if (this.promptDetails === selection) cx.notify();
+      }
+    });
+  }
+
   // The burndown charts' data, read from the local history while they're on screen.
   async readHistory(cx) {
     try {
@@ -443,6 +466,12 @@ export default class UsageMonitor extends View {
 
   // Aggregated local model & token usage for the History panel.
   async readHistorical(cx, { sync = false } = {}) {
+    const selection = this.promptDetails;
+    if (selection?.mode === "usage" && (
+      selection.horizon !== this.horizon || selection.offset !== this.offset
+      || selection.provider !== this.providerFilter || selection.model !== this.modelFilter
+      || selection.includeCache !== this.includeCache
+    )) this.promptDetails = null;
     const runSync = sync && this.activeSyncs === 0;
     if (runSync) {
       this.cancelBackfill();
@@ -542,6 +571,12 @@ export default class UsageMonitor extends View {
         historical: this.historical,
         historicalError: this.historicalError,
         historicalPending: this.historicalPending,
+        promptDetails: this.promptDetails,
+        selectPrompts: (query, cx) => this.selectPrompts(query, cx),
+        closePrompts: (_event, cx) => {
+          this.promptDetails = null;
+          cx.notify();
+        },
         horizon: this.horizon,
         offset: this.offset,
         providerFilter: this.providerFilter,

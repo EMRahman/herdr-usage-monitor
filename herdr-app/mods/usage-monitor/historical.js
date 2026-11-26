@@ -454,7 +454,16 @@ function gridLines(t, plotH) {
     div().absolute().left(0).w_full().h(1).top(top).bg(t.border));
 }
 
-function bucketTooltip(t, bucket, { names, colors, byType }, includeCache, cumulative = false) {
+function promptSelection(data, bucket, state) {
+  const { provider, model } = data.filters;
+  if (!state.selectPrompts || bucket.future || !bucket.total || (provider !== "all" && provider !== "codex")) return null;
+  return (_event, cx) => state.selectPrompts({
+    mode: "usage", from: bucket.startMs, to: bucket.endMs, label: bucket.label,
+    horizon: data.horizon, offset: data.offset, provider, model, includeCache: data.includeCache,
+  }, cx);
+}
+
+function bucketTooltip(t, bucket, { names, colors, byType }, includeCache, cumulative = false, showPromptHint = false) {
   const valueTotal = cumulative ? bucket.cumulativeTotal : bucket.total;
   const values = cumulative ? bucket.cumulative : bucket.values;
   const rows = [];
@@ -491,6 +500,7 @@ function bucketTooltip(t, bucket, { names, colors, byType }, includeCache, cumul
         .child(div().flex_none().text_color(t.muted).child(`${byType ? formatInt(entry.tokens) : formatCompact(entry.tokens)} (${share}%)`)));
     }
   }
+  if (showPromptHint) rows.push(div().text_color(t.muted).child("Click for Codex prompts in this interval"));
   return v_flex().gap(3).min_w(210).max_w(320).px(9).py(7).rounded(6)
     .border(1).border_color(t.border).bg(t.popover).shadow_sm()
     .text_size(11).children(rows);
@@ -517,6 +527,7 @@ export function stackedBarCard(t, data, modelColors, state) {
   } else {
     const reverseOrder = [...names].reverse();
     const columns = buckets.map((bucket, idx) => {
+      const select = promptSelection(data, bucket, state);
       const segments = [];
       if (!bucket.future && bucket.total > 0) {
         for (const name of reverseOrder) {
@@ -541,8 +552,8 @@ export function stackedBarCard(t, data, modelColors, state) {
       return div().flex_1().min_w(0).h(plotH).child(
         HoverCard.new(`hist-bar-${data.horizon}-${data.offset}-${idx}`)
           .open_delay(0).close_delay(0)
-          .trigger(trigger)
-          .content(bucketTooltip(t, bucket, series, data.includeCache)),
+          .trigger(trigger.when(Boolean(select), (el) => el.id(`hist-bar-prompts-${idx}`).cursor_pointer().on_click(select)))
+          .content(bucketTooltip(t, bucket, series, data.includeCache, false, Boolean(select))),
       );
     });
 
@@ -698,12 +709,16 @@ export function lineGraphCard(t, data, modelColors, state) {
     }
 
     const hoverLayer = h_flex().absolute().inset_0()
-      .children(buckets.map((bucket, idx) => div().flex_1().min_w(0).h(plotH).child(
-        HoverCard.new(`hist-line-${data.horizon}-${data.offset}-${state.lineMode}-${idx}`)
-          .open_delay(0).close_delay(0)
-          .trigger(div().w_full().h(plotH).hover((s) => s.bg(HOVER_TINT)))
-          .content(bucketTooltip(t, bucket, series, data.includeCache, cumulative)),
-      )));
+      .children(buckets.map((bucket, idx) => {
+        const select = promptSelection(data, bucket, state);
+        return div().flex_1().min_w(0).h(plotH).child(
+          HoverCard.new(`hist-line-${data.horizon}-${data.offset}-${state.lineMode}-${idx}`)
+            .open_delay(0).close_delay(0)
+            .trigger(div().w_full().h(plotH).hover((s) => s.bg(HOVER_TINT))
+              .when(Boolean(select), (el) => el.id(`hist-line-prompts-${idx}`).cursor_pointer().on_click(select)))
+            .content(bucketTooltip(t, bucket, series, data.includeCache, cumulative, Boolean(select))),
+        );
+      }));
 
     children.push(
       h_flex().w_full().items_start()
