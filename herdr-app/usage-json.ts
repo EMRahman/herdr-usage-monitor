@@ -2,7 +2,7 @@
 import { fetchDetailedReport, getCachedReport, getRateLimitsAsync } from "../src/fetcher.ts";
 import { readHistorical, type Horizon } from "../src/history/historical.ts";
 import { accountId, accountNames, labelAccounts, readBurndowns, recordReport } from "../src/history/burndown.ts";
-import { latestModelActivity, readModelUsage, syncModelUsage } from "../src/history/model-usage.ts";
+import { latestModelActivity, readCodexPrompts, readModelUsage, syncModelUsage } from "../src/history/model-usage.ts";
 import { planProviderRefreshes } from "../src/refresh-policy.ts";
 import { formatSummary, summaryParts } from "../src/usage-summary.ts";
 
@@ -13,6 +13,18 @@ function flagValue(name: string): string | undefined {
   const prefix = `--${name}=`;
   const found = process.argv.find((arg) => arg.startsWith(prefix));
   return found ? found.slice(prefix.length) : undefined;
+}
+
+if (mode === "--prompts") {
+  const payload = await readCodexPrompts({
+    from: Number(flagValue("from")),
+    to: Number(flagValue("to")),
+    mode: flagValue("view") === "burndown" ? "burndown" : "usage",
+    model: flagValue("model"),
+    includeCache: flagValue("cache") !== "0",
+  });
+  console.log(JSON.stringify(payload));
+  process.exit(0);
 }
 
 // --history: the current 5-hour and weekly window of each limit, from the local history.

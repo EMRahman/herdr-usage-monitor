@@ -4,7 +4,7 @@ import { LIGHT_LABEL, RESET_COLOR, WINDOW_NAMES, adviseUntapped, creditLight, he
   resetNote, windowLength } from "./pace.js";
 import { burndownCards } from "./burndown.js";
 import { historicalView } from "./historical.js";
-import { duration, refreshDuration, sampleStatus, timed } from "./time.js";
+import { duration, formatInt, localTime, refreshDuration, sampleStatus, timed } from "./time.js";
 
 const PROVIDERS = { copilot: "GitHub Copilot", cursor: "Cursor", grok: "Grok", opencode: "OpenCode" };
 const NAMES = { claude: "Claude", codex: "Codex", antigravity: "Antigravity", ...PROVIDERS };
@@ -325,7 +325,8 @@ function views(t, current, choose) {
 }
 
 function burndownView(t, report, state) {
-  const cards = burndownCards(t, state.history?.burndowns, state.history?.modelUsage, Date.now(), heldResets(report))
+  const cards = burndownCards(t, state.history?.burndowns, state.history?.modelUsage, Date.now(), heldResets(report),
+    state.selectPrompts)
     .map((c) => card(t, c.title, "", c.rows, c.weight));
   const intro = div().text_size(11).text_color(t.muted)
     .child("The dot marks the latest allowance reading. The faint background tint shows elapsed time. "
@@ -336,6 +337,27 @@ function burndownView(t, report, state) {
     ? "No readings yet. They're recorded each time allowances are read, every few minutes while Herdr is open."
     : "Reading history…");
   return v_flex().gap(8).child(intro).child(div().text_color(state.historyError ? t.blocked : t.muted).child(note));
+}
+
+function promptDetail(t, selection, close) {
+  const { label, pending, error, result } = selection;
+  const prompts = result?.prompts ?? [];
+  const rows = prompts.map(({ at, preview, tokens }) => {
+    const usage = tokens === undefined ? "" : ` · ${formatInt(tokens)} tokens`;
+    return h_flex().gap(8).items_center().min_w(0)
+      .child(div().flex_none().text_color(t.muted).child(`${localTime(at)}${usage}`))
+      .child(div().min_w(0).truncate().tooltip(preview).child(preview));
+  });
+  const status = error || (pending ? "Looking up local Codex logs…"
+    : result?.partial ? "Search reached its time limit. Results may be incomplete."
+    : prompts.length === 0 ? "No matching prompts found in the available Codex logs."
+    : result.total > prompts.length ? `Showing the ${prompts.length} most recent of ${result.total} prompts.` : "");
+  return v_flex().flex_none().px(16).py(8).gap(5).border_t(1).border_color(t.border)
+    .child(h_flex().justify_between().items_center().gap(8)
+      .child(div().min_w(0).truncate().font_semibold().child(`Codex prompts · ${label}`))
+      .child(button(t, "close-codex-prompts", "Close prompts", close)))
+    .children(rows)
+    .when(Boolean(status), (el) => el.child(div().text_size(11).text_color(t.muted).child(status)));
 }
 
 export function breakdown(t, report, state) {
@@ -369,6 +391,7 @@ export function breakdown(t, report, state) {
         .child(columns(cards, state.width ?? 0)))
       .when(!burndown && !historical && cards.length === 0, (el) => el.child(div().text_color(t.muted)
         .child(state.pending ? "Reading provider allowances…" : "No provider allowances available."))))
+    .when(Boolean(state.promptDetails), (el) => el.child(promptDetail(t, state.promptDetails, state.closePrompts)))
     .when(Boolean(message), (el) => el.child(div().flex_none().px(16).py(10).border_t(1).border_color(t.border)
       .text_color(state.error ? t.blocked : t.muted).child(message)));
 }
