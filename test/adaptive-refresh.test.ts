@@ -374,4 +374,95 @@ describe("fetchDetailedReport adaptive refresh integration", () => {
       cleanup();
     }
   });
+
+  test("reloads cache before merging so a slower selective poll never overwrites a concurrent forced refresh", async () => {
+    const { dir, cleanup } = makeTempCache();
+    try {
+      let codexPct = 25;
+      let claudePct = 10;
+      let releaseSlowClaude: (() => void) | null = null;
+      let slowClaudeStarted: (() => void) | null = null;
+      const slowStartedPromise = new Promise<void>((resolve) => {
+        slowClaudeStarted = resolve;
+      });
+
+      const makeDeps = (slowClaude: boolean) => ({
+        fetch: (async (url: string | URL | Request) => {
+          const href = String(url);
+          if (href.includes("api.anthropic.com/api/oauth/usage")) {
+            if (slowClaude) {
+              slowClaudeStarted?.();
+              await new Promise<void>((resolve) => {
+                releaseSlowClaude = resolve;
+              });
+            }
+            return jsonResponse({ five_hour: { utilization: claudePct, resets_at: null } });
+          }
+          if (href.includes("chatgpt.com/backend-api/wham/usage")) {
+            return jsonResponse({
+              rate_limit: { primary_window: { used_percent: codexPct, reset_at: null } },
+            });
+          }
+          if (href.includes("rate-limit-reset-credits")) {
+            return jsonResponse({ credits: [] });
+          }
+          return jsonResponse({}, 404);
+        }) as typeof fetch,
+        getClaudeSignIns: async () => [{ source: "test", token: "tok-c", expiresAt: NOW + HOUR, plan: "pro", account: { id: "1", label: "a@b.com" } }],
+        getCodexSignIns: async () => [{ source: "test", token: "tok-x", expiresAt: NOW + HOUR, plan: "plus", account: { id: "2", label: "a@b.com" } }],
+        getAntigravitySignIns: async () => [],
+        fetchOtherProviders: async () => [],
+        resolveBinary: () => null,
+      });
+
+      // Initial seed at NOW
+      await fetchDetailedReport({
+        cacheDir: dir,
+        now: NOW,
+        activity: { claude: NOW - MINUTE, codex: NOW - 5 * HOUR },
+        deps: makeDeps(false),
+      });
+
+      // Start delayed Claude-only background poll at NOW + 4m (Codex skipped because dormant)
+      claudePct = 18;
+      const tBg = NOW + 4 * MINUTE;
+      const bgPoll = fetchDetailedReport({
+        cacheDir: dir,
+        now: tBg,
+        activity: { claude: tBg - MINUTE, codex: NOW - 5 * HOUR },
+        deps: makeDeps(true),
+      });
+      await slowStartedPromise;
+
+      // While background poll is mid-flight, a forced refresh saves fresh Codex (42%) and Claude (20%) at NOW + 5m
+      claudePct = 20;
+      codexPct = 42;
+      const tForce = NOW + 5 * MINUTE;
+      await fetchDetailedReport({
+        cacheDir: dir,
+        now: tForce,
+        force: true,
+        activity: { claude: tForce - MINUTE, codex: NOW - 5 * HOUR },
+        deps: makeDeps(false),
+      });
+
+      // Now let the slower background poll finish and merge
+      releaseSlowClaude!();
+      const merged = await bgPoll;
+
+      // Both Codex (skipped by bgPoll) and Claude (older timestamp in bgPoll) must preserve the newer forced refresh!
+      expect(merged.codex?.windows[0]?.used_percent).toBe(42);
+      expect(merged.read_at?.codex).toBe(tForce);
+      expect(merged.claude?.windows[0]?.used_percent).toBe(20);
+      expect(merged.read_at?.claude).toBe(tForce);
+      expect(merged.attempted_at?.codex).toBe(tForce);
+      expect(merged.timestamp).toBe(tForce);
+
+      const saved = await getCachedReport(HOUR, { allowPartial: true, now: tForce + MINUTE, cacheDir: dir });
+      expect(saved?.codex?.windows[0]?.used_percent).toBe(42);
+      expect(saved?.read_at?.codex).toBe(tForce);
+    } finally {
+      cleanup();
+    }
+  });
 });

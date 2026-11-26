@@ -638,57 +638,118 @@ export async function fetchDetailedReport(options: FetchReportOptions = {}): Pro
 
   await Promise.allSettled([claudePromise, codexPromise, agyPromise, othersPromise]);
 
-  // Merge preserved details and fallback providers from previous cache
+  // Reload cache after network requests settle so a slower selective poll never overwrites
+  // newer per-provider readings saved by a concurrent refresh.
   try {
-    // Carried-over figures keep the time they were read, so they aren't recorded as new.
-    const carry = (id: string, from: FullReport | null) => {
-      const t = from?.read_at?.[id];
-      if (t) readAt[id] = t;
+    const mergeNow = clock();
+    const [diskAny, diskComplete] = await Promise.all([
+      getCachedReport(24 * 3600_000, { allowPartial: true, now: mergeNow, cacheDir }),
+      getCachedReport(24 * 3600_000, { now: mergeNow, cacheDir }),
+    ]);
+    const sources = [diskAny, diskComplete, prevAny, prevComplete].filter((s): s is FullReport => Boolean(s));
+
+    const newestSourceFor = <K extends "claude" | "codex" | "antigravity">(id: K): FullReport | null => {
+      let best: FullReport | null = null;
+      let bestTime = -1;
+      for (const src of sources) {
+        if (!src[id]) continue;
+        const t = src.read_at?.[id] ?? 0;
+        if (!best || t > bestTime) {
+          best = src;
+          bestTime = t;
+        }
+      }
+      return best;
     };
-    if (!report.claude) {
-      const from = prevAny?.claude ? prevAny : prevComplete;
-      report.claude = from?.claude;
-      carry("claude", from);
+
+    const mergePrimary = <K extends "claude" | "codex" | "antigravity">(id: K) => {
+      const from = newestSourceFor(id);
+      if (!from?.[id]) return;
+      const fromTime = from.read_at?.[id] ?? 0;
+      const curTime = readAt[id] ?? 0;
+      if (!report[id] || fromTime > curTime) {
+        report[id] = from[id];
+        if (fromTime > 0) readAt[id] = fromTime;
+      }
+    };
+
+    mergePrimary("claude");
+    // A credit balance that couldn't be read this time keeps the newest one read for this account.
+    if (report.claude) {
+      let bestCredits = report.claude.credits;
+      let bestCreditsAt = report.claude.credits_read_at ?? -1;
+      for (const src of sources) {
+        const c = src.claude;
+        if (!c || c.account !== report.claude.account || c.credits === undefined) continue;
+        const at = c.credits_read_at ?? 0;
+        if (bestCredits === undefined || at > bestCreditsAt) {
+          bestCredits = c.credits;
+          bestCreditsAt = at;
+        }
+      }
+      if (bestCredits !== undefined) {
+        report.claude.credits = bestCredits;
+        if (bestCreditsAt >= 0) report.claude.credits_read_at = bestCreditsAt;
+      }
     }
-    // A credit balance that couldn't be read this time keeps the last one read.
-    const prevClaude = prevAny?.claude ?? prevComplete?.claude;
-    if (report.claude && report.claude.credits === undefined && prevClaude?.account === report.claude.account) {
-      report.claude.credits = prevClaude.credits;
-      report.claude.credits_read_at = prevClaude.credits_read_at;
-    }
-    if (!report.codex) {
-      const from = prevComplete?.codex ? prevComplete : prevAny;
-      report.codex = from?.codex;
-      carry("codex", from);
-    }
-    if (!report.antigravity) {
-      const from = prevComplete?.antigravity ? prevComplete : prevAny;
-      report.antigravity = from?.antigravity;
-      carry("antigravity", from);
-    }
+
+    mergePrimary("codex");
+    mergePrimary("antigravity");
+
+    // Merge secondary providers, keeping the newest per-provider reading if a concurrent refresh ran.
+    const newestOthers = sources.find((src) => src.others?.length > 0) ?? null;
     if (report.others.length === 0) {
-      const from = prevComplete?.others?.length ? prevComplete : prevAny?.others?.length ? prevAny : null;
-      if (from) {
-        report.others = from.others;
-        for (const p of from.others) carry(p.id, from);
+      if (newestOthers) {
+        report.others = newestOthers.others;
+        for (const p of newestOthers.others) {
+          const t = newestOthers.read_at?.[p.id];
+          if (t) readAt[p.id] = t;
+        }
+      }
+    } else if (newestOthers) {
+      const byId = new Map<string, GenericProvider>();
+      for (const p of report.others) byId.set(p.id, p);
+      for (const p of newestOthers.others) {
+        const fromTime = newestOthers.read_at?.[p.id] ?? 0;
+        const curTime = readAt[p.id] ?? 0;
+        if (byId.has(p.id) && fromTime > curTime) {
+          byId.set(p.id, p);
+          if (fromTime > 0) readAt[p.id] = fromTime;
+        }
+      }
+      report.others = [...byId.values()];
+    }
+
+    // Preserve the newest attempted_at timestamps across concurrent polls.
+    for (const src of sources) {
+      for (const [id, t] of Object.entries(src.attempted_at ?? {})) {
+        if (typeof t === "number" && Number.isFinite(t) && t > (attemptedAt[id] ?? 0)) {
+          attemptedAt[id] = t;
+        }
       }
     }
 
     // Preserve cached Codex reset credits when the provider does not return details.
+    const codexWithItems = sources.find(
+      (src) => src.codex?.account === report.codex?.account && src.codex.resets.items.length > 0,
+    );
     if (
       report.codex &&
       report.codex.resets.available > 0 &&
       report.codex.resets.items.length === 0 &&
-      prevComplete?.codex?.account === report.codex.account &&
-      prevComplete.codex.resets.items.length > 0
+      codexWithItems?.codex
     ) {
-      const checkNow = clock();
-      report.codex.resets.items = prevComplete.codex.resets.items
+      report.codex.resets.items = codexWithItems.codex.resets.items
         .filter((item) => {
           const exp = Date.parse(item.expires_at);
-          return !Number.isFinite(exp) || exp > checkNow;
+          return !Number.isFinite(exp) || exp > mergeNow;
         })
         .slice(0, report.codex.resets.available);
+    }
+
+    // Keep report.timestamp at least as new as any concurrent cache write we merged from.
+    for (const src of sources) {
+      if (src.timestamp > report.timestamp) report.timestamp = src.timestamp;
     }
   } catch {}
 
