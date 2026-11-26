@@ -337,8 +337,8 @@ function suggestionForSessionLock(session, planResets, weekly = null) {
 function suggestionForWeekly(weekly, session, planResets, resetNoun) {
   const resets = planResets.reduce((sum, entry) => sum + entry.count, 0);
   const scope = weeklyScopeLabel(weekly);
-  const expiring = planResets.find((entry) => entry.msLeft !== null && entry.msLeft <= weekly.msLeft)
-    ?? surplusExpiring(planResets, weekly);
+  const directExpiring = planResets.find((entry) => entry.msLeft !== null && entry.msLeft <= weekly.msLeft);
+  const expiring = directExpiring ?? surplusExpiring(planResets, weekly);
   const lastChance = planResets.find((entry) => entry.needsLimit && entry.usable
     && entry.msLeft !== null && entry.msLeft > weekly.msLeft && entry.msLeft - weekly.msLeft < WAIT_SOON);
   if (isWeeklyLow(weekly)) {
@@ -386,6 +386,13 @@ function suggestionForWeekly(weekly, session, planResets, resetNoun) {
     return suggestionForSessionLock(session, planResets, weekly);
   }
   if (resets > 0) {
+    if (directExpiring) {
+      return {
+        kind: "reset",
+        level: "reset",
+        text: `Use up remaining ${scope} (${Math.round(weekly.remaining)}% left), then use a reset (expires in ${duration(directExpiring.msLeft)})`,
+      };
+    }
     return {
       kind: "reset",
       level: "untapped",

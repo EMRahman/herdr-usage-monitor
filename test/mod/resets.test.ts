@@ -390,4 +390,17 @@ test("providerSuggestion implements the three guiding rules across coding agents
     level: "reset",
     text: "Use a reset before it expires in 2d 0h",
   });
+
+  // Low/Medium weekly usage with a reset expiring before the weekly refresh: flag the expiry deadline
+  const lowWeeklyUsageExpiringReset = {
+    claude: {
+      windows: [{ label: "7d weekly", used_percent: 20, resets_at: at(4 * DAY) }],
+      limit_resets: [claudeReset(12 * HOUR, { needs_limit: true, usable_now: false })],
+    },
+  };
+  expect(providerSuggestion(lowWeeklyUsageExpiringReset, "claude", now)).toEqual({
+    kind: "reset",
+    level: "reset",
+    text: "Use up remaining weekly (80% left), then use a reset (expires in 12h 0m)",
+  });
 });
