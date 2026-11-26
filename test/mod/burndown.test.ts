@@ -305,8 +305,11 @@ test("the right panel shows only the selected provider's allowances and freshnes
   expect(codex).toContain("Reset credits · 2 available");
   expect(codex).toContain("Expires in");
   expect(codex).toContain("Sampled just now");
+  expect(codex).toContain("Suggestion");
+  expect(codex).toContain("Aggressively use; you have 2 resets available");
   expect(codex).not.toMatch(/6% left|Gemini models|Sign-in expired/);
   expect(render("antigravity")).toContain("Gemini models");
+  expect(render("antigravity")).toContain("Suggestion");
   expect(render("cursor")).toContain("Sign-in expired");
 });
 

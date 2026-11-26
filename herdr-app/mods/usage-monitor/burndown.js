@@ -268,6 +268,7 @@ export function burndownCards(t, burndowns, modelUsage = [], now = Date.now(), h
       provider === "codex" ? selectPrompts : undefined));
     const resets = resetRows(t, held, provider);
     return {
+      provider,
       title: PROVIDER_NAMES[provider] ?? provider,
       rows: [...charts, ...resets],
       weight: list.length * 6 + resets.length,

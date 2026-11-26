@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { adviseUntapped, heldResets, providerDetail, resetNote } from "../../herdr-app/mods/usage-monitor/pace.js";
+import { adviseUntapped, heldResets, providerDetail, providerSuggestion, resetNote } from "../../herdr-app/mods/usage-monitor/pace.js";
 
 const HOUR = 3_600_000;
 const DAY = 24 * HOUR;
@@ -190,4 +190,217 @@ test("smart untapped ignores expired weekly windows so stale cached resets do no
     { provider: "Claude", label: "5h session", group: null, length: 5 * HOUR, remaining: 90, msLeft: 4 * HOUR, spare: 10 },
   ], report, now);
   expect(advice).toMatchObject({ provider: "Claude", kind: "use" });
+});
+
+test("providerSuggestion implements the three guiding rules across coding agents", () => {
+  const report = {
+    // Rule 1: 7D nearly all used up, < 2 days left, reset available -> save the reset
+    claude: {
+      windows: [
+        { label: "5h session", used_percent: 20, resets_at: at(3 * HOUR) },
+        { label: "7d weekly", used_percent: 85, resets_at: at(1.5 * DAY) },
+      ],
+      limit_resets: [claudeReset(15 * DAY)],
+    },
+    // On pace weekly, 2 resets available -> aggressively use
+    codex: {
+      windows: [
+        { label: "5h session", used_percent: 18, resets_at: at(2 * HOUR) },
+        { label: "Weekly", used_percent: 50, resets_at: at(3.5 * DAY) },
+      ],
+      resets: {
+        available: 2,
+        items: [
+          { title: "Full reset", expires_at: at(5 * DAY) },
+          { title: "Full reset", expires_at: at(10 * DAY) },
+        ],
+      },
+    },
+    // Rule 3: No resets available, separated between Gemini and non-Gemini models
+    antigravity: {
+      groups: [
+        {
+          name: "Gemini models",
+          buckets: [
+            { label: "5h limit", remaining_percent: 64, resets_at: at(3 * HOUR) },
+            { label: "Weekly limit", remaining_percent: 30, resets_at: at(2.2 * DAY) },
+          ],
+        },
+        {
+          name: "Claude and GPT models",
+          buckets: [
+            { label: "5h limit", remaining_percent: 0, resets_at: at(0.5 * HOUR) },
+            { label: "Weekly limit", remaining_percent: 50, resets_at: at(6.8 * DAY) },
+          ],
+        },
+      ],
+    },
+  };
+
+  expect(providerSuggestion(report, "claude", now)).toEqual({
+    kind: "wait",
+    level: "pace",
+    text: "Save the reset: Wait for weekly reset in 36h 0m",
+  });
+  expect(providerSuggestion(report, "codex", now)).toEqual({
+    kind: "reset",
+    level: "untapped",
+    text: "Aggressively use; you are on pace weekly but you have 2 resets available",
+  });
+  expect(providerSuggestion(report, "antigravity", now)).toEqual([
+    {
+      group: "Gemini models",
+      kind: "pace",
+      level: "pace",
+      text: "On pace",
+    },
+    {
+      group: "Claude and GPT models",
+      kind: "pace",
+      level: "tight",
+      text: "Stay steady on weekly (50% left · resets in 6d 19h)",
+    },
+  ]);
+
+  // Rule 2: 7D nearly all used up, > 3 days left, reset available -> use up remaining weekly, then use a reset
+  const rule2Report = {
+    claude: {
+      windows: [{ label: "7d weekly", used_percent: 82, resets_at: at(3.5 * DAY) }],
+      limit_resets: [claudeReset(15 * DAY)],
+    },
+  };
+  expect(providerSuggestion(rule2Report, "claude", now)).toEqual({
+    kind: "reset",
+    level: "reset",
+    text: "Use up remaining weekly (18% left), then use a reset",
+  });
+
+  // Rule 3 when weekly is low and no resets are held -> stay steady on weekly
+  const rule3LowReport = {
+    claude: {
+      windows: [{ label: "7d weekly", used_percent: 82, resets_at: at(3.5 * DAY) }],
+      limit_resets: [],
+    },
+  };
+  expect(providerSuggestion(rule3LowReport, "claude", now)).toEqual({
+    kind: "pace",
+    level: "tight",
+    text: "Stay steady on weekly (18% left · resets in 3d 12h)",
+  });
+
+  // Expiry override: when a reset expires before the weekly refresh, use it instead of saving it
+  const expiringBeforeWeekly = {
+    claude: {
+      windows: [{ label: "7d weekly", used_percent: 100, resets_at: at(36 * HOUR) }],
+      limit_resets: [claudeReset(12 * HOUR)],
+    },
+  };
+  expect(providerSuggestion(expiringBeforeWeekly, "claude", now)).toEqual({
+    kind: "reset",
+    level: "reset",
+    text: "Use a reset before it expires in 12h 0m",
+  });
+
+  // Limit-gated reset: needs_limit=true, usable_now=false, paused=false still counts toward planning
+  const limitGatedReport = {
+    claude: {
+      windows: [{ label: "7d weekly", used_percent: 85, resets_at: at(4 * DAY) }],
+      limit_resets: [claudeReset(15 * DAY, { needs_limit: true, usable_now: false, paused: false })],
+    },
+  };
+  expect(providerSuggestion(limitGatedReport, "claude", now)).toEqual({
+    kind: "reset",
+    level: "reset",
+    text: "Use up remaining weekly (15% left), then use a reset",
+  });
+
+  // Model-specific weekly limit: an exhausted 7d Opus window is the binding weekly limit
+  const modelScopedReport = {
+    claude: {
+      windows: [
+        { label: "7d weekly", used_percent: 20, resets_at: at(4 * DAY) },
+        { label: "7d Opus", used_percent: 95, resets_at: at(1.5 * DAY) },
+      ],
+      limit_resets: [claudeReset(15 * DAY)],
+    },
+  };
+  expect(providerSuggestion(modelScopedReport, "claude", now)).toEqual({
+    kind: "wait",
+    level: "pace",
+    text: "Save the reset: Wait for 7d Opus reset in 36h 0m",
+  });
+
+  // Session exhaustion while weekly has room: wait for 5h refresh instead of recommending aggressive use
+  const sessionExhaustedReport = {
+    claude: {
+      windows: [
+        { label: "5h session", used_percent: 100, resets_at: at(0.5 * HOUR) },
+        { label: "7d weekly", used_percent: 20, resets_at: at(5 * DAY) },
+      ],
+      limit_resets: [claudeReset(15 * DAY)],
+    },
+  };
+  expect(providerSuggestion(sessionExhaustedReport, "claude", now)).toEqual({
+    kind: "wait",
+    level: "pace",
+    text: "Save the reset: Wait for 5h refresh in 30m",
+  });
+
+  // Last-chance override: eligible limit-gated reset expiring < 2 days after weekly refresh
+  const lastChanceReport = {
+    claude: {
+      windows: [{ label: "7d weekly", used_percent: 100, resets_at: at(36 * HOUR) }],
+      limit_resets: [claudeReset(48 * HOUR, { needs_limit: true, usable_now: true })],
+    },
+  };
+  expect(providerSuggestion(lastChanceReport, "claude", now)).toEqual({
+    kind: "reset",
+    level: "reset",
+    text: "Last chance: use a reset before weekly refreshes (expires in 2d 0h)",
+  });
+
+  // Earliest-expiry ordering: an earlier-expiring gated reset is picked ahead of a later-expiring urgent reset
+  const earliestExpiryReport = {
+    claude: {
+      windows: [{ label: "7d weekly", used_percent: 85, resets_at: at(4 * DAY) }],
+      limit_resets: [
+        claudeReset(12 * HOUR, { id: "gated", needs_limit: true, usable_now: false }),
+        claudeReset(3 * DAY, { id: "usable", needs_limit: false, usable_now: true }),
+      ],
+    },
+  };
+  expect(providerSuggestion(earliestExpiryReport, "claude", now)).toEqual({
+    kind: "reset",
+    level: "reset",
+    text: "Use up remaining weekly (15% left), then use a reset (expires in 12h 0m)",
+  });
+
+  // Surplus-reset override: 2 resets expiring in 48h with only 1 weekly refresh (at 36h) before expiry
+  const surplusResetsReport = {
+    claude: {
+      windows: [{ label: "7d weekly", used_percent: 100, resets_at: at(36 * HOUR) }],
+      limit_resets: [
+        claudeReset(48 * HOUR, { id: "r1" }),
+        claudeReset(48 * HOUR, { id: "r2" }),
+      ],
+    },
+  };
+  expect(providerSuggestion(surplusResetsReport, "claude", now)).toEqual({
+    kind: "reset",
+    level: "reset",
+    text: "Use a reset before it expires in 2d 0h",
+  });
+
+  // Low/Medium weekly usage with a reset expiring before the weekly refresh: flag the expiry deadline
+  const lowWeeklyUsageExpiringReset = {
+    claude: {
+      windows: [{ label: "7d weekly", used_percent: 20, resets_at: at(4 * DAY) }],
+      limit_resets: [claudeReset(12 * HOUR, { needs_limit: true, usable_now: false })],
+    },
+  };
+  expect(providerSuggestion(lowWeeklyUsageExpiringReset, "claude", now)).toEqual({
+    kind: "reset",
+    level: "reset",
+    text: "Use up remaining weekly (80% left), then use a reset (expires in 12h 0m)",
+  });
 });
