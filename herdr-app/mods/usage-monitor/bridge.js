@@ -3284,6 +3284,7 @@ var STALE_GRACE_MS = 2 * 60000;
 // herdr-app/mods/usage-monitor/pace.js
 var HOUR = 3600000;
 var DAY = 24 * HOUR;
+var WAIT_SOON = 2 * DAY;
 var CREDIT_SOON = 3 * DAY;
 function windowLength(text) {
   const s = String(text ?? "").toLowerCase();
