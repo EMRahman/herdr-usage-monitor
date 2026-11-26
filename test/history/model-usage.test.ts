@@ -107,10 +107,13 @@ test("matches Claude Code and Antigravity usage to user prompts and scopes quota
       { type: "USER_INPUT", source: "USER_EXPLICIT", step_index: 1, created_at: time(3),
         content: "<USER_REQUEST>Gemini request</USER_REQUEST>\n<ADDITIONAL_METADATA>Private editor context</ADDITIONAL_METADATA>" },
       { type: "SYSTEM_MESSAGE", content: "Injected text", created_at: time(4), step_index: 2 },
-      { type: "PLANNER_RESPONSE", step_index: 3, created_at: time(6), model: "gemini-4-argon-high",
+      { type: "PLANNER_RESPONSE", step_index: 3, created_at: time(6), model: "claude-sonnet",
         input_tokens: 10, output_tokens: 2, cache_read_tokens: 5 },
       { type: "USER_INPUT", source: "USER_EXPLICIT", content: "Claude request via Antigravity", created_at: time(7), step_index: 4 },
       { type: "PLANNER_RESPONSE", created_at: time(10), step_index: 5, model: "claude-sonnet",
+        input_tokens: 100, output_tokens: 1 },
+      { type: "USER_INPUT", source: "USER_EXPLICIT", content: "Later request", created_at: time(15), step_index: 6 },
+      { type: "PLANNER_RESPONSE", created_at: time(20), step_index: 7, model: "gemini-4-argon",
         input_tokens: 100, output_tokens: 1 },
     ]);
     await syncModelUsage(file, [...roots]);
@@ -127,18 +130,24 @@ test("matches Claude Code and Antigravity usage to user prompts and scopes quota
     expect(all.prompts.map(({ models }) => models)).toEqual([
       [{ model: "claude-sonnet", effort: null }],
       [{ model: "claude-sonnet", effort: "high" }],
-      [{ model: "gemini-4-argon", effort: "high" }],
+      [{ model: "claude-sonnet", effort: null }],
       [{ model: "claude-opus", effort: null }],
     ]);
     const samePrompt = await readPrompts({ ...query, provider: "claude", from: start + 1_000 }, file, [...roots]);
     expect(samePrompt.prompts.find(({ preview }) => preview === "Second request")?.models).toEqual([
       { model: "claude-sonnet", effort: "high" }, { model: "claude-sonnet-4", effort: "low" },
     ]);
-    expect(summarize(await readPrompts({ ...query, provider: "antigravity", model: "gemini-4-argon", includeCache: true },
-      file, [...roots]))).toEqual([["antigravity", "Gemini request", 17]]);
+    expect(summarize(await readPrompts({ ...query, provider: "antigravity", model: "claude-sonnet", includeCache: true },
+      file, [...roots]))).toEqual([
+      ["antigravity", "Claude request via Antigravity", 101], ["antigravity", "Gemini request", 17],
+    ]);
     const burndown = { ...query, mode: "burndown" as const };
     expect(summarize(await readPrompts({ ...burndown, provider: "antigravity", group: "Gemini 4 Argon" }, file, [...roots])))
-      .toEqual([["antigravity", "Gemini request", undefined]]);
+      .toEqual([]);
+    expect((await readPrompts({
+      ...burndown, provider: "antigravity", group: "Gemini 4 Argon",
+      from: start + 2_000, to: start + 8_000,
+    }, file, [...roots])).prompts).toEqual([]);
     expect(summarize(await readPrompts({ ...burndown, provider: "claude", bucket: "7d Opus" }, file, [...roots])))
       .toEqual([["claude", "First request", undefined]]);
     expect(summarize(await readPrompts({ ...burndown, provider: "claude", from: start + 11_000, to: start + 13_000 },

@@ -1734,9 +1734,8 @@ async function readPrompts({ from, to, mode, provider: providerFilter = "all", g
           if (!prompt || !entry)
             return true;
           extendPrompt(prompt, entry.at);
-          if (quotaFilter?.(entry.model))
+          if (mode === "burndown" && entry.at >= from && entry.at < to && (!quotaFilter || quotaFilter(entry.model))) {
             prompt.matchesQuota = true;
-          if (mode === "burndown" && entry.at < to && (!quotaFilter || quotaFilter(entry.model))) {
             recordPromptModel(prompt, entry, entry.at);
           }
           const eventKey = `${provider}:${entry.id}`;

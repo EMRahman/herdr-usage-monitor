@@ -995,8 +995,9 @@ export async function readPrompts(
           const prompt = observe(line, entry);
           if (!prompt || !entry) return true;
           extendPrompt(prompt, entry.at);
-          if (quotaFilter?.(entry.model)) prompt.matchesQuota = true;
-          if (mode === "burndown" && entry.at < to && (!quotaFilter || quotaFilter(entry.model))) {
+          if (mode === "burndown" && entry.at >= from && entry.at < to
+            && (!quotaFilter || quotaFilter(entry.model))) {
+            prompt.matchesQuota = true;
             recordPromptModel(prompt, entry, entry.at);
           }
           const eventKey = `${provider}:${entry.id}`;
