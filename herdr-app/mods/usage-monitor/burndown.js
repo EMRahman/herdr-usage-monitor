@@ -260,6 +260,7 @@ export function burndownCards(t, burndowns, modelUsage = [], now = Date.now(), h
     const charts = list.map((b, i) => burndownChart(t, b, activity, `burndown-${provider}-${i}`, now));
     const resets = resetRows(t, held, provider);
     return {
+      provider,
       title: PROVIDER_NAMES[provider] ?? provider,
       rows: [...charts, ...resets],
       weight: list.length * 6 + resets.length,

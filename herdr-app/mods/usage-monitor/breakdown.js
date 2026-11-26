@@ -1,7 +1,7 @@
 import { div, svg } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
 import { LIGHT_LABEL, RESET_COLOR, WINDOW_NAMES, adviseUntapped, creditLight, heldResets, light, lightColor,
-  resetNote, windowLength } from "./pace.js";
+  providerSuggestion, resetNote, windowLength } from "./pace.js";
 import { burndownCards } from "./burndown.js";
 import { historicalView } from "./historical.js";
 import { duration, refreshDuration, sampleStatus, timed } from "./time.js";
@@ -107,10 +107,30 @@ export function byWindow(buckets) {
   return [...buckets].sort((a, b) => WINDOW_RANK(a.label) - WINDOW_RANK(b.label));
 }
 
+function suggestionSection(t, suggestion, compact = false) {
+  const items = (Array.isArray(suggestion) ? suggestion : [suggestion]).filter(Boolean);
+  if (items.length === 0) return null;
+  return v_flex().gap(compact ? 3 : 5).mt(compact ? 2 : 4).pt(compact ? 4 : 6).border_t(1).border_color(t.border)
+    .child(div().text_size(11).font_semibold().text_color(t.muted).child("Suggestion"))
+    .children(items.map((item) => {
+      const color = item.level === "reset" ? RESET_COLOR
+        : item.level ? lightColor(t, item.level) : t.foreground;
+      const marker = item.level === "reset" ? resetIcon(t) : dot(t, item.level ?? "pace");
+      return h_flex().gap(6).items_center()
+        .child(marker)
+        .child(div().min_w(0).flex_1().text_color(color)
+          .child(item.group ? `${item.group}: ${item.text}` : item.text));
+    }));
+}
+
 function providerCards(t, report, spares, compact = false) {
   const cards = [];
   const row = (label, value, caption, pace, amount) => metric(t, label, value, caption, pace, amount, compact);
-  const addCard = (title, subtitle, rows, weight) => cards.push(card(t, title, subtitle, rows, weight, compact));
+  const addCard = (id, title, subtitle, rows, weight = rows.length) => {
+    const suggestion = suggestionSection(t, providerSuggestion(report, id), compact);
+    const allRows = suggestion ? [...rows, suggestion] : rows;
+    cards.push(card(t, title, subtitle, allRows, suggestion ? weight + 1 : weight, compact));
+  };
   const held = heldResets(report);
   const heldBy = (provider) => held.filter((entry) => entry.provider === provider);
   const heldRow = (entry, label, caption) => row(label, null, caption,
@@ -145,7 +165,7 @@ function providerCards(t, report, spares, compact = false) {
         .filter(Boolean).join(" · ") : "No expiry";
       rows.push(row("Credit balance", null, expiry, soon, credits.balance));
     }
-    addCard("Claude", claude.plan, rows);
+    addCard("claude", "Claude", claude.plan, rows);
   }
   const codex = report?.codex;
   if (codex) {
@@ -155,7 +175,7 @@ function providerCards(t, report, spares, compact = false) {
       rows.push(div().mt(4).font_semibold().child(`Reset credits · ${codex.resets?.available ?? 0} available`));
       for (const entry of resets) rows.push(heldRow(entry, entry.label, timed("Expires", entry.expiresAt)));
     }
-    addCard("Codex", codex.plan, rows);
+    addCard("codex", "Codex", codex.plan, rows);
   }
   const antigravity = report?.antigravity;
   if (antigravity) {
@@ -171,7 +191,7 @@ function providerCards(t, report, spares, compact = false) {
       ))));
     const weight = (antigravity.groups ?? [])
       .reduce((sum, group) => sum + 1.5 + (group.buckets ?? []).length * 1.5, 0);
-    addCard("Antigravity", antigravity.tier, groups, weight);
+    addCard("antigravity", "Antigravity", antigravity.tier, groups, weight);
   }
   for (const provider of report?.others ?? []) {
     const name = PROVIDERS[provider.id] ?? provider.id;
@@ -190,7 +210,7 @@ function providerCards(t, report, spares, compact = false) {
     }
     const problem = provider.problem === "expired" ? "Sign-in expired" : provider.problem;
     const subtitle = [provider.plan, problem].filter(Boolean).join(" · ");
-    addCard(name, subtitle, rows);
+    addCard(provider.id, name, subtitle, rows);
   }
   return cards;
 }
@@ -256,20 +276,22 @@ function untapped(t, spares, held, report) {
       ? "Every allowance is on pace or tight."
       : "Nothing is going unused: every allowance is on pace or tight.")))
     .children(rows.map((row) => h_flex().gap(8).items_center()
-      .child(row.kind === "reset" ? resetIcon(t) : dot(t, row.kind === "wait" ? "pace" : "untapped"))
+      .child(row.kind === "reset" ? resetIcon(t) : dot(t, row.kind === "wait" || row.kind === "pace" ? "pace" : "untapped"))
       .child(div().flex_none().font_semibold().child(row.provider))
       .child(div().min_w(0).flex_1().truncate().text_color(t.muted).child(row.label))
       .child(div().flex_none()
-        .text_color(row.kind === "reset" ? RESET_COLOR : row.kind === "wait" ? lightColor(t, "pace") : lightColor(t, "untapped"))
+        .text_color(row.kind === "reset" ? RESET_COLOR : row.kind === "wait" || row.kind === "pace" ? lightColor(t, "pace") : lightColor(t, "untapped"))
         .child(row.kind === "wait"
-          ? `Wait for weekly reset in ${duration(row.weeklyMsLeft)}`
+          ? `${row.resets > 0 ? "Save the reset · wait" : "Wait"} for weekly reset in ${duration(row.weeklyMsLeft)}`
           : row.kind === "reset"
-            ? `Weekly low (${Math.round(row.weeklyRemaining)}% left) · look towards using a reset`
-            : row.credit
-              ? `expires in ${duration(row.msLeft)}`
-              : [`${row.remaining}% left`, Number.isFinite(row.spare) ? `≈${Math.round(row.spare)}% spare` : "",
-                Number.isFinite(row.msLeft) && row.msLeft > 0 ? `resets in ${duration(row.msLeft)}` : ""]
-                .filter(Boolean).join(" · ")))))
+            ? `Weekly low (${Math.round(row.weeklyRemaining)}% left) · use remaining weekly, then use a reset`
+            : row.kind === "pace"
+              ? `Stay steady on weekly (${Math.round(row.weeklyRemaining)}% left · resets in ${duration(row.weeklyMsLeft)})`
+              : row.credit
+                ? `expires in ${duration(row.msLeft)}`
+                : [`${row.remaining}% left`, Number.isFinite(row.spare) ? `≈${Math.round(row.spare)}% spare` : "",
+                  Number.isFinite(row.msLeft) && row.msLeft > 0 ? `resets in ${duration(row.msLeft)}` : ""]
+                  .filter(Boolean).join(" · ")))))
     .when(held.length > 0, (el) => el.child(heldSection(t, held)));
 }
 
@@ -326,7 +348,11 @@ function views(t, current, choose) {
 
 function burndownView(t, report, state) {
   const cards = burndownCards(t, state.history?.burndowns, state.history?.modelUsage, Date.now(), heldResets(report))
-    .map((c) => card(t, c.title, "", c.rows, c.weight));
+    .map((c) => {
+      const suggestion = suggestionSection(t, providerSuggestion(report, c.provider));
+      const rows = suggestion ? [...c.rows, suggestion] : c.rows;
+      return card(t, c.title, "", rows, suggestion ? c.weight + 1 : c.weight);
+    });
   const intro = div().text_size(11).text_color(t.muted)
     .child("The dot marks the latest allowance reading. The faint background tint shows elapsed time. "
       + "The dotted diagonal shows an even pace to reset. The band is green ahead of pace, "
@@ -365,8 +391,7 @@ export function breakdown(t, report, state) {
     .child(v_flex().id("usage-scroll").flex_1().min_h(0).overflow_y_scrollbar().p(16).gap(8)
       .when(historical, (el) => el.child(historicalView(t, state)))
       .when(burndown, (el) => el.child(burndownView(t, report, state)))
-      .when(!burndown && !historical && cards.length > 0, (el) => el.child(untapped(t, spares, heldResets(report), report))
-        .child(columns(cards, state.width ?? 0)))
+      .when(!burndown && !historical && cards.length > 0, (el) => el.child(columns(cards, state.width ?? 0)))
       .when(!burndown && !historical && cards.length === 0, (el) => el.child(div().text_color(t.muted)
         .child(state.pending ? "Reading provider allowances…" : "No provider allowances available."))))
     .when(Boolean(message), (el) => el.child(div().flex_none().px(16).py(10).border_t(1).border_color(t.border)

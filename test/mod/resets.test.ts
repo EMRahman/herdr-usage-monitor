@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { adviseUntapped, heldResets, providerDetail, resetNote } from "../../herdr-app/mods/usage-monitor/pace.js";
+import { adviseUntapped, heldResets, providerDetail, providerSuggestion, resetNote } from "../../herdr-app/mods/usage-monitor/pace.js";
 
 const HOUR = 3_600_000;
 const DAY = 24 * HOUR;
@@ -190,4 +190,101 @@ test("smart untapped ignores expired weekly windows so stale cached resets do no
     { provider: "Claude", label: "5h session", group: null, length: 5 * HOUR, remaining: 90, msLeft: 4 * HOUR, spare: 10 },
   ], report, now);
   expect(advice).toMatchObject({ provider: "Claude", kind: "use" });
+});
+
+test("providerSuggestion implements the three guiding rules across coding agents", () => {
+  const report = {
+    // Rule 1: 7D nearly all used up, < 2 days left, reset available -> save the reset
+    claude: {
+      windows: [
+        { label: "5h session", used_percent: 20, resets_at: at(3 * HOUR) },
+        { label: "7d weekly", used_percent: 85, resets_at: at(1.5 * DAY) },
+      ],
+      limit_resets: [claudeReset(15 * DAY)],
+    },
+    // On pace weekly, 2 resets available -> aggressively use
+    codex: {
+      windows: [
+        { label: "5h session", used_percent: 18, resets_at: at(2 * HOUR) },
+        { label: "Weekly", used_percent: 50, resets_at: at(3.5 * DAY) },
+      ],
+      resets: {
+        available: 2,
+        items: [
+          { title: "Full reset", expires_at: at(5 * DAY) },
+          { title: "Full reset", expires_at: at(10 * DAY) },
+        ],
+      },
+    },
+    // Rule 3: No resets available, separated between Gemini and non-Gemini models
+    antigravity: {
+      groups: [
+        {
+          name: "Gemini models",
+          buckets: [
+            { label: "5h limit", remaining_percent: 64, resets_at: at(3 * HOUR) },
+            { label: "Weekly limit", remaining_percent: 30, resets_at: at(2.2 * DAY) },
+          ],
+        },
+        {
+          name: "Claude and GPT models",
+          buckets: [
+            { label: "5h limit", remaining_percent: 0, resets_at: at(0.5 * HOUR) },
+            { label: "Weekly limit", remaining_percent: 50, resets_at: at(6.8 * DAY) },
+          ],
+        },
+      ],
+    },
+  };
+
+  expect(providerSuggestion(report, "claude", now)).toEqual({
+    kind: "wait",
+    level: "pace",
+    text: "Save the reset: Wait for weekly reset in 36h 0m",
+  });
+  expect(providerSuggestion(report, "codex", now)).toEqual({
+    kind: "reset",
+    level: "untapped",
+    text: "Aggressively use; you are on pace weekly but you have 2 resets available",
+  });
+  expect(providerSuggestion(report, "antigravity", now)).toEqual([
+    {
+      group: "Gemini models",
+      kind: "pace",
+      level: "pace",
+      text: "On pace",
+    },
+    {
+      group: "Claude and GPT models",
+      kind: "pace",
+      level: "tight",
+      text: "Stay steady on weekly (50% left · resets in 6d 19h)",
+    },
+  ]);
+
+  // Rule 2: 7D nearly all used up, > 3 days left, reset available -> use up remaining weekly, then use a reset
+  const rule2Report = {
+    claude: {
+      windows: [{ label: "7d weekly", used_percent: 82, resets_at: at(3.5 * DAY) }],
+      limit_resets: [claudeReset(15 * DAY)],
+    },
+  };
+  expect(providerSuggestion(rule2Report, "claude", now)).toEqual({
+    kind: "reset",
+    level: "reset",
+    text: "Use up remaining weekly (18% left), then use a reset",
+  });
+
+  // Rule 3 when weekly is low and no resets are held -> stay steady on weekly
+  const rule3LowReport = {
+    claude: {
+      windows: [{ label: "7d weekly", used_percent: 82, resets_at: at(3.5 * DAY) }],
+      limit_resets: [],
+    },
+  };
+  expect(providerSuggestion(rule3LowReport, "claude", now)).toEqual({
+    kind: "pace",
+    level: "tight",
+    text: "Stay steady on weekly (18% left · resets in 3d 12h)",
+  });
 });

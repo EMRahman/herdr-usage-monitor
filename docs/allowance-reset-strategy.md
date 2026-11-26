@@ -4,12 +4,22 @@ The monitor should recommend an action from the current allowance, the time unti
 
 Compare each window’s share of allowance used with its share of time elapsed. For example, 86% of the weekly allowance used with one day left is almost exactly on pace. Show both countdowns when recommending a held reset or advising someone to save one.
 
+## Guiding rules
+
+Three core rules govern the advice:
+
+1. **7D nearly all used up, less than 2 days left, and a reset is available:** Don’t use the reset; save it and wait for the weekly refresh.
+2. **7D nearly all used up, more than 3 days left, and a reset is available:** Use up the remaining weekly allowance, then redeem the reset.
+3. **No resets available:** Stay steady on the 7D pace (% left ÷ days left) so the allowance lasts until the refresh.
+
+The decision table and overrides below expand these guiding rules across all 7D and 5h states, reset counts, and expiry deadlines.
+
 ## Bands
 
 | Column | Low | Medium | High |
 |---|---|---|---|
 | 7D used | under 40% | 40–89% | 90% or more (at or near the limit) |
-| Time until 7D refresh | under 2 days | 2–4 days | over 4 days |
+| Time until 7D refresh | under 2 days | 2–3 days | over 3 days |
 | 5h used | under 40% | 40–89% | 90% or more |
 | Time until 5h refresh | under 1 hour | 1–3 hours | over 3 hours |
 
