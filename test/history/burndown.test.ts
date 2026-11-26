@@ -146,9 +146,18 @@ describe("runs", () => {
       .toEqual([[start, start + 6 * MINUTE, 100], [start + 6 * MINUTE, start + 9 * MINUTE, 90]]);
   });
 
+  test("keeps dormant hourly readings connected as a continuous plateau", () => {
+    const start = NOW - 3 * HOUR;
+    expect(runs(
+      [[start, 80], [start + HOUR, 80], [start + 2 * HOUR, 80]],
+      length,
+      start + 2 * HOUR + 30 * MINUTE,
+    )).toEqual([[start, start + 2 * HOUR + 30 * MINUTE, 80]]);
+  });
+
   test("breaks the line across a long gap in readings", () => {
     const start = NOW - 3 * HOUR;
-    const later = start + HOUR;
+    const later = start + 2 * HOUR;
     expect(runs([[start, 80], [later, 70]], length, later + 3 * MINUTE))
       .toEqual([[start, start + slice, 80], [later, later + 3 * MINUTE, 70]]);
   });

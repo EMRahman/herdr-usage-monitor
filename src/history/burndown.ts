@@ -3,12 +3,15 @@ import { existsSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { historyFile, openHistoryDatabase } from "./db.ts";
 import type { FullReport } from "../fetcher.ts";
+import { DORMANT_POLL_INTERVAL_MS } from "../refresh-policy.ts";
 import { windowLength } from "../../herdr-app/mods/usage-monitor/pace.js";
 
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
 const DAY = 24 * HOUR;
 const WEEK = 7 * DAY;
+// Allow scheduled dormant hourly polls (plus tick/network grace) to stay connected on 5h charts.
+const DORMANT_GAP_MS = DORMANT_POLL_INTERVAL_MS + 15 * MINUTE;
 
 // Charts draw this many steps across a window at most.
 export const BUCKETS = 180;
@@ -257,7 +260,7 @@ export function burndowns(entries: Entry[], now = Date.now()): Burndown[] {
  */
 export function runs(readings: Array<[number, number]>, length: number, until: number): Array<[number, number, number]> {
   const slice = length / BUCKETS;
-  const gap = Math.max(20 * MINUTE, 3 * slice);
+  const gap = Math.max(DORMANT_GAP_MS, 3 * slice);
   const thinned: Array<[number, number]> = [];
   for (const reading of readings) {
     const last = thinned.at(-1);

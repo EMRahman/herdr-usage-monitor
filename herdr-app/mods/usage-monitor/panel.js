@@ -50,7 +50,7 @@ function button(t, id, label, action, tooltip = label) {
 // breakdown header.
 function refreshButton(t, { provider, report, refreshing, refresh }) {
   const scoped = report && provider && {
-    timestamp: report.timestamp, read_at: report.read_at, [provider]: report[provider],
+    timestamp: report.timestamp, read_at: report.read_at, ttl: report.ttl, [provider]: report[provider],
     others: (report.others ?? []).filter(({ id }) => id === provider),
   };
   const sample = sampleStatus(scoped ?? report);

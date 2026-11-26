@@ -52,3 +52,22 @@ test("distinguishes legacy report age, missing read times and absent allowances"
     .toBe("Oldest known sample just now");
   expect(sampleStatus(null, now).label).toBe("No samples yet");
 });
+
+test("adaptive per-provider TTL prevents dormant idle providers from marking a report stale", () => {
+  const report = {
+    timestamp: now,
+    claude: {},
+    codex: {},
+    read_at: { claude: now - 2 * minute, codex: now - 40 * minute },
+    ttl: { claude: 3 * minute, codex: 60 * minute },
+  };
+  expect(sampleStatus(report, now)).toMatchObject({ label: "Oldest sample 40m ago", stale: false });
+  // Once the active provider passes its 5m threshold, the report turns stale.
+  expect(sampleStatus(report, now + 3 * minute).stale).toBe(true);
+  // Once the dormant provider passes its 60m TTL + 2m grace (62m), it also turns stale.
+  const dormantOverdue = {
+    ...report,
+    read_at: { claude: now - minute, codex: now - 62 * minute },
+  };
+  expect(sampleStatus(dormantOverdue, now).stale).toBe(true);
+});

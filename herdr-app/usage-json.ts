@@ -1,8 +1,9 @@
 // JSON bridge for the desktop mod.
-import { fetchDetailedReport, getCachedReport } from "../src/fetcher.ts";
+import { fetchDetailedReport, getCachedReport, getRateLimitsAsync } from "../src/fetcher.ts";
 import { readHistorical, type Horizon } from "../src/history/historical.ts";
 import { accountId, accountNames, labelAccounts, readBurndowns, recordReport } from "../src/history/burndown.ts";
-import { readModelUsage, syncModelUsage } from "../src/history/model-usage.ts";
+import { latestModelActivity, readModelUsage, syncModelUsage } from "../src/history/model-usage.ts";
+import { planProviderRefreshes } from "../src/refresh-policy.ts";
 import { formatSummary, summaryParts } from "../src/usage-summary.ts";
 
 const DAY_MS = 24 * 60 * 60_000;
@@ -54,27 +55,42 @@ if (mode === "--historical") {
   process.exit(0);
 }
 
-// A recent cache stands in for a fetch only if it says when each provider was read. A writer
-// that leaves read_at out (an older build still running) would otherwise keep the cache fresh
-// while nothing reaches the history.
+if (mode !== "--cached") {
+  await syncModelUsage().catch((error) => {
+    console.warn("Couldn't sync model usage:", error instanceof Error ? error.message : error);
+  });
+}
+
+const force = mode === "--refresh";
+const now = Date.now();
+const activity = latestModelActivity();
+
+// A recent cache stands in for a fetch when every provider is still within its adaptive TTL
+// (or in rate-limit cooldown) and no cached quota window has reset since the last check.
+// A writer that leaves read_at out would otherwise keep the cache fresh while nothing reaches history.
 const recent = async () => {
-  const cached = await getCachedReport(180_000);
-  return cached?.read_at && Object.keys(cached.read_at).length ? cached : null;
+  const cached = await getCachedReport(DAY_MS, { allowPartial: true, now });
+  if (!cached?.read_at || Object.keys(cached.read_at).length === 0) return null;
+
+  const limits = await getRateLimitsAsync();
+  const plan = planProviderRefreshes(cached, {
+    activity,
+    claudeUntil: limits.claudeUntil,
+    now,
+    force: false,
+  });
+  if (plan.any) return null;
+  return { ...cached, ttl: plan.ttls };
 };
 
 const report = mode === "--cached"
   ? (await getCachedReport(DAY_MS)) ?? (await getCachedReport(DAY_MS, { allowPartial: true }))
-  : (mode === "--refresh" ? null : await recent()) ?? await fetchDetailedReport();
+  : (force ? null : await recent()) ?? await fetchDetailedReport({ force, activity, now });
 try {
   // Whoever refreshed the cache, its new figures go into the history once.
   if (report) recordReport(report);
 } catch (error) {
   console.warn("Couldn't record allowance history:", error instanceof Error ? error.message : error);
-}
-if (mode !== "--cached") {
-  await syncModelUsage().catch((error) => {
-    console.warn("Couldn't sync model usage:", error instanceof Error ? error.message : error);
-  });
 }
 const parts = report ? summaryParts(report) : [];
 

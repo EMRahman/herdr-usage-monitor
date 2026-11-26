@@ -739,6 +739,32 @@ export function readModelUsage(from: number, through: number, file = historyFile
   }
 }
 
+/** The latest observed activity timestamp for each provider in history.sqlite. */
+export function latestModelActivity(file = historyFile()): Record<string, number> {
+  if (!existsSync(file)) return {};
+  try {
+    const db = openHistoryDatabase(file, true);
+    try {
+      if (!db.query("SELECT 1 FROM sqlite_schema WHERE name = 'model_usage'").get()) return {};
+      const rows = db.query<{ provider: string; latest_at: number }, []>(`
+        SELECT provider, MAX(observed_at) AS latest_at FROM model_usage
+        GROUP BY provider
+      `).all();
+      const result: Record<string, number> = {};
+      for (const row of rows) {
+        if (row.provider && typeof row.latest_at === "number") {
+          result[row.provider] = row.latest_at;
+        }
+      }
+      return result;
+    } finally {
+      db.close();
+    }
+  } catch {
+    return {};
+  }
+}
+
 interface CandidateLog {
   provider: Provider;
   path: string;

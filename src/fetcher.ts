@@ -8,18 +8,16 @@ import {
   getClaudeSignIns,
   getCodexSignIns,
   resolveBinary,
+  type SignIn,
 } from "./providers.ts";
+import { latestModelActivity } from "./history/model-usage.ts";
+import { isTokenExpired, planProviderRefreshes } from "./refresh-policy.ts";
 
 const CACHE_DIR =
   process.env["HERDR_USAGE_CACHE_DIR"] ??
   (process.env["XDG_CACHE_HOME"]
     ? join(process.env["XDG_CACHE_HOME"], "herdr-usage-monitor")
     : join(homedir(), ".cache", "herdr-usage-monitor"));
-
-const CACHE_FILE = join(CACHE_DIR, "herdr-usage-cache.json");
-const LEGACY_PARTIAL_CACHE_FILE = join(CACHE_DIR, "herdr-usage-fast-cache.json");
-const AGY_CACHE_FILE = join(CACHE_DIR, "herdr-agy-usage.json");
-const RATE_LIMITS_FILE = join(CACHE_DIR, "rate-limits.json");
 
 export interface CodexCreditItem {
   id: string;
@@ -117,15 +115,20 @@ export interface FullReport {
    *  provider's id. Figures carried over from an older report keep that report's time; ones
    *  from a report without read_at have none. */
   read_at?: Record<string, number>;
+  /** When each provider slot (claude, codex, antigravity, others) was last checked (ms),
+   *  including failed, empty, or expired-token checks so backoff applies without retrying every minute. */
+  attempted_at?: Record<string, number>;
+  /** Active adaptive refresh interval (ms) per provider at the time the report was produced. */
+  ttl?: Record<string, number>;
 }
 
-interface RateLimitState {
+export interface RateLimitState {
   claudeUntil?: number;
 }
 
-async function getRateLimitsAsync(): Promise<RateLimitState> {
+export async function getRateLimitsAsync(cacheDir = CACHE_DIR): Promise<RateLimitState> {
   try {
-    const file = Bun.file(RATE_LIMITS_FILE);
+    const file = Bun.file(join(cacheDir, "rate-limits.json"));
     if (await file.exists()) {
       return JSON.parse(await file.text()) as RateLimitState;
     }
@@ -215,17 +218,22 @@ export function recentCredits(
   return typeof at === "number" && now - at < CREDITS_MAX_AGE_MS ? { credits: previous.credits, read_at: at } : undefined;
 }
 
-function saveRateLimits(state: RateLimitState): void {
+function saveRateLimits(state: RateLimitState, cacheDir = CACHE_DIR): void {
   try {
-    mkdirSync(CACHE_DIR, { recursive: true });
-    writeFileSync(RATE_LIMITS_FILE, JSON.stringify(state));
+    mkdirSync(cacheDir, { recursive: true });
+    writeFileSync(join(cacheDir, "rate-limits.json"), JSON.stringify(state));
   } catch {}
 }
 
-async function readCacheFile(path: string, maxAgeMs: number): Promise<FullReport | null> {
+async function readCacheFile(
+  path: string,
+  maxAgeMs: number,
+  now = Date.now(),
+  allowLegacyTmp = true,
+): Promise<FullReport | null> {
   try {
     let file = Bun.file(path);
-    if (!(await file.exists())) {
+    if (allowLegacyTmp && !(await file.exists())) {
       const legacyPath = join("/tmp", basename(path));
       const legacyFile = Bun.file(legacyPath);
       if (await legacyFile.exists()) {
@@ -234,7 +242,7 @@ async function readCacheFile(path: string, maxAgeMs: number): Promise<FullReport
     }
     if (await file.exists()) {
       const data = JSON.parse(await file.text()) as FullReport;
-      if (Date.now() - (data.timestamp || 0) < maxAgeMs) {
+      if (now - (data.timestamp || 0) < maxAgeMs) {
         return data;
       }
     }
@@ -244,43 +252,93 @@ async function readCacheFile(path: string, maxAgeMs: number): Promise<FullReport
 
 export async function getCachedReport(
   maxAgeMs = 300_000,
-  options?: { allowPartial?: boolean },
+  options?: { allowPartial?: boolean; now?: number; cacheDir?: string },
 ): Promise<FullReport | null> {
-  const complete = await readCacheFile(CACHE_FILE, maxAgeMs);
+  const dir = options?.cacheDir ?? CACHE_DIR;
+  const now = options?.now ?? Date.now();
+  const allowLegacyTmp = !options?.cacheDir;
+  const complete = await readCacheFile(join(dir, "herdr-usage-cache.json"), maxAgeMs, now, allowLegacyTmp);
   if (!options?.allowPartial) {
     return complete && !complete.partial ? complete : null;
   }
-  const partial = await readCacheFile(LEGACY_PARTIAL_CACHE_FILE, maxAgeMs);
+  const partial = await readCacheFile(join(dir, "herdr-usage-fast-cache.json"), maxAgeMs, now, allowLegacyTmp);
   if (complete && partial) {
     return complete.timestamp >= partial.timestamp ? complete : partial;
   }
   return complete ?? partial;
 }
 
-function saveCachedReport(report: FullReport): void {
+function saveCachedReport(report: FullReport, cacheDir = CACHE_DIR): void {
   try {
-    mkdirSync(CACHE_DIR, { recursive: true });
-    writeFileSync(CACHE_FILE, JSON.stringify(report));
+    mkdirSync(cacheDir, { recursive: true });
+    writeFileSync(join(cacheDir, "herdr-usage-cache.json"), JSON.stringify(report));
   } catch {}
 }
 
-export async function fetchDetailedReport(): Promise<FullReport> {
+export interface FetchReportDeps {
+  fetch?: typeof fetch;
+  getClaudeSignIns?: () => Promise<SignIn[]>;
+  getCodexSignIns?: () => Promise<SignIn[]>;
+  getAntigravitySignIns?: () => Promise<SignIn[]>;
+  fetchOtherProviders?: () => Promise<GenericProvider[]>;
+  resolveBinary?: (name: string) => string | null;
+}
+
+export interface FetchReportOptions {
+  /** When true, queries all providers regardless of activity-based idle backoff. */
+  force?: boolean;
+  /** Activity timestamps by provider id (e.g. from latestModelActivity()). */
+  activity?: Record<string, number>;
+  /** Reference timestamp in ms. Defaults to Date.now(). */
+  now?: number;
+  /** Override cache directory (primarily for tests). */
+  cacheDir?: string;
+  /** Dependency overrides (primarily for tests). */
+  deps?: FetchReportDeps;
+}
+
+export async function fetchDetailedReport(options: FetchReportOptions = {}): Promise<FullReport> {
+  const cacheDir = options.cacheDir ?? CACHE_DIR;
+  const clock = () => options.now ?? Date.now();
+  const now = clock();
+  const force = Boolean(options.force);
+  const activity = options.activity ?? latestModelActivity();
+  const fetchFn = options.deps?.fetch ?? fetch;
+  const claudeSignInsFn = options.deps?.getClaudeSignIns ?? getClaudeSignIns;
+  const codexSignInsFn = options.deps?.getCodexSignIns ?? getCodexSignIns;
+  const agySignInsFn = options.deps?.getAntigravitySignIns ?? getAntigravitySignIns;
+  const otherProvidersFn = options.deps?.fetchOtherProviders ?? fetchOtherProviders;
+  const resolveBinaryFn = options.deps?.resolveBinary ?? resolveBinary;
+
+  const [limits, prevAny, prevComplete] = await Promise.all([
+    getRateLimitsAsync(cacheDir),
+    getCachedReport(24 * 3600_000, { allowPartial: true, now, cacheDir }),
+    getCachedReport(24 * 3600_000, { now, cacheDir }),
+  ]);
+
+  const plan = planProviderRefreshes(prevAny, {
+    activity,
+    claudeUntil: limits.claudeUntil,
+    now,
+    force,
+  });
+
   const report: FullReport = {
-    timestamp: Date.now(),
+    timestamp: now,
     others: [],
   };
   const readAt: Record<string, number> = {};
+  const attemptedAt: Record<string, number> = { ...(prevComplete?.attempted_at ?? prevAny?.attempted_at) };
 
   // Fetch Claude (discovers its own credentials so slow Keychain never blocks other providers)
   const claudePromise = (async () => {
-    const limits = await getRateLimitsAsync();
-    if (limits.claudeUntil && Date.now() < limits.claudeUntil) {
-      return;
-    }
+    if (!plan.claude) return;
+    attemptedAt.claude = now;
 
-    const claudeSignIns = await getClaudeSignIns().catch(() => []);
+    const claudeSignIns = await claudeSignInsFn().catch(() => []);
     const s = claudeSignIns[0];
     if (!s) return;
+    if (!force && isTokenExpired(s.expiresAt, now)) return;
     const headers = {
       authorization: `Bearer ${s.token}`,
       accept: "application/json",
@@ -290,18 +348,18 @@ export async function fetchDetailedReport(): Promise<FullReport> {
     const account = s.account?.label ?? "default";
 
     // The credit balance, alongside the limits, unless it was read recently.
-    const previous = (await getCachedReport(24 * 3600_000, { allowPartial: true }))?.claude;
-    const recent = recentCredits(previous, account);
+    const previous = prevAny?.claude;
+    const recent = recentCredits(previous, account, now);
     const org = s.account?.org;
     const creditsPromise: Promise<CreditsRead | undefined> = recent || !org
       ? Promise.resolve(recent)
-      : fetch(`https://api.anthropic.com/api/oauth/organizations/${encodeURIComponent(org)}/prepaid/credits`, {
+      : fetchFn(`https://api.anthropic.com/api/oauth/organizations/${encodeURIComponent(org)}/prepaid/credits`, {
           headers,
           signal: AbortSignal.timeout(3500),
-        }).then(async (r) => (r.ok ? { credits: claudeCredits(await r.json()), read_at: Date.now() } : undefined))
+        }).then(async (r) => (r.ok ? { credits: claudeCredits(await r.json(), clock()), read_at: clock() } : undefined))
           .catch(() => undefined);
 
-    const res = await fetch("https://api.anthropic.com/api/oauth/usage?cedar_ember=1", {
+    const res = await fetchFn("https://api.anthropic.com/api/oauth/usage?cedar_ember=1", {
       headers,
       signal: AbortSignal.timeout(3500),
     }).catch(() => null);
@@ -312,7 +370,7 @@ export async function fetchDetailedReport(): Promise<FullReport> {
       const retryHeader = res.headers.get("retry-after");
       const retrySec = retryHeader ? parseInt(retryHeader, 10) : NaN;
       const cooldownMs = Number.isFinite(retrySec) && retrySec > 0 ? retrySec * 1000 : 300_000;
-      saveRateLimits({ ...limits, claudeUntil: Date.now() + cooldownMs });
+      saveRateLimits({ ...limits, claudeUntil: clock() + cooldownMs }, cacheDir);
       return;
     }
 
@@ -320,7 +378,7 @@ export async function fetchDetailedReport(): Promise<FullReport> {
 
     if (limits.claudeUntil) {
       delete limits.claudeUntil;
-      saveRateLimits(limits);
+      saveRateLimits(limits, cacheDir);
     }
 
     const body = (await res.json()) as any;
@@ -355,33 +413,37 @@ export async function fetchDetailedReport(): Promise<FullReport> {
     }
 
     const credits = await creditsPromise;
-    readAt.claude = Date.now();
+    readAt.claude = clock();
     report.claude = {
       account,
       plan: s.plan ?? "pro",
       windows,
       extra_usage,
-      limit_resets: claudeLimitResets(body),
+      limit_resets: claudeLimitResets(body, now),
       ...(credits ? { credits: credits.credits, credits_read_at: credits.read_at } : {}),
     };
   })().catch(() => {});
 
   // Fetch Codex
   const codexPromise = (async () => {
-    const codexSignIns = await getCodexSignIns().catch(() => []);
+    if (!plan.codex) return;
+    attemptedAt.codex = now;
+
+    const codexSignIns = await codexSignInsFn().catch(() => []);
     const s = codexSignIns[0];
     if (!s) return;
+    if (!force && isTokenExpired(s.expiresAt, now)) return;
     const headers: Record<string, string> = {
       authorization: `Bearer ${s.token}`,
       accept: "application/json",
       ...(s.chatgptAccount ? { "chatgpt-account-id": s.chatgptAccount } : {}),
     };
     const [usageRes, creditsRes] = await Promise.all([
-      fetch("https://chatgpt.com/backend-api/wham/usage", {
+      fetchFn("https://chatgpt.com/backend-api/wham/usage", {
         headers,
         signal: AbortSignal.timeout(3500),
       }),
-      fetch("https://chatgpt.com/backend-api/wham/rate-limit-reset-credits", {
+      fetchFn("https://chatgpt.com/backend-api/wham/rate-limit-reset-credits", {
         headers,
         signal: AbortSignal.timeout(3500),
       }).catch(() => null),
@@ -415,7 +477,7 @@ export async function fetchDetailedReport(): Promise<FullReport> {
       }))
       .sort((a: any, b: any) => Date.parse(a.expires_at) - Date.parse(b.expires_at));
 
-    readAt.codex = Date.now();
+    readAt.codex = clock();
     report.codex = {
       account: s.account?.label ?? body.email ?? "default",
       plan: s.plan ?? body.plan_type ?? "plus",
@@ -429,31 +491,35 @@ export async function fetchDetailedReport(): Promise<FullReport> {
 
   // Fetch Antigravity (AGY)
   const agyPromise = (async () => {
+    if (!plan.antigravity) return;
+    attemptedAt.antigravity = now;
+
     // Try reading recent agy cache first before touching Keychain
     let agyData: any = null;
     // The agy CLI's answer is cached for 2 minutes: its figures are as old as that file.
-    let agyReadAt = Date.now();
+    let agyReadAt = clock();
+    const agyCacheFile = join(cacheDir, "herdr-agy-usage.json");
     try {
-      let agyPath = AGY_CACHE_FILE;
-      if (!existsSync(agyPath) && existsSync("/tmp/herdr-agy-usage.json")) {
+      let agyPath = agyCacheFile;
+      if (!options.cacheDir && !existsSync(agyPath) && existsSync("/tmp/herdr-agy-usage.json")) {
         agyPath = "/tmp/herdr-agy-usage.json";
       }
       if (existsSync(agyPath)) {
         const stat = await Bun.file(agyPath).stat();
-        if (Date.now() - stat.mtimeMs < 120_000) {
+        if (clock() - stat.mtimeMs < 120_000) {
           agyData = JSON.parse(await Bun.file(agyPath).text());
           agyReadAt = stat.mtimeMs;
         }
       }
     } catch {}
 
-    const agySignIns = await getAntigravitySignIns().catch(() => []);
+    const agySignIns = await agySignInsFn().catch(() => []);
     const s = agySignIns[0];
     const account = s?.account?.label ?? "default";
 
     // Invoke the agy CLI when there is no recent cache.
     if (!agyData) {
-      const agyBin = resolveBinary("agy");
+      const agyBin = resolveBinaryFn("agy");
       if (agyBin) {
         try {
           const child = Bun.spawn([agyBin, "-p", "/usage", "--output-format", "json"], {
@@ -472,8 +538,8 @@ export async function fetchDetailedReport(): Promise<FullReport> {
             if (parsed.command?.data?.groups) {
               agyData = parsed.command.data;
               try {
-                mkdirSync(CACHE_DIR, { recursive: true });
-                writeFileSync(AGY_CACHE_FILE, JSON.stringify(agyData));
+                mkdirSync(cacheDir, { recursive: true });
+                writeFileSync(agyCacheFile, JSON.stringify(agyData));
               } catch {}
             }
           }
@@ -511,21 +577,21 @@ export async function fetchDetailedReport(): Promise<FullReport> {
     }
 
     // Direct API fallback
-    if (!s) return;
+    if (!s || (!force && isTokenExpired(s.expiresAt, now))) return;
     const headers = {
       authorization: `Bearer ${s.token}`,
       accept: "application/json",
       "content-type": "application/json",
       "user-agent": "antigravity",
     };
-    let res = await fetch("https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary", {
+    let res = await fetchFn("https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary", {
       method: "POST",
       headers,
       body: "{}",
       signal: AbortSignal.timeout(3000),
     }).catch(() => null);
     if (!res || !res.ok) {
-      res = await fetch("https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary", {
+      res = await fetchFn("https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary", {
         method: "POST",
         headers,
         body: "{}",
@@ -552,7 +618,7 @@ export async function fetchDetailedReport(): Promise<FullReport> {
     }));
 
     if (groups.length > 0) {
-      readAt.antigravity = Date.now();
+      readAt.antigravity = clock();
       report.antigravity = {
         account,
         groups,
@@ -561,74 +627,154 @@ export async function fetchDetailedReport(): Promise<FullReport> {
   })().catch(() => {});
 
   // Secondary providers (Cursor, Copilot, Grok, OpenCode)
-  const othersPromise = fetchOtherProviders()
-    .then((others) => {
-      report.others = others;
-      const now = Date.now();
-      for (const p of others) readAt[p.id] = now;
-    })
-    .catch(() => {});
+  const othersPromise = (async () => {
+    if (!plan.others) return;
+    attemptedAt.others = now;
+    const others = await otherProvidersFn();
+    report.others = others;
+    const fetchNow = clock();
+    for (const p of others) readAt[p.id] = fetchNow;
+  })().catch(() => {});
 
   await Promise.allSettled([claudePromise, codexPromise, agyPromise, othersPromise]);
 
-  // Merge preserved details and fallback providers from previous cache
+  // Reload cache after network requests settle so a slower selective poll never overwrites
+  // newer per-provider readings saved by a concurrent refresh.
   try {
-    const prevComplete = await getCachedReport(24 * 3600_000);
-    const prevAny = await getCachedReport(24 * 3600_000, { allowPartial: true });
+    const mergeNow = clock();
+    const [diskAny, diskComplete] = await Promise.all([
+      getCachedReport(24 * 3600_000, { allowPartial: true, now: mergeNow, cacheDir }),
+      getCachedReport(24 * 3600_000, { now: mergeNow, cacheDir }),
+    ]);
+    const sources = [diskAny, diskComplete, prevAny, prevComplete].filter((s): s is FullReport => Boolean(s));
 
-    // Carried-over figures keep the time they were read, so they aren't recorded as new.
-    const carry = (id: string, from: FullReport | null) => {
-      const t = from?.read_at?.[id];
-      if (t) readAt[id] = t;
+    const newestSourceFor = <K extends "claude" | "codex" | "antigravity">(id: K): FullReport | null => {
+      let best: FullReport | null = null;
+      let bestTime = -1;
+      for (const src of sources) {
+        if (!src[id]) continue;
+        const t = src.read_at?.[id] ?? 0;
+        if (!best || t > bestTime) {
+          best = src;
+          bestTime = t;
+        }
+      }
+      return best;
     };
-    if (!report.claude) {
-      const from = prevAny?.claude ? prevAny : prevComplete;
-      report.claude = from?.claude;
-      carry("claude", from);
+
+    const mergePrimary = <K extends "claude" | "codex" | "antigravity">(id: K) => {
+      const from = newestSourceFor(id);
+      if (!from?.[id]) return;
+      const fromTime = from.read_at?.[id] ?? 0;
+      const curTime = readAt[id] ?? 0;
+      if (!report[id] || fromTime > curTime) {
+        report[id] = from[id];
+        if (fromTime > 0) readAt[id] = fromTime;
+      }
+    };
+
+    mergePrimary("claude");
+    // A credit balance that couldn't be read this time keeps the newest one read for this account.
+    if (report.claude) {
+      let bestCredits = report.claude.credits;
+      let bestCreditsAt = report.claude.credits_read_at ?? -1;
+      for (const src of sources) {
+        const c = src.claude;
+        if (!c || c.account !== report.claude.account || c.credits === undefined) continue;
+        const at = c.credits_read_at ?? 0;
+        if (bestCredits === undefined || at > bestCreditsAt) {
+          bestCredits = c.credits;
+          bestCreditsAt = at;
+        }
+      }
+      if (bestCredits !== undefined) {
+        report.claude.credits = bestCredits;
+        if (bestCreditsAt >= 0) report.claude.credits_read_at = bestCreditsAt;
+      }
     }
-    // A credit balance that couldn't be read this time keeps the last one read.
-    const prevClaude = prevAny?.claude ?? prevComplete?.claude;
-    if (report.claude && report.claude.credits === undefined && prevClaude?.account === report.claude.account) {
-      report.claude.credits = prevClaude.credits;
-      report.claude.credits_read_at = prevClaude.credits_read_at;
+
+    mergePrimary("codex");
+    mergePrimary("antigravity");
+
+    // Merge secondary providers by (id, account) so multi-account providers (e.g. Copilot, Cursor)
+    // are never collapsed, while still preserving newer readings from concurrent refreshes.
+    const otherKey = (p: GenericProvider) => `${p.id}\u0000${p.account}`;
+    const othersReadTime = (src: FullReport) =>
+      src.others.reduce((max, p) => Math.max(max, src.read_at?.[p.id] ?? 0), 0);
+
+    let newestOthers: FullReport | null = null;
+    let newestOthersTime = -1;
+    for (const src of sources) {
+      if (!src.others?.length) continue;
+      const t = othersReadTime(src);
+      if (!newestOthers || t > newestOthersTime) {
+        newestOthers = src;
+        newestOthersTime = t;
+      }
     }
-    if (!report.codex) {
-      const from = prevComplete?.codex ? prevComplete : prevAny;
-      report.codex = from?.codex;
-      carry("codex", from);
-    }
-    if (!report.antigravity) {
-      const from = prevComplete?.antigravity ? prevComplete : prevAny;
-      report.antigravity = from?.antigravity;
-      carry("antigravity", from);
-    }
+
     if (report.others.length === 0) {
-      const from = prevComplete?.others?.length ? prevComplete : prevAny?.others?.length ? prevAny : null;
-      if (from) {
-        report.others = from.others;
-        for (const p of from.others) carry(p.id, from);
+      if (newestOthers) {
+        report.others = newestOthers.others;
+        for (const p of newestOthers.others) {
+          const t = newestOthers.read_at?.[p.id];
+          if (t) readAt[p.id] = t;
+        }
+      }
+    } else if (newestOthers) {
+      const curOtherReadAt = { ...readAt };
+      const byKey = new Map<string, GenericProvider>();
+      for (const p of report.others) byKey.set(otherKey(p), p);
+      for (const p of newestOthers.others) {
+        const key = otherKey(p);
+        const fromTime = newestOthers.read_at?.[p.id] ?? 0;
+        const curTime = curOtherReadAt[p.id] ?? 0;
+        if (byKey.has(key) && fromTime > curTime) {
+          byKey.set(key, p);
+          if (fromTime > 0) readAt[p.id] = fromTime;
+        }
+      }
+      report.others = [...byKey.values()];
+    }
+
+    // Preserve the newest attempted_at timestamps across concurrent polls.
+    for (const src of sources) {
+      for (const [id, t] of Object.entries(src.attempted_at ?? {})) {
+        if (typeof t === "number" && Number.isFinite(t) && t > (attemptedAt[id] ?? 0)) {
+          attemptedAt[id] = t;
+        }
       }
     }
 
     // Preserve cached Codex reset credits when the provider does not return details.
+    const codexWithItems = sources.find(
+      (src) => src.codex?.account === report.codex?.account && src.codex.resets.items.length > 0,
+    );
     if (
       report.codex &&
       report.codex.resets.available > 0 &&
       report.codex.resets.items.length === 0 &&
-      prevComplete?.codex?.account === report.codex.account &&
-      prevComplete.codex.resets.items.length > 0
+      codexWithItems?.codex
     ) {
-      const now = Date.now();
-      report.codex.resets.items = prevComplete.codex.resets.items
+      report.codex.resets.items = codexWithItems.codex.resets.items
         .filter((item) => {
           const exp = Date.parse(item.expires_at);
-          return !Number.isFinite(exp) || exp > now;
+          return !Number.isFinite(exp) || exp > mergeNow;
         })
         .slice(0, report.codex.resets.available);
+    }
+
+    // Keep report.timestamp at least as new as any concurrent cache write we merged from.
+    for (const src of sources) {
+      if (src.timestamp > report.timestamp) report.timestamp = src.timestamp;
     }
   } catch {}
 
   report.read_at = readAt;
-  saveCachedReport(report);
+  report.attempted_at = attemptedAt;
+  const ttls: Record<string, number> = { ...plan.ttls };
+  for (const p of report.others) ttls[p.id] = plan.ttls.others!;
+  report.ttl = ttls;
+  saveCachedReport(report, cacheDir);
   return report;
 }
