@@ -80,7 +80,8 @@ test("hover opens immediately and lists provider activity through the current pa
     { ...codex, at: now, provider: "claude", model: "other-provider" },
     { ...codex, at: now + 1, model: "future" },
   ];
-  const [card] = burndownCards({}, [series], activity, now);
+  const selectPrompts = mock();
+  const [card] = burndownCards({}, [series], activity, now, [], selectPrompts);
   const cards = hoverCards(card!.rows[0]);
   expect(cards.map(({ openDelay, closeDelay }) => [openDelay, closeDelay])).toEqual([[0, 0], [0, 0]]);
   const tips = cards.map((card) => labels(card.cardContent).join("\n"));
@@ -90,7 +91,12 @@ test("hover opens immediately and lists provider activity through the current pa
   expect(last).toContain("Local activity");
   expect(last.match(/model-a · high effort/g)).toHaveLength(1);
   expect(last).toContain("model-b · effort unavailable");
+  expect(last).toContain("Click for Codex prompts in this interval");
   expect(tips.join("\n")).not.toMatch(/outside|other-provider|future/);
+  const trigger = style(cards[1]!, "trigger") as Element;
+  const click = style(trigger, "on_click") as (event: object, cx: object) => void;
+  click({}, {});
+  expect(selectPrompts.mock.calls[0]?.[0]).toMatchObject({ mode: "burndown", from: start + 60_000, to: now });
 });
 
 test("Antigravity hovers show activity from their quota group and subscription", () => {

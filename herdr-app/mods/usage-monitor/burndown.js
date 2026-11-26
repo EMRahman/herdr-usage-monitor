@@ -81,7 +81,7 @@ function readingAt(b, time) {
   return `${localTime(time)} · ${Math.round(run[2])}% left · even pace ${Math.round(pace(b, time))}%`;
 }
 
-function hoverColumns(t, b, activity, id, now) {
+function hoverColumns(t, b, activity, id, now, selectPrompts) {
   const through = Math.min(now, b.end);
   const span = b.end - b.start;
   if (span <= 0 || through <= b.start) return [];
@@ -108,10 +108,17 @@ function hoverColumns(t, b, activity, id, now) {
       const range = first === last ? first : `${first}–${last}`;
       tip.child(div().text_color(t.muted).child(`Local activity · ${range}`)).children(models);
     }
+    const trigger = div().w_full().h(PLOT);
+    if (selectPrompts) {
+      tip.child(div().text_color(t.muted).child("Click for Codex prompts in this interval"));
+      trigger.id(`${id}-prompts-${i}`).cursor_pointer().on_click((_event, cx) => selectPrompts({
+        mode: "burndown", from, to, label: `${localTime(from)} – ${localTime(to)}`,
+      }, cx));
+    }
     return div().absolute().top(0).h(PLOT)
       .left(`${(i / COLUMNS) * 100}%`).w(`${((to - from) / span) * 100}%`)
       .child(HoverCard.new(`${id}-at-${i}`).open_delay(0).close_delay(0)
-        .trigger(div().w_full().h(PLOT)).content(tip));
+        .trigger(trigger).content(tip));
   });
 }
 
@@ -141,7 +148,7 @@ function gapBand(t, b, x, y) {
   return boxes;
 }
 
-function plot(t, b, activity, id, now) {
+function plot(t, b, activity, id, now, selectPrompts) {
   const { x, y } = scale(b);
   const line = t.accent;
   const marks = [];
@@ -177,13 +184,13 @@ function plot(t, b, activity, id, now) {
     marks.push(div().absolute().size(5).rounded_full().bg(line)
       .left(`${x(to)}%`).ml(-2.5).top(clamp(y(left), 1, PLOT - 1) - 2.5));
   }
-  marks.push(...hoverColumns(t, b, activity, id, now));
+  marks.push(...hoverColumns(t, b, activity, id, now, selectPrompts));
   return div().relative().flex_1().min_w(0).h(PLOT).children(marks)
     .when(b.runs.length === 0, (el) => el.child(div().absolute().top(PLOT / 2 - 16).left(0).w_full()
       .flex().justify_center().text_size(11).text_color(t.muted).child("No readings in this window yet")));
 }
 
-export function burndownChart(t, b, activity, id, now, compact = false) {
+export function burndownChart(t, b, activity, id, now, compact = false, selectPrompts) {
   const lit = light({ remaining: b.left, resetsAt: b.reset, length: b.length, now });
   const color = lit.level ? lightColor(t, lit.level) : t.foreground;
   const title = [b.accountLabel, b.group, b.label].filter(Boolean).join(" · ");
@@ -206,7 +213,7 @@ export function burndownChart(t, b, activity, id, now, compact = false) {
     .child(h_flex().items_start()
       .child(v_flex().flex_none().w(GUTTER).h(PLOT).justify_between().text_size(10).text_color(t.muted)
         .children(["100%", "50%", "0%"].map((label) => div().mt(-6).child(label))))
-      .child(plot(t, b, activityForChart(b, activity), id, now)))
+      .child(plot(t, b, activityForChart(b, activity), id, now, selectPrompts)))
     .child(h_flex().ml(GUTTER).justify_between().text_size(10).text_color(t.muted)
       .child(compact && !unstarted ? "Start" : startLabel)
       .child(compact && hasReset ? "Reset" : end));
@@ -232,7 +239,7 @@ function activityForChart(b, activity) {
 }
 
 /** Cards for the breakdown's columns: one per provider, a chart per 5-hour and weekly limit. */
-export function burndownCards(t, burndowns, modelUsage = [], now = Date.now(), held = []) {
+export function burndownCards(t, burndowns, modelUsage = [], now = Date.now(), held = [], selectPrompts) {
   // The Allowances view's order: Claude, Codex, Antigravity, then the rest; within a provider,
   // each account and model group together, 5-hour before weekly.
   const first = (list, key) => {
@@ -257,7 +264,8 @@ export function burndownCards(t, burndowns, modelUsage = [], now = Date.now(), h
   }
   return [...byProvider].map(([provider, list]) => {
     const activity = activityByProvider.get(provider) ?? [];
-    const charts = list.map((b, i) => burndownChart(t, b, activity, `burndown-${provider}-${i}`, now));
+    const charts = list.map((b, i) => burndownChart(t, b, activity, `burndown-${provider}-${i}`, now, false,
+      provider === "codex" ? selectPrompts : undefined));
     const resets = resetRows(t, held, provider);
     return {
       provider,

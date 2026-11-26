@@ -72,6 +72,8 @@ Switch the view to **Burndown** (press <kbd>B</kbd>, <kbd>A</kbd> for Allowances
 
 The charts come from readings kept on your machine, recorded each time allowances are read (every few minutes while Herdr is open), so they fill in from when you install this version. Time when Herdr was closed or the machine was asleep shows as a gap.
 
+Click an interval on a Codex burndown chart in Usage Monitor to see prompts with recorded activity in that interval. The allowance line shows provider readings, and the prompt list shows activity from local sessions.
+
 Upgrading from the JSONL version starts a fresh chart history in `history.sqlite`. Your previous readings remain available in `history.jsonl` in the same directory.
 
 ## Usage history
@@ -79,6 +81,8 @@ Upgrading from the JSONL version starts a fresh chart history in `history.sqlite
 Switch to **History** (press <kbd>H</kbd>, or cycle with <kbd>Space</kbd>) to inspect local model usage and token consumption across **Day (`D`, hourly)**, **Week (`W`, daily)**, **Month (`M`, daily)**, and **Year (`Y`, 52 weekly buckets)** calendar horizons. Use <kbd>[</kbd> and <kbd>]</kbd> to step backward and forward through past periods (<kbd>T</kbd> returns to the current period). Press <kbd>G</kbd> to cycle between **Both**, **Bars**, and **Line** views.
 
 Choose **Input & output** (or press <kbd>I</kbd> to switch from **By model**) to split both graphs by token type. Each bar stacks uncached input and output for one interval. With **Cache** on (<kbd>C</kbd>), prompt cache reads and writes form a third segment. Output includes reported reasoning tokens. On the line graph, choose **Cumulative** to see each type’s running count since the start of the period. The dashed line shows their combined total. Hover either graph for exact counts, or select a model in **Top models** to narrow both graphs.
+
+Click a bar or line interval to see up to five recent Codex prompts and their token counts for that interval. Prompt previews are read from available local session logs on click. SQLite stores the token counts and session metadata.
 
 ## What it shows
 
