@@ -1,22 +1,74 @@
 # When to use allowance and when to save a reset
 
-The monitor should recommend an action from the current allowance, the time until each automatic refresh, and the expiry and eligibility of any held reset. It should work from a single reading without predicting future tasks.
+The monitor should recommend an action from the current allowance, the time until each automatic refresh, and the count, expiry and eligibility of any held reset. It should work from a single reading without predicting future tasks.
 
-Check the 5-hour, account-wide weekly, and model-specific limits that apply to the current model. Compare each window’s percentage of allowance left with its percentage of time left. For example, 14% weekly allowance with one day left is almost exactly on pace. Show both countdowns when recommending a held reset or advising someone to save one.
+Compare each window’s share of allowance used with its share of time elapsed. For example, 86% of the weekly allowance used with one day left is almost exactly on pace. Show both countdowns when recommending a held reset or advising someone to save one.
 
-| What the monitor sees | Recommended action |
+## Bands
+
+| Column | Low | Medium | High |
+|---|---|---|---|
+| 7D used | under 40% | 40–89% | 90% or more (at or near the limit) |
+| Time until 7D refresh | under 2 days | 2–4 days | over 4 days |
+| 5h used | under 40% | 40–89% | 90% or more |
+| Time until 5h refresh | under 1 hour | 1–3 hours | over 3 hours |
+
+Reset columns count the resets held: **0**, **1** or **>1**. A full reset clears both the 7D and 5h limits. A 5h reset clears only the 5h limit.
+
+Assumptions:
+
+- A reset clears its limits to 0% used and does not move the refresh time.
+- A reset can be redeemed once the limit reaches 100%.
+- Each reset outlives the next refresh of the limit it covers. Resets that expire sooner are handled by the overrides.
+
+## Decision table
+
+Evaluate rows top to bottom. The first match wins. **≥1** means 1 and >1 give the same action. **Any** means the column does not change the action.
+
+| # | 7D used | 7D time left | 5h used | 5h time left | Full resets (7D + 5h) | 5h-only resets | Suggested action |
+|---|---|---|---|---|---|---|---|
+| **Weekly at the limit** | | | | | | | |
+| 1 | High | Low | Any | Any | 0 or 1 | Any | **Wait for the weekly refresh. Save the reset.** It would refill a week that can be used for under 2 days. A 5h reset can’t clear the weekly limit. |
+| 2 | High | Low | Any | Any | >1 | Any | **Wait by default. If tokens are needed before the refresh, redeem one at 100%** and keep at least one. |
+| 3 | High | Medium | Any | Any | 1 | Any | **Use the weekly balance to 100%, then redeem only if tokens are needed before the refresh.** Otherwise wait. |
+| 4 | High | Medium | Any | Any | >1 | Any | **Use the weekly balance to 100%, then redeem the earliest-expiring reset when tokens are next needed.** |
+| 5 | High | High | Any | Any | ≥1 | Any | **Use the weekly balance to 100%, then redeem the earliest-expiring reset when tokens are next needed.** |
+| 6 | High | Medium/High | Any | Any | 0 | Any | **Stretch the remainder (% left ÷ days left). At 100%, wait for the weekly refresh.** |
+| **Weekly has room, session at the limit** | | | | | | | |
+| 7 | Low/Medium | Any | High | Low | Any | Any | **Wait for the 5h refresh (under 1 hour). Save resets.** |
+| 8 | Low/Medium | Any | High | Medium/High | Any | ≥1 | **Use the session to 100%, then redeem the earliest-expiring 5h reset if tokens are needed now.** |
+| 9 | Low/Medium | Any | High | Medium/High | 0 or 1 | 0 | **Wait for the 5h refresh.** Keep a single full reset for a weekly lockout. |
+| 10 | Low/Medium | Any | High | Medium/High | >1 | 0 | **Wait by default. If the work is urgent, redeem one full reset at 100%** and keep at least one for a weekly lockout. |
+| **Both have room: pacing** | | | | | | | |
+| 11 | Low | Low | Low/Medium | Any | Any | Any | **Weekly allowance is going to waste: use heavily now** and aim to max out each remaining session. |
+| 12 | Low | Medium | Low/Medium | Any | Any | Any | **Untapped: use the surplus now.** |
+| 13 | Low | High | Low/Medium | Any | Any | Any | **Plenty left early in the week: use freely.** |
+| 14 | Medium | Low | Low/Medium | Any | Any | Any | **Untapped: use the surplus now.** It refreshes soon. |
+| 15 | Medium | Medium | Low/Medium | Any | Any | Any | **On pace: keep going.** |
+| 16 | Medium | High | Low/Medium | Any | 0 | Any | **Spending fast: pace the remainder strictly (% left ÷ days left).** |
+| 17 | Medium | High | Low/Medium | Any | 1 | Any | **Spending fast: pace the remainder loosely.** The full reset is a backstop for later in the week. |
+| 18 | Medium | High | Low/Medium | Any | >1 | Any | **No need to slow down.** Plan to use the weekly balance to 100% and then redeem one. |
+
+In rows 11–15, if 5h used is Low and its time left is Low, suggest using the session now if work is ready. Its room disappears within the hour.
+
+Always keep at least one full reset unless it is about to expire. When several resets qualify, use the earliest-expiring first.
+
+## Overrides
+
+These take priority over the decision table.
+
+| Situation | Action |
 |---|---|
-| Weekly allowance is ahead of pace and the 5-hour session has room. | **Use the surplus now.** Draw down the current allowance before spending a reset. |
-| Weekly allowance is on pace and the session has room. | **Continue at pace.** Keep the held reset. |
-| The 5-hour session is exhausted, weekly allowance remains, and the next session refresh comes before any held reset expires. | **Wait for the 5-hour refresh.** Save the reset. |
-| Weekly allowance is behind pace, some remains, and there is no pressing reset expiry. | **Pace the remaining balance.** With 8% left and two days to go, the baseline is 4 percentage points per day. |
-| The weekly limit is exhausted, the weekly refresh is close, and the held reset stays usable well into next week. | **Wait for the weekly refresh and save the reset.** |
-| The weekly limit is exhausted, the refresh is far away, and a held reset covers that limit. | **Use the reset when you next need tokens.** Use the earliest-expiring eligible reset first. |
-| A held reset expires at or before the weekly refresh, and weekly allowance remains. | **Use the current balance first.** Flag the expiry deadline. Redeem before expiry if eligible and the refill can be used. |
-| A held reset expires at or before the weekly refresh, and the weekly limit is exhausted. | **Use the reset on the next request before expiry.** Waiting for the weekly refresh would lose it. |
-| A held reset expires shortly after the weekly refresh and requires hitting a limit to redeem. | **Flag a possible last chance to use it.** If eligible now, redeem when tokens are needed. The automatic refresh may remove eligibility for the rest of the reset’s lifetime. |
-| A limit is exhausted and no held reset can clear it. | **Wait for that limit’s automatic refresh.** If multiple limits are exhausted, show when all of them will allow use again. |
+| A full reset expires before the 7D refresh | Weekly High: **redeem it at 100% before expiry.** Weekly Low/Medium: **use the balance to 100% before expiry, then redeem.** Flag the deadline. |
+| A 5h reset expires before the 5h refresh | **Redeem it now if tokens are needed.** Otherwise it is lost. |
+| A full reset needs a limit hit to redeem, expires less than about 2 days after the 7D refresh, and is eligible now | **Last chance: redeem when tokens are next needed.** After the refresh the limit may not be reached again before expiry. |
+| More than one full reset is held, and fewer weekly refreshes than resets remain before they expire | **Treat the extras as expiring.** Rows 1, 9 and 15 change from “save” to “use the balance to 100%, then redeem”. |
 
-An imminent expiry takes priority over ordinary pacing advice. Compare it with the refresh of the limit the reset actually covers. Exclude spent, expired, or paused resets. If expiry is unknown, show that uncertainty before advising someone to save the reset.
+Exclude spent, expired or paused resets. A reset that needs a limit hit and is not yet usable still counts. If expiry is unknown, treat it as not expiring, but show that uncertainty next to any advice to save the reset.
 
-**For review.** The current monitor treats a weekly refresh less than three days away as close. Should that remain the cutoff for waiting? How short a gap between the weekly refresh and a held reset’s expiry should trigger the possible-last-chance warning?
+## For review
+
+- Does a reset keep the refresh time or restart the 7-day clock? If it restarts the clock, rows 1–3 become “use the full reset at 100%”, because timing no longer matters.
+- Which limits does each reset type clear? The provider data does not say, so the monitor needs a default.
+- Are the band cutoffs right? In particular: the under-2-days “Low” for the 7D refresh, which replaces the current under-3-days cutoff for waiting, and the 2-day last-chance gap.
+- Model-specific weekly limits should follow the 7D columns, using whichever weekly limit has the least room.
