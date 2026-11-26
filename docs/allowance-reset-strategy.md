@@ -51,7 +51,7 @@ Evaluate rows top to bottom. The first match wins. **≥1** means 1 and >1 give 
 
 In rows 11–15, if 5h used is Low and its time left is Low, suggest using the session now if work is ready. Its room disappears within the hour.
 
-Always keep at least one full reset unless it is about to expire. When several resets qualify, use the earliest-expiring first.
+Keep at least one full reset in reserve for a weekly lockout, unless it is about to expire or a weekly-limit row (rows 3 or 5) advises redeeming it. When several resets qualify, use the earliest-expiring first.
 
 ## Overrides
 
@@ -60,7 +60,7 @@ These take priority over the decision table.
 | Situation | Action |
 |---|---|
 | A full reset expires before the 7D refresh | Weekly High: **redeem it at 100% before expiry.** Weekly Low/Medium: **use the balance to 100% before expiry, then redeem.** Flag the deadline. |
-| A 5h reset expires before the 5h refresh | **Redeem it now if tokens are needed.** Otherwise it is lost. |
+| A 5h reset expires before the 5h refresh | Eligible now (5h at 100%): **redeem it now if tokens are needed.** 5h below 100%: **use the session balance to 100% before expiry, then redeem.** Flag the deadline; otherwise it is lost. |
 | A full reset needs a limit hit to redeem, expires less than about 2 days after the 7D refresh, and is eligible now | **Last chance: redeem when tokens are next needed.** After the refresh the limit may not be reached again before expiry. |
 | More than one full reset is held, and fewer weekly refreshes than resets remain before they expire | **Treat the extras as expiring.** Rows 1, 9 and 15 change from “save” to “use the balance to 100%, then redeem”. |
 
