@@ -33,6 +33,12 @@ function sampleAge(at, now) {
 const SAMPLE_NAMES = { claude: "Claude", codex: "Codex", antigravity: "Antigravity",
   cursor: "Cursor", copilot: "GitHub Copilot", grok: "Grok", opencode: "OpenCode" };
 const STALE_MS = 5 * 60_000;
+const STALE_GRACE_MS = 2 * 60_000;
+
+function staleThreshold(report, id) {
+  const ttl = report?.ttl?.[id];
+  return Number.isFinite(ttl) && ttl > 0 ? Math.max(STALE_MS, ttl + STALE_GRACE_MS) : STALE_MS;
+}
 
 export function sampleStatus(report, now = Date.now()) {
   const samples = allowanceSamples(report);
@@ -52,7 +58,8 @@ export function sampleStatus(report, now = Date.now()) {
   const age = sampleAge(oldest, now);
   const label = times.length < samples.length ? "Oldest known sample"
     : age !== sampleAge(Math.max(...times), now) ? "Oldest sample" : "Sampled";
-  return { label: `${label} ${age}`, detail, stale: now - oldest >= STALE_MS };
+  const stale = samples.some(({ id, at }) => at > 0 && now - at >= staleThreshold(report, id));
+  return { label: `${label} ${age}`, detail, stale };
 }
 
 // "3:56 PM" today, "Nov 25, 8:58 AM" on another day, "Aug 18, 2027, 1:00 AM" in another year.

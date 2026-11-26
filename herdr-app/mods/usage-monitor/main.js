@@ -182,8 +182,8 @@ export default class UsageMonitor extends View {
     return this.refreshTimer !== null || Date.now() - this.since < BUSY_MS;
   }
 
-  // --cached: whatever is cached, at once. No flag: refreshes when the cache is 3 minutes old.
-  // --refresh: asks the providers now.
+  // --cached: whatever is cached, at once. No flag: refreshes providers due under their adaptive
+  // activity-based TTL (3m active, 15m cooling, 60m dormant). --refresh: asks the providers now.
   async read(cx, args) {
     if (this.busy()) return;
     const startedAt = Date.now();

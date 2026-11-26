@@ -171,7 +171,9 @@ history across models.
     durations, and compact token formatting.
   - `bridge.js`: the provider code, prebuilt by `build.ts`. It
     prints `{report, summary, parts}` as JSON: `--cached` returns whatever's
-    cached, no flag refreshes a cache 3 minutes old, `--refresh` asks now.
+    cached, no flag refreshes providers due under their adaptive activity-based
+    TTL (3m active, 15m cooling, 60m dormant, or after a quota reset), and
+    `--refresh` asks now.
     `--history` prints `{burndowns, modelUsage}` with allowance runs for each
     limit's current window and timestamped model activity from SQLite.
     `--historical` prints pre-bucketed `D/W/M/Y` token & model analytics from

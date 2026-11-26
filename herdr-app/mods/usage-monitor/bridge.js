@@ -1,8 +1,8 @@
 // @bun
 // src/fetcher.ts
-import { existsSync as existsSync2, mkdirSync, writeFileSync as writeFileSync2 } from "fs";
-import { homedir as homedir2 } from "os";
-import { basename as basename2, join as join2 } from "path";
+import { existsSync as existsSync3, mkdirSync as mkdirSync2, writeFileSync as writeFileSync2 } from "fs";
+import { homedir as homedir4 } from "os";
+import { basename as basename3, join as join4 } from "path";
 
 // src/providers.ts
 import { Database } from "bun:sqlite";
@@ -768,449 +768,24 @@ async function fetchOtherProviders() {
   return [...cursor, ...copilot, ...grok, ...opencode];
 }
 
-// src/fetcher.ts
-var CACHE_DIR = process.env["HERDR_USAGE_CACHE_DIR"] ?? (process.env["XDG_CACHE_HOME"] ? join2(process.env["XDG_CACHE_HOME"], "herdr-usage-monitor") : join2(homedir2(), ".cache", "herdr-usage-monitor"));
-var CACHE_FILE = join2(CACHE_DIR, "herdr-usage-cache.json");
-var LEGACY_PARTIAL_CACHE_FILE = join2(CACHE_DIR, "herdr-usage-fast-cache.json");
-var AGY_CACHE_FILE = join2(CACHE_DIR, "herdr-agy-usage.json");
-var RATE_LIMITS_FILE = join2(CACHE_DIR, "rate-limits.json");
-async function getRateLimitsAsync() {
-  try {
-    const file = Bun.file(RATE_LIMITS_FILE);
-    if (await file.exists()) {
-      return JSON.parse(await file.text());
-    }
-  } catch {}
-  return {};
-}
-function agyReset(value) {
-  if (typeof value !== "string")
-    return null;
-  const time = Date.parse(value);
-  return Number.isFinite(time) && time > 0 ? value : null;
-}
-function money(minor, currency, decimals = 2) {
-  const symbol = currency === "GBP" ? "\xA3" : currency === "EUR" ? "\u20AC" : currency === "USD" ? "$" : `${currency} `;
-  return `${symbol}${(minor / Math.pow(10, decimals)).toFixed(decimals)}`;
-}
-var isoTime2 = (value) => typeof value === "string" && Number.isFinite(Date.parse(value)) ? value : null;
-function claudeLimitResets(body, now = Date.now()) {
-  const grants = Array.isArray(body?.cedar_ember?.grants) ? body.cedar_ember.grants : [];
-  return grants.filter((g) => typeof g?.resets_left === "number" && g.resets_left > 0).map((g) => ({
-    id: String(g.id ?? ""),
-    label: typeof g.label === "string" && g.label.trim() ? g.label.trim() : g.type === "full" ? "Full limit reset" : "Limit reset",
-    left: g.resets_left,
-    total: typeof g.resets_total === "number" ? Math.max(g.resets_total, g.resets_left) : g.resets_left,
-    expires_at: isoTime2(g.ends_at),
-    usable_now: g.usable_now !== false,
-    paused: g.paused === true,
-    needs_limit: g.use_requires_limit === true
-  })).filter((r) => !r.expires_at || Date.parse(r.expires_at) > now).sort((a, b) => (a.expires_at ? Date.parse(a.expires_at) : Infinity) - (b.expires_at ? Date.parse(b.expires_at) : Infinity));
-}
-function claudeCredits(body, now = Date.now()) {
-  if (typeof body?.amount !== "number")
-    return null;
-  const total = body.balance?.money;
-  const currency = total?.currency ?? body.currency ?? "USD";
-  const decimals = typeof total?.exponent === "number" ? total.exponent : 2;
-  const amount = typeof total?.amount_minor === "number" ? total.amount_minor : body.amount;
-  const tranches = [
-    ...Array.isArray(body.tranches) ? body.tranches : [],
-    ...Array.isArray(body.promo_tranches) ? body.promo_tranches : []
-  ];
-  const expiring = tranches.map((t) => ({ t, expires: isoTime2(t?.shown_expires_at) ?? isoTime2(t?.expires_at) })).filter(({ t, expires }) => typeof t?.remaining_amount_minor_units === "number" && t.remaining_amount_minor_units > 0 && expires && Date.parse(expires) > now).sort((a, b) => Date.parse(a.expires) - Date.parse(b.expires)).map(({ t, expires }) => ({
-    amount: money(t.remaining_amount_minor_units, t.currency ?? currency, decimals),
-    expires_at: expires,
-    ...typeof t.name === "string" && t.name.trim() ? { name: t.name.trim() } : {}
-  }));
-  if (amount <= 0 && expiring.length === 0)
-    return null;
-  return { balance: money(amount, currency, decimals), expiring };
-}
-var CREDITS_MAX_AGE_MS = 15 * 60000;
-function recentCredits(previous, account, now = Date.now()) {
-  if (previous?.account !== account || previous.credits === undefined)
-    return;
-  const at = previous.credits_read_at;
-  return typeof at === "number" && now - at < CREDITS_MAX_AGE_MS ? { credits: previous.credits, read_at: at } : undefined;
-}
-function saveRateLimits(state) {
-  try {
-    mkdirSync(CACHE_DIR, { recursive: true });
-    writeFileSync2(RATE_LIMITS_FILE, JSON.stringify(state));
-  } catch {}
-}
-async function readCacheFile(path, maxAgeMs) {
-  try {
-    let file = Bun.file(path);
-    if (!await file.exists()) {
-      const legacyPath = join2("/tmp", basename2(path));
-      const legacyFile = Bun.file(legacyPath);
-      if (await legacyFile.exists()) {
-        file = legacyFile;
-      }
-    }
-    if (await file.exists()) {
-      const data = JSON.parse(await file.text());
-      if (Date.now() - (data.timestamp || 0) < maxAgeMs) {
-        return data;
-      }
-    }
-  } catch {}
-  return null;
-}
-async function getCachedReport(maxAgeMs = 300000, options) {
-  const complete = await readCacheFile(CACHE_FILE, maxAgeMs);
-  if (!options?.allowPartial) {
-    return complete && !complete.partial ? complete : null;
-  }
-  const partial = await readCacheFile(LEGACY_PARTIAL_CACHE_FILE, maxAgeMs);
-  if (complete && partial) {
-    return complete.timestamp >= partial.timestamp ? complete : partial;
-  }
-  return complete ?? partial;
-}
-function saveCachedReport(report) {
-  try {
-    mkdirSync(CACHE_DIR, { recursive: true });
-    writeFileSync2(CACHE_FILE, JSON.stringify(report));
-  } catch {}
-}
-async function fetchDetailedReport() {
-  const report = {
-    timestamp: Date.now(),
-    others: []
-  };
-  const readAt = {};
-  const claudePromise = (async () => {
-    const limits = await getRateLimitsAsync();
-    if (limits.claudeUntil && Date.now() < limits.claudeUntil) {
-      return;
-    }
-    const claudeSignIns = await getClaudeSignIns().catch(() => []);
-    const s = claudeSignIns[0];
-    if (!s)
-      return;
-    const headers = {
-      authorization: `Bearer ${s.token}`,
-      accept: "application/json",
-      "anthropic-beta": "oauth-2025-04-20",
-      "user-agent": `claude-cli/${claudeCodeVersion()} (external, cli)`
-    };
-    const account = s.account?.label ?? "default";
-    const previous = (await getCachedReport(24 * 3600000, { allowPartial: true }))?.claude;
-    const recent = recentCredits(previous, account);
-    const org = s.account?.org;
-    const creditsPromise = recent || !org ? Promise.resolve(recent) : fetch(`https://api.anthropic.com/api/oauth/organizations/${encodeURIComponent(org)}/prepaid/credits`, {
-      headers,
-      signal: AbortSignal.timeout(3500)
-    }).then(async (r) => r.ok ? { credits: claudeCredits(await r.json()), read_at: Date.now() } : undefined).catch(() => {
-      return;
-    });
-    const res = await fetch("https://api.anthropic.com/api/oauth/usage?cedar_ember=1", {
-      headers,
-      signal: AbortSignal.timeout(3500)
-    }).catch(() => null);
-    if (!res)
-      return;
-    if (res.status === 429) {
-      const retryHeader = res.headers.get("retry-after");
-      const retrySec = retryHeader ? parseInt(retryHeader, 10) : NaN;
-      const cooldownMs = Number.isFinite(retrySec) && retrySec > 0 ? retrySec * 1000 : 300000;
-      saveRateLimits({ ...limits, claudeUntil: Date.now() + cooldownMs });
-      return;
-    }
-    if (!res.ok)
-      return;
-    if (limits.claudeUntil) {
-      delete limits.claudeUntil;
-      saveRateLimits(limits);
-    }
-    const body = await res.json();
-    const windows = [];
-    if (body.five_hour && body.five_hour.utilization != null) {
-      windows.push({ label: "5h session", used_percent: body.five_hour.utilization, resets_at: body.five_hour.resets_at });
-    }
-    if (body.seven_day && body.seven_day.utilization != null) {
-      windows.push({ label: "7d weekly", used_percent: body.seven_day.utilization, resets_at: body.seven_day.resets_at });
-    }
-    if (body.seven_day_opus && body.seven_day_opus.utilization != null) {
-      windows.push({ label: "7d Opus", used_percent: body.seven_day_opus.utilization, resets_at: body.seven_day_opus.resets_at });
-    }
-    if (body.seven_day_sonnet && body.seven_day_sonnet.utilization != null) {
-      windows.push({ label: "7d Sonnet", used_percent: body.seven_day_sonnet.utilization, resets_at: body.seven_day_sonnet.resets_at });
-    }
-    let extra_usage = null;
-    if (body.extra_usage?.is_enabled || body.spend?.enabled) {
-      const currency = body.extra_usage?.currency ?? body.spend?.used?.currency ?? "USD";
-      const decimals = body.extra_usage?.decimal_places ?? 2;
-      const usedMinor = body.spend?.used?.amount_minor ?? body.extra_usage?.used_credits ?? 0;
-      const limitMinor = body.spend?.limit?.amount_minor ?? body.extra_usage?.monthly_limit ?? 0;
-      const usedPct = body.extra_usage?.utilization ?? body.spend?.percent ?? 0;
-      extra_usage = {
-        used: money(usedMinor, currency, decimals),
-        limit: money(limitMinor, currency, decimals),
-        balance_left: money(Math.max(0, limitMinor - usedMinor), currency, decimals),
-        used_percent: usedPct
-      };
-    }
-    const credits = await creditsPromise;
-    readAt.claude = Date.now();
-    report.claude = {
-      account,
-      plan: s.plan ?? "pro",
-      windows,
-      extra_usage,
-      limit_resets: claudeLimitResets(body),
-      ...credits ? { credits: credits.credits, credits_read_at: credits.read_at } : {}
-    };
-  })().catch(() => {});
-  const codexPromise = (async () => {
-    const codexSignIns = await getCodexSignIns().catch(() => []);
-    const s = codexSignIns[0];
-    if (!s)
-      return;
-    const headers = {
-      authorization: `Bearer ${s.token}`,
-      accept: "application/json",
-      ...s.chatgptAccount ? { "chatgpt-account-id": s.chatgptAccount } : {}
-    };
-    const [usageRes, creditsRes] = await Promise.all([
-      fetch("https://chatgpt.com/backend-api/wham/usage", {
-        headers,
-        signal: AbortSignal.timeout(3500)
-      }),
-      fetch("https://chatgpt.com/backend-api/wham/rate-limit-reset-credits", {
-        headers,
-        signal: AbortSignal.timeout(3500)
-      }).catch(() => null)
-    ]);
-    if (!usageRes.ok)
-      return;
-    const body = await usageRes.json();
-    const creditsBody = creditsRes && creditsRes.ok ? await creditsRes.json() : null;
-    const rate = body.rate_limit ?? {};
-    const windows = [];
-    if (rate.primary_window && rate.primary_window.used_percent != null) {
-      const resetIso = rate.primary_window.reset_at ? new Date(rate.primary_window.reset_at * 1000).toISOString() : null;
-      windows.push({ label: "5h session", used_percent: rate.primary_window.used_percent, resets_at: resetIso });
-    }
-    if (rate.secondary_window && rate.secondary_window.used_percent != null) {
-      const resetIso = rate.secondary_window.reset_at ? new Date(rate.secondary_window.reset_at * 1000).toISOString() : null;
-      windows.push({ label: "Weekly", used_percent: rate.secondary_window.used_percent, resets_at: resetIso });
-    }
-    const availableResets = body.rate_limit_reset_credits?.available_count ?? 0;
-    const rawCredits = Array.isArray(creditsBody?.credits) ? creditsBody.credits : [];
-    const items = rawCredits.filter((c) => c.status === "available").map((c) => ({
-      id: c.id,
-      title: c.title ?? "Rate limit reset",
-      status: c.status,
-      granted_at: c.granted_at,
-      expires_at: c.expires_at,
-      description: c.description
-    })).sort((a, b) => Date.parse(a.expires_at) - Date.parse(b.expires_at));
-    readAt.codex = Date.now();
-    report.codex = {
-      account: s.account?.label ?? body.email ?? "default",
-      plan: s.plan ?? body.plan_type ?? "plus",
-      windows,
-      resets: {
-        available: availableResets,
-        items
-      }
-    };
-  })().catch(() => {});
-  const agyPromise = (async () => {
-    let agyData = null;
-    let agyReadAt = Date.now();
-    try {
-      let agyPath = AGY_CACHE_FILE;
-      if (!existsSync2(agyPath) && existsSync2("/tmp/herdr-agy-usage.json")) {
-        agyPath = "/tmp/herdr-agy-usage.json";
-      }
-      if (existsSync2(agyPath)) {
-        const stat = await Bun.file(agyPath).stat();
-        if (Date.now() - stat.mtimeMs < 120000) {
-          agyData = JSON.parse(await Bun.file(agyPath).text());
-          agyReadAt = stat.mtimeMs;
-        }
-      }
-    } catch {}
-    const agySignIns = await getAntigravitySignIns().catch(() => []);
-    const s = agySignIns[0];
-    const account = s?.account?.label ?? "default";
-    if (!agyData) {
-      const agyBin = resolveBinary("agy");
-      if (agyBin) {
-        try {
-          const child = Bun.spawn([agyBin, "-p", "/usage", "--output-format", "json"], {
-            stdout: "pipe",
-            stderr: "ignore"
-          });
-          const timer = setTimeout(() => {
-            try {
-              child.kill();
-            } catch {}
-          }, 4500);
-          const text = await new Response(child.stdout).text();
-          clearTimeout(timer);
-          if (await child.exited === 0 && text) {
-            const parsed = JSON.parse(text);
-            if (parsed.command?.data?.groups) {
-              agyData = parsed.command.data;
-              try {
-                mkdirSync(CACHE_DIR, { recursive: true });
-                writeFileSync2(AGY_CACHE_FILE, JSON.stringify(agyData));
-              } catch {}
-            }
-          }
-        } catch {}
-      }
-    }
-    if (agyData?.groups) {
-      const groups = agyData.groups.map((g) => {
-        const models = g.description?.startsWith("Models within this group:") ? g.description.replace(/^Models within this group:\s*/i, "") : undefined;
-        const buckets = (g.buckets ?? []).map((b) => {
-          const remFraction = b.remaining_fraction ?? b.remainingFraction ?? 0;
-          return {
-            label: b.name ?? (b.window === "5h" ? "5h limit" : b.window === "weekly" ? "Weekly limit" : "Limit"),
-            remaining_percent: Math.round(remFraction * 100),
-            resets_at: agyReset(b.reset_time ?? b.resetTime),
-            description: b.description
-          };
-        });
-        return {
-          name: g.name,
-          models,
-          buckets
-        };
-      });
-      readAt.antigravity = agyReadAt;
-      report.antigravity = {
-        account,
-        groups
-      };
-      return;
-    }
-    if (!s)
-      return;
-    const headers = {
-      authorization: `Bearer ${s.token}`,
-      accept: "application/json",
-      "content-type": "application/json",
-      "user-agent": "antigravity"
-    };
-    let res = await fetch("https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary", {
-      method: "POST",
-      headers,
-      body: "{}",
-      signal: AbortSignal.timeout(3000)
-    }).catch(() => null);
-    if (!res || !res.ok) {
-      res = await fetch("https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary", {
-        method: "POST",
-        headers,
-        body: "{}",
-        signal: AbortSignal.timeout(3000)
-      }).catch(() => null);
-    }
-    if (!res || !res.ok)
-      return;
-    const body = await res.json();
-    const rawGroups = body.groups ?? body.response?.groups;
-    const groupsRaw = Array.isArray(rawGroups) ? rawGroups : [];
-    const groups = groupsRaw.map((g) => ({
-      name: g.displayName ?? g.name ?? "Model group",
-      models: g.description?.replace(/^Models within this group:\s*/i, "") ?? "",
-      buckets: (g.buckets ?? []).map((b) => {
-        const bucketId = String(b.bucketId ?? "");
-        const is5h = b.window === "5h" || bucketId.endsWith("-5h");
-        const isWeekly = b.window === "weekly" || bucketId.endsWith("-weekly");
-        return {
-          label: is5h ? "5h limit" : isWeekly ? "Weekly limit" : b.displayName ?? b.name ?? "Limit",
-          remaining_percent: Math.round((b.remainingFraction ?? 0) * 100),
-          resets_at: agyReset(b.resetTime)
-        };
-      })
-    }));
-    if (groups.length > 0) {
-      readAt.antigravity = Date.now();
-      report.antigravity = {
-        account,
-        groups
-      };
-    }
-  })().catch(() => {});
-  const othersPromise = fetchOtherProviders().then((others) => {
-    report.others = others;
-    const now = Date.now();
-    for (const p of others)
-      readAt[p.id] = now;
-  }).catch(() => {});
-  await Promise.allSettled([claudePromise, codexPromise, agyPromise, othersPromise]);
-  try {
-    const prevComplete = await getCachedReport(24 * 3600000);
-    const prevAny = await getCachedReport(24 * 3600000, { allowPartial: true });
-    const carry = (id, from) => {
-      const t = from?.read_at?.[id];
-      if (t)
-        readAt[id] = t;
-    };
-    if (!report.claude) {
-      const from = prevAny?.claude ? prevAny : prevComplete;
-      report.claude = from?.claude;
-      carry("claude", from);
-    }
-    const prevClaude = prevAny?.claude ?? prevComplete?.claude;
-    if (report.claude && report.claude.credits === undefined && prevClaude?.account === report.claude.account) {
-      report.claude.credits = prevClaude.credits;
-      report.claude.credits_read_at = prevClaude.credits_read_at;
-    }
-    if (!report.codex) {
-      const from = prevComplete?.codex ? prevComplete : prevAny;
-      report.codex = from?.codex;
-      carry("codex", from);
-    }
-    if (!report.antigravity) {
-      const from = prevComplete?.antigravity ? prevComplete : prevAny;
-      report.antigravity = from?.antigravity;
-      carry("antigravity", from);
-    }
-    if (report.others.length === 0) {
-      const from = prevComplete?.others?.length ? prevComplete : prevAny?.others?.length ? prevAny : null;
-      if (from) {
-        report.others = from.others;
-        for (const p of from.others)
-          carry(p.id, from);
-      }
-    }
-    if (report.codex && report.codex.resets.available > 0 && report.codex.resets.items.length === 0 && prevComplete?.codex?.account === report.codex.account && prevComplete.codex.resets.items.length > 0) {
-      const now = Date.now();
-      report.codex.resets.items = prevComplete.codex.resets.items.filter((item) => {
-        const exp = Date.parse(item.expires_at);
-        return !Number.isFinite(exp) || exp > now;
-      }).slice(0, report.codex.resets.available);
-    }
-  } catch {}
-  report.read_at = readAt;
-  saveCachedReport(report);
-  return report;
-}
-
-// src/history/historical.ts
-import { existsSync as existsSync3 } from "fs";
+// src/history/model-usage.ts
+import { createHash as createHash2 } from "crypto";
+import { existsSync as existsSync2 } from "fs";
+import { readdir, stat } from "fs/promises";
+import { homedir as homedir3 } from "os";
+import { basename as basename2, dirname as dirname3, join as join3, resolve } from "path";
 
 // src/history/db.ts
 import { Database as Database2 } from "bun:sqlite";
-import { closeSync as closeSync2, mkdirSync as mkdirSync2, openSync as openSync2 } from "fs";
-import { homedir as homedir3 } from "os";
-import { dirname as dirname2, join as join3 } from "path";
+import { closeSync as closeSync2, mkdirSync, openSync as openSync2 } from "fs";
+import { homedir as homedir2 } from "os";
+import { dirname as dirname2, join as join2 } from "path";
 var SCHEMA_VERSION = 2;
 function historyFile() {
   if (process.env.HERDR_USAGE_HISTORY_FILE)
     return process.env.HERDR_USAGE_HISTORY_FILE;
-  const data = process.env.XDG_DATA_HOME || join3(homedir3(), ".local", "share");
-  return join3(data, "herdr-usage-monitor", "history.sqlite");
+  const data = process.env.XDG_DATA_HOME || join2(homedir2(), ".local", "share");
+  return join2(data, "herdr-usage-monitor", "history.sqlite");
 }
 function tableColumns(db, table) {
   const rows = db.query(`PRAGMA table_info(${table})`).all();
@@ -1303,7 +878,7 @@ function enableWal(db) {
 var schemaVersion = (db) => db.query("PRAGMA user_version").get()?.user_version ?? 0;
 function openHistoryDatabase(file, readonly = false) {
   if (!readonly) {
-    mkdirSync2(dirname2(file), { recursive: true, mode: 448 });
+    mkdirSync(dirname2(file), { recursive: true, mode: 448 });
     closeSync2(openSync2(file, "a", 384));
   }
   const db = new Database2(file, readonly ? { readonly: true } : { readwrite: true });
@@ -1328,925 +903,28 @@ function openHistoryDatabase(file, readonly = false) {
   }
 }
 
-// src/history/historical.ts
-var MONTHS_SHORT = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-var MONTHS_LONG = [
-  "January",
-  "February",
-  "March",
-  "April",
-  "May",
-  "June",
-  "July",
-  "August",
-  "September",
-  "October",
-  "November",
-  "December"
-];
-var WEEKDAYS_SHORT = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-var PROVIDER_NAMES = {
-  claude: "Claude Code",
-  codex: "Codex",
-  antigravity: "Antigravity",
-  opencode: "OpenCode",
-  pi: "Pi"
-};
-var TOP_SERIES_LIMIT = 7;
-var LEADERBOARD_LIMIT = 10;
-var FACET_MODEL_LIMIT = 250;
-var round1 = (value) => Math.round(value * 10) / 10;
-function providerDisplay(id) {
-  return PROVIDER_NAMES[id] ?? id;
-}
-function cleanFilter(value) {
-  const trimmed = String(value ?? "").trim();
-  if (!trimmed || trimmed.toLowerCase() === "all" || trimmed === "*")
-    return "all";
-  return trimmed;
-}
-function parseHorizon(value) {
-  const v = String(value ?? "").toLowerCase();
-  return v === "d" || v === "w" || v === "m" || v === "y" ? v : "m";
-}
-function formatHourShort(hour) {
-  if (hour === 0)
-    return "12a";
-  if (hour < 12)
-    return `${hour}a`;
-  if (hour === 12)
-    return "12p";
-  return `${hour - 12}p`;
-}
-function formatHourClock(hour) {
-  const h = (hour % 24 + 24) % 24;
-  return `${h % 12 || 12}:00 ${h < 12 ? "AM" : "PM"}`;
-}
-function formatShortDate(date, includeYear = false) {
-  const base = `${MONTHS_SHORT[date.getMonth()]} ${date.getDate()}`;
-  return includeYear ? `${base}, ${date.getFullYear()}` : base;
-}
-function daysInMonth(year, monthIndex) {
-  return new Date(year, monthIndex + 1, 0).getDate();
-}
-function buildHorizonWindow(horizon, offset, now) {
-  const safeOffset = Number.isFinite(offset) ? Math.min(0, Math.trunc(offset)) : 0;
-  const current = new Date(now);
-  const curY = current.getFullYear();
-  const curM = current.getMonth();
-  const curD = current.getDate();
-  if (horizon === "d") {
-    const target = new Date(curY, curM, curD + safeOffset, 0, 0, 0, 0);
-    const tY = target.getFullYear();
-    const tM = target.getMonth();
-    const tD = target.getDate();
-    const startMs = target.getTime();
-    const endMs = new Date(tY, tM, tD + 1, 0, 0, 0, 0).getTime();
-    const prevStart = new Date(tY, tM, tD - 1, 0, 0, 0, 0);
-    const prevStartMs = prevStart.getTime();
-    const prevEndMs = safeOffset === 0 ? Math.min(startMs, prevStartMs + Math.max(0, now - startMs)) : startMs;
-    const dateTag = formatShortDate(target, tY !== curY);
-    const label = safeOffset === 0 ? `Today \xB7 ${dateTag}` : safeOffset === -1 ? `Yesterday \xB7 ${dateTag}` : `${WEEKDAYS_SHORT[target.getDay()]}, ${formatShortDate(target, true)}`;
-    const buckets = [];
-    for (let h = 0;h < 24; h += 1) {
-      const bStart = new Date(tY, tM, tD, h, 0, 0, 0).getTime();
-      const bEnd = h === 23 ? endMs : new Date(tY, tM, tD, h + 1, 0, 0, 0).getTime();
-      buckets.push({
-        startMs: bStart,
-        endMs: bEnd,
-        label: `${dateTag} \xB7 ${formatHourClock(h)}\u2013${formatHourClock(h + 1)}`,
-        axisLabel: h % 4 === 0 ? formatHourShort(h) : ""
-      });
-    }
-    return { startMs, endMs, prevStartMs, prevEndMs, label, unitSummary: "24 hours", buckets };
-  }
-  if (horizon === "w") {
-    const dow = (current.getDay() + 6) % 7;
-    const monday = new Date(curY, curM, curD - dow + safeOffset * 7, 0, 0, 0, 0);
-    const mY = monday.getFullYear();
-    const mM = monday.getMonth();
-    const mD = monday.getDate();
-    const startMs = monday.getTime();
-    const endMs = new Date(mY, mM, mD + 7, 0, 0, 0, 0).getTime();
-    const sunday = new Date(mY, mM, mD + 6, 0, 0, 0, 0);
-    const prevStartMs = new Date(mY, mM, mD - 7, 0, 0, 0, 0).getTime();
-    const prevEndMs = safeOffset === 0 ? Math.min(startMs, prevStartMs + Math.max(0, now - startMs)) : startMs;
-    const crossYear = monday.getFullYear() !== sunday.getFullYear();
-    const showYear = monday.getFullYear() !== curY || crossYear;
-    const span = `${formatShortDate(monday, crossYear)} \u2013 ${formatShortDate(sunday, showYear)}`;
-    const label = safeOffset === 0 ? `This week \xB7 ${span}` : span;
-    const buckets = [];
-    for (let i = 0;i < 7; i += 1) {
-      const day = new Date(mY, mM, mD + i, 0, 0, 0, 0);
-      const bStart = day.getTime();
-      const bEnd = new Date(mY, mM, mD + i + 1, 0, 0, 0, 0).getTime();
-      buckets.push({
-        startMs: bStart,
-        endMs: bEnd,
-        label: `${WEEKDAYS_SHORT[day.getDay()]}, ${formatShortDate(day, day.getFullYear() !== curY)}`,
-        axisLabel: `${WEEKDAYS_SHORT[day.getDay()]} ${day.getDate()}`
-      });
-    }
-    return { startMs, endMs, prevStartMs, prevEndMs, label, unitSummary: "7 days", buckets };
-  }
-  if (horizon === "m") {
-    const first = new Date(curY, curM + safeOffset, 1, 0, 0, 0, 0);
-    const fY = first.getFullYear();
-    const fM = first.getMonth();
-    const count = daysInMonth(fY, fM);
-    const startMs = first.getTime();
-    const endMs = new Date(fY, fM + 1, 1, 0, 0, 0, 0).getTime();
-    const prevFirst = new Date(fY, fM - 1, 1, 0, 0, 0, 0);
-    const prevStartMs = prevFirst.getTime();
-    let prevEndMs = startMs;
-    if (safeOffset === 0) {
-      const prevDays = daysInMonth(prevFirst.getFullYear(), prevFirst.getMonth());
-      const clampedDay = Math.min(curD, prevDays);
-      const prevSameMoment = new Date(prevFirst.getFullYear(), prevFirst.getMonth(), clampedDay, current.getHours(), current.getMinutes(), current.getSeconds(), current.getMilliseconds()).getTime();
-      prevEndMs = Math.min(startMs, prevSameMoment);
-    }
-    const label = `${MONTHS_LONG[fM]} ${fY}`;
-    const buckets = [];
-    for (let d = 1;d <= count; d += 1) {
-      const day = new Date(fY, fM, d, 0, 0, 0, 0);
-      const bStart = day.getTime();
-      const bEnd = new Date(fY, fM, d + 1, 0, 0, 0, 0).getTime();
-      const showTick = d === 1 || d % 5 === 1 && count - d >= 2;
-      buckets.push({
-        startMs: bStart,
-        endMs: bEnd,
-        label: `${WEEKDAYS_SHORT[day.getDay()]}, ${formatShortDate(day, fY !== curY)}`,
-        axisLabel: showTick ? `${MONTHS_SHORT[fM]} ${d}` : ""
-      });
-    }
-    return { startMs, endMs, prevStartMs, prevEndMs, label, unitSummary: `${count} days`, buckets };
-  }
-  const targetYear = curY + safeOffset;
-  const startMs = new Date(targetYear, 0, 1, 0, 0, 0, 0).getTime();
-  const endMs = new Date(targetYear + 1, 0, 1, 0, 0, 0, 0).getTime();
-  const prevStartMs = new Date(targetYear - 1, 0, 1, 0, 0, 0, 0).getTime();
-  let prevEndMs = startMs;
-  if (safeOffset === 0) {
-    const clampedDay = Math.min(curD, daysInMonth(targetYear - 1, curM));
-    const prevSameMoment = new Date(targetYear - 1, curM, clampedDay, current.getHours(), current.getMinutes(), current.getSeconds(), current.getMilliseconds()).getTime();
-    prevEndMs = Math.min(startMs, prevSameMoment);
-  }
-  const buckets = [];
-  let lastLabeledMonth = -1;
-  for (let w = 0;w < 52; w += 1) {
-    const bStartDate = new Date(targetYear, 0, 1 + w * 7, 0, 0, 0, 0);
-    const bEndDate = w === 51 ? new Date(targetYear + 1, 0, 1, 0, 0, 0, 0) : new Date(targetYear, 0, 1 + (w + 1) * 7, 0, 0, 0, 0);
-    const lastDay = new Date(bEndDate.getTime() - 1);
-    const month = bStartDate.getMonth();
-    const axisLabel = month !== lastLabeledMonth ? MONTHS_SHORT[month] : "";
-    lastLabeledMonth = month;
-    buckets.push({
-      startMs: bStartDate.getTime(),
-      endMs: bEndDate.getTime(),
-      label: `${formatShortDate(bStartDate)} \u2013 ${formatShortDate(lastDay, true)}`,
-      axisLabel
-    });
-  }
-  return {
-    startMs,
-    endMs,
-    prevStartMs,
-    prevEndMs,
-    label: String(targetYear),
-    unitSummary: "52 weeks",
-    buckets
-  };
-}
-function compareChange(current, previous) {
-  if (previous === null)
-    return { deltaPct: null, deltaKind: "none" };
-  if (previous === 0) {
-    if (current === 0)
-      return { deltaPct: 0, deltaKind: "flat" };
-    return { deltaPct: null, deltaKind: "new" };
-  }
-  const pct = round1((current - previous) / previous * 100);
-  if (pct === 0)
-    return { deltaPct: 0, deltaKind: "flat" };
-  return { deltaPct: pct, deltaKind: pct > 0 ? "up" : "down" };
-}
-function tokenSum(row, includeCache) {
-  return row.input_tokens + row.output_tokens + (includeCache ? row.cache_read_tokens + row.cache_write_tokens : 0);
-}
-function bucketIndexFor(buckets, timestamp) {
-  let lo = 0;
-  let hi = buckets.length - 1;
-  while (lo <= hi) {
-    const mid = lo + hi >> 1;
-    const b = buckets[mid];
-    if (timestamp < b.startMs)
-      hi = mid - 1;
-    else if (timestamp >= b.endMs)
-      lo = mid + 1;
-    else
-      return mid;
-  }
-  return -1;
-}
-function emptyPayload(horizon, offset, includeCache, filters, win, now, backfill = { pendingFiles: 0, totalFiles: 0 }) {
-  return {
-    version: 1,
-    horizon,
-    offset,
-    includeCache,
-    filters,
-    latestActivityMs: null,
-    range: {
-      startMs: win.startMs,
-      endMs: win.endMs,
-      elapsedEndMs: Math.min(now, win.endMs),
-      label: win.label,
-      subtitle: `${win.unitSummary} \xB7 ${includeCache ? "cache included" : "cache excluded"}`,
-      hasNext: offset < 0
-    },
-    summary: {
-      totalTokens: 0,
-      prevTotalTokens: null,
-      deltaPct: null,
-      deltaKind: "none",
-      inputTokens: 0,
-      outputTokens: 0,
-      cacheReadTokens: 0,
-      cacheWriteTokens: 0,
-      reasoningTokens: 0,
-      cacheHitRate: null,
-      sessions: 0,
-      events: 0,
-      unmeasuredEvents: 0,
-      topModel: null,
-      peakBucket: null
-    },
-    series: {
-      models: [],
-      maxBucketTotal: 0,
-      maxModelBucket: 0,
-      maxCumulativeTotal: 0,
-      maxModelCumulative: 0,
-      buckets: win.buckets.map((spec) => ({
-        startMs: spec.startMs,
-        endMs: spec.endMs,
-        label: spec.label,
-        axisLabel: spec.axisLabel,
-        future: spec.startMs > now,
-        total: 0,
-        cumulativeTotal: 0,
-        input: 0,
-        output: 0,
-        cacheRead: 0,
-        cacheWrite: 0,
-        events: 0,
-        byModel: {},
-        cumulativeByModel: {}
-      }))
-    },
-    leaderboard: { totalModels: 0, entries: [] },
-    facets: { providers: [], models: [] },
-    backfill
-  };
-}
-function readHistorical(options = {}, file = historyFile(), backfill = { pendingFiles: 0, totalFiles: 0 }) {
-  const now = options.now ?? Date.now();
-  const horizon = parseHorizon(options.horizon);
-  const offset = Number.isFinite(options.offset) ? Math.min(0, Math.trunc(options.offset)) : 0;
-  const includeCache = options.includeCache !== false;
-  const providerFilter = cleanFilter(options.provider);
-  const modelFilter = cleanFilter(options.model);
-  const filters = { provider: providerFilter, model: modelFilter };
-  const win = buildHorizonWindow(horizon, offset, now);
-  if (!existsSync3(file)) {
-    return emptyPayload(horizon, offset, includeCache, filters, win, now, backfill);
-  }
-  const db = openHistoryDatabase(file, true);
-  try {
-    if (!db.query("SELECT 1 FROM sqlite_schema WHERE name = 'model_usage'").get()) {
-      return emptyPayload(horizon, offset, includeCache, filters, win, now, backfill);
-    }
-    const cols = new Set(db.query("PRAGMA table_info(model_usage)").all().map((c) => c.name));
-    if (!cols.has("input_tokens")) {
-      const legacyCount = db.query("SELECT COUNT(*) AS c FROM model_usage WHERE observed_at >= ? AND observed_at < ?").get(win.startMs, win.endMs)?.c ?? 0;
-      const result = emptyPayload(horizon, offset, includeCache, filters, win, now, backfill);
-      result.summary.unmeasuredEvents = legacyCount;
-      return result;
-    }
-    const whereParts = ["observed_at >= ?", "observed_at < ?"];
-    const params = [win.startMs, win.endMs];
-    if (providerFilter !== "all") {
-      whereParts.push("provider = ?");
-      params.push(providerFilter);
-    }
-    if (modelFilter !== "all") {
-      whereParts.push("model = ?");
-      params.push(modelFilter);
-    }
-    const rows = db.query(`
-      SELECT provider, observed_at, model, effort, session_id, source_kind,
-             input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, reasoning_tokens
-      FROM model_usage
-      WHERE ${whereParts.join(" AND ")}
-      ORDER BY observed_at
-    `).all(...params);
-    const prevWhereParts = ["observed_at >= ?", "observed_at < ?", "input_tokens IS NOT NULL"];
-    const prevParams = [win.prevStartMs, win.prevEndMs];
-    if (providerFilter !== "all") {
-      prevWhereParts.push("provider = ?");
-      prevParams.push(providerFilter);
-    }
-    if (modelFilter !== "all") {
-      prevWhereParts.push("model = ?");
-      prevParams.push(modelFilter);
-    }
-    const prevRows = db.query(`
-      SELECT model,
-             SUM(COALESCE(input_tokens, 0)) AS input_tokens,
-             SUM(COALESCE(output_tokens, 0)) AS output_tokens,
-             SUM(COALESCE(cache_read_tokens, 0)) AS cache_read_tokens,
-             SUM(COALESCE(cache_write_tokens, 0)) AS cache_write_tokens
-      FROM model_usage
-      WHERE ${prevWhereParts.join(" AND ")}
-      GROUP BY model
-    `).all(...prevParams);
-    const prevByModel = new Map;
-    let prevTotalTokens = 0;
-    for (const row of prevRows) {
-      const sum = tokenSum(row, includeCache);
-      prevByModel.set(row.model, sum);
-      prevTotalTokens += sum;
-    }
-    const earliestMeasured = db.query("SELECT MIN(observed_at) AS earliest, MAX(observed_at) AS latest FROM model_usage WHERE input_tokens IS NOT NULL").get();
-    const hasPrevHistory = earliestMeasured?.earliest != null && earliestMeasured.earliest < win.prevEndMs;
-    const latestActivityMs = earliestMeasured?.latest ?? null;
-    const allKnownProviders = db.query("SELECT DISTINCT provider FROM model_usage WHERE input_tokens IS NOT NULL ORDER BY provider").all().map((r) => r.provider);
-    const windowFacetRows = db.query(`
-      SELECT provider, model,
-             SUM(COALESCE(input_tokens, 0)) AS input_tokens,
-             SUM(COALESCE(output_tokens, 0)) AS output_tokens,
-             SUM(COALESCE(cache_read_tokens, 0)) AS cache_read_tokens,
-             SUM(COALESCE(cache_write_tokens, 0)) AS cache_write_tokens,
-             COUNT(DISTINCT session_id) AS sessions
-      FROM model_usage
-      WHERE observed_at >= ? AND observed_at < ? AND input_tokens IS NOT NULL
-      GROUP BY provider, model
-    `).all(win.startMs, win.endMs);
-    const providerFacetMap = new Map;
-    for (const p of allKnownProviders)
-      providerFacetMap.set(p, { tokens: 0, sessions: 0 });
-    const modelFacetMap = new Map;
-    for (const r of windowFacetRows) {
-      const tokens = tokenSum(r, includeCache);
-      if (modelFilter === "all" || r.model === modelFilter) {
-        const entry = providerFacetMap.get(r.provider) ?? { tokens: 0, sessions: 0 };
-        entry.tokens += tokens;
-        entry.sessions += r.sessions;
-        providerFacetMap.set(r.provider, entry);
-      }
-      if (providerFilter === "all" || r.provider === providerFilter) {
-        const entry = modelFacetMap.get(r.model) ?? { tokens: 0, sessions: 0 };
-        entry.tokens += tokens;
-        entry.sessions += r.sessions;
-        modelFacetMap.set(r.model, entry);
-      }
-    }
-    if (providerFilter !== "all" && !providerFacetMap.has(providerFilter)) {
-      providerFacetMap.set(providerFilter, { tokens: 0, sessions: 0 });
-    }
-    if (modelFilter !== "all" && !modelFacetMap.has(modelFilter)) {
-      modelFacetMap.set(modelFilter, { tokens: 0, sessions: 0 });
-    }
-    const providerFacets = [...providerFacetMap.entries()].map(([value, stat]) => ({ value, label: providerDisplay(value), tokens: stat.tokens, sessions: stat.sessions })).sort((a, b) => b.tokens - a.tokens || a.label.localeCompare(b.label));
-    const allModelFacets = [...modelFacetMap.entries()].map(([value, stat]) => ({ value, tokens: stat.tokens, sessions: stat.sessions })).sort((a, b) => b.tokens - a.tokens || a.value.localeCompare(b.value));
-    const modelFacets = allModelFacets.slice(0, FACET_MODEL_LIMIT);
-    if (modelFilter !== "all" && !modelFacets.some((m) => m.value === modelFilter)) {
-      const selected = allModelFacets.find((m) => m.value === modelFilter);
-      if (selected) {
-        if (modelFacets.length >= FACET_MODEL_LIMIT)
-          modelFacets.pop();
-        modelFacets.push(selected);
-      }
-    }
-    const bucketAccum = win.buckets.map((spec) => ({
-      spec,
-      total: 0,
-      input: 0,
-      output: 0,
-      cacheRead: 0,
-      cacheWrite: 0,
-      events: 0,
-      byModel: new Map
-    }));
-    const modelGroups = new Map;
-    const allSessions = new Set;
-    let totalTokens = 0;
-    let inputTokens = 0;
-    let outputTokens = 0;
-    let cacheReadTokens = 0;
-    let cacheWriteTokens = 0;
-    let reasoningTokens = 0;
-    let events = 0;
-    let unmeasuredEvents = 0;
-    for (const row of rows) {
-      if (row.input_tokens === null) {
-        if (row.source_kind === null)
-          unmeasuredEvents += 1;
-        continue;
-      }
-      const input = row.input_tokens ?? 0;
-      const output = row.output_tokens ?? 0;
-      const cacheRead = row.cache_read_tokens ?? 0;
-      const cacheWrite = row.cache_write_tokens ?? 0;
-      const reasoning = row.reasoning_tokens ?? 0;
-      const tokens = input + output + (includeCache ? cacheRead + cacheWrite : 0);
-      totalTokens += tokens;
-      inputTokens += input;
-      outputTokens += output;
-      cacheReadTokens += cacheRead;
-      cacheWriteTokens += cacheWrite;
-      reasoningTokens += reasoning;
-      events += 1;
-      if (row.session_id)
-        allSessions.add(row.session_id);
-      let group = modelGroups.get(row.model);
-      if (!group) {
-        group = {
-          model: row.model,
-          tokens: 0,
-          input: 0,
-          output: 0,
-          cacheRead: 0,
-          cacheWrite: 0,
-          reasoning: 0,
-          events: 0,
-          sessions: new Set,
-          providers: new Map,
-          efforts: new Map
-        };
-        modelGroups.set(row.model, group);
-      }
-      group.tokens += tokens;
-      group.input += input;
-      group.output += output;
-      group.cacheRead += cacheRead;
-      group.cacheWrite += cacheWrite;
-      group.reasoning += reasoning;
-      group.events += 1;
-      if (row.session_id)
-        group.sessions.add(row.session_id);
-      group.providers.set(row.provider, (group.providers.get(row.provider) ?? 0) + Math.max(tokens, 1));
-      if (row.effort) {
-        group.efforts.set(row.effort, (group.efforts.get(row.effort) ?? 0) + Math.max(tokens, 1));
-      }
-      const idx = bucketIndexFor(win.buckets, row.observed_at);
-      if (idx >= 0) {
-        const b = bucketAccum[idx];
-        b.total += tokens;
-        b.input += input;
-        b.output += output;
-        b.cacheRead += cacheRead;
-        b.cacheWrite += cacheWrite;
-        b.events += 1;
-        if (tokens > 0) {
-          b.byModel.set(row.model, (b.byModel.get(row.model) ?? 0) + tokens);
-        }
-      }
-    }
-    const sortedGroups = [...modelGroups.values()].sort((a, b) => b.tokens - a.tokens || b.events - a.events || a.model.localeCompare(b.model));
-    const topModels = sortedGroups.filter((g) => g.tokens > 0).slice(0, TOP_SERIES_LIMIT).map((g) => g.model);
-    const keepSet = new Set(topModels);
-    let hasOther = false;
-    for (const b of bucketAccum) {
-      for (const [m, t] of b.byModel) {
-        if (t > 0 && !keepSet.has(m)) {
-          hasOther = true;
-          break;
-        }
-      }
-      if (hasOther)
-        break;
-    }
-    const seriesModels = hasOther ? [...topModels, "Other"] : topModels;
-    let runningTotal = 0;
-    const runningByModel = new Map;
-    let maxBucketTotal = 0;
-    let maxModelBucket = 0;
-    let maxCumulativeTotal = 0;
-    let maxModelCumulative = 0;
-    let peakBucket = null;
-    const buckets = bucketAccum.map((b) => {
-      const future = b.spec.startMs > now;
-      const byModel = {};
-      let other = 0;
-      for (const name of topModels) {
-        const val = b.byModel.get(name) ?? 0;
-        if (val > 0) {
-          byModel[name] = val;
-          if (val > maxModelBucket)
-            maxModelBucket = val;
-        }
-      }
-      for (const [name, val] of b.byModel) {
-        if (!keepSet.has(name))
-          other += val;
-      }
-      if (other > 0) {
-        byModel.Other = other;
-        if (other > maxModelBucket)
-          maxModelBucket = other;
-      }
-      if (!future) {
-        runningTotal += b.total;
-        if (runningTotal > maxCumulativeTotal)
-          maxCumulativeTotal = runningTotal;
-        for (const name of seriesModels) {
-          const next = (runningByModel.get(name) ?? 0) + (byModel[name] ?? 0);
-          runningByModel.set(name, next);
-          if (next > maxModelCumulative)
-            maxModelCumulative = next;
-        }
-      }
-      const cumulativeByModel = {};
-      if (!future) {
-        for (const name of seriesModels) {
-          const val = runningByModel.get(name) ?? 0;
-          if (val > 0)
-            cumulativeByModel[name] = val;
-        }
-      }
-      if (b.total > maxBucketTotal)
-        maxBucketTotal = b.total;
-      if (b.total > 0 && (!peakBucket || b.total > peakBucket.tokens)) {
-        peakBucket = { label: b.spec.label, tokens: b.total };
-      }
-      return {
-        startMs: b.spec.startMs,
-        endMs: b.spec.endMs,
-        label: b.spec.label,
-        axisLabel: b.spec.axisLabel,
-        future,
-        total: b.total,
-        cumulativeTotal: future ? 0 : runningTotal,
-        input: b.input,
-        output: b.output,
-        cacheRead: b.cacheRead,
-        cacheWrite: b.cacheWrite,
-        events: b.events,
-        byModel,
-        cumulativeByModel
-      };
-    });
-    const leaderboardEntries = sortedGroups.slice(0, LEADERBOARD_LIMIT).map((g, i) => {
-      const providersSorted = [...g.providers.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
-      const primaryProvider = providersSorted[0]?.[0] ?? "unknown";
-      const prevTokens = hasPrevHistory ? prevByModel.get(g.model) ?? 0 : null;
-      const change = compareChange(g.tokens, prevTokens);
-      const effortSum = [...g.efforts.values()].reduce((acc, v) => acc + v, 0);
-      const efforts = effortSum > 0 ? [...g.efforts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([effort, weight]) => ({ effort, sharePct: round1(weight / effortSum * 100) })) : [];
-      return {
-        rank: i + 1,
-        model: g.model,
-        provider: primaryProvider,
-        providers: providersSorted.map(([p]) => p),
-        tokens: g.tokens,
-        input: g.input,
-        output: g.output,
-        cacheRead: g.cacheRead,
-        cacheWrite: g.cacheWrite,
-        reasoning: g.reasoning,
-        sessions: g.sessions.size,
-        events: g.events,
-        sharePct: totalTokens > 0 ? round1(g.tokens / totalTokens * 100) : 0,
-        prevTokens,
-        deltaPct: change.deltaPct,
-        deltaKind: change.deltaKind,
-        efforts
-      };
-    });
-    const summaryPrev = hasPrevHistory ? prevTotalTokens : null;
-    const summaryChange = compareChange(totalTokens, summaryPrev);
-    const inputSide = inputTokens + cacheReadTokens + cacheWriteTokens;
-    const cacheHitRate = inputSide > 0 ? round1(cacheReadTokens / inputSide * 100) : null;
-    const topEntry = leaderboardEntries[0] ?? null;
-    return {
-      version: 1,
-      horizon,
-      offset,
-      includeCache,
-      filters,
-      latestActivityMs,
-      range: {
-        startMs: win.startMs,
-        endMs: win.endMs,
-        elapsedEndMs: Math.min(now, win.endMs),
-        label: win.label,
-        subtitle: `${win.unitSummary} \xB7 ${includeCache ? "cache included" : "cache excluded"}`,
-        hasNext: offset < 0
-      },
-      summary: {
-        totalTokens,
-        prevTotalTokens: summaryPrev,
-        deltaPct: summaryChange.deltaPct,
-        deltaKind: summaryChange.deltaKind,
-        inputTokens,
-        outputTokens,
-        cacheReadTokens,
-        cacheWriteTokens,
-        reasoningTokens,
-        cacheHitRate,
-        sessions: allSessions.size,
-        events,
-        unmeasuredEvents,
-        topModel: topEntry ? { model: topEntry.model, provider: topEntry.provider, tokens: topEntry.tokens, sharePct: topEntry.sharePct } : null,
-        peakBucket
-      },
-      series: {
-        models: seriesModels,
-        maxBucketTotal,
-        maxModelBucket,
-        maxCumulativeTotal,
-        maxModelCumulative,
-        buckets
-      },
-      leaderboard: {
-        totalModels: sortedGroups.length,
-        entries: leaderboardEntries
-      },
-      facets: {
-        providers: providerFacets,
-        models: modelFacets
-      },
-      backfill
-    };
-  } finally {
-    db.close();
-  }
-}
-
-// src/history/burndown.ts
-import { existsSync as existsSync4 } from "fs";
-import { createHash as createHash2 } from "crypto";
-
-// herdr-app/mods/usage-monitor/time.js
-var STALE_MS = 5 * 60000;
-
-// herdr-app/mods/usage-monitor/pace.js
-var HOUR = 3600000;
-var DAY = 24 * HOUR;
-var CREDIT_SOON = 3 * DAY;
-function windowLength(text) {
-  const s = String(text ?? "").toLowerCase();
-  if (/\b5\s*h\b|five[\s-]hour/.test(s))
-    return 5 * HOUR;
-  if (/\b7\s*d\b|week/.test(s))
-    return 7 * DAY;
-  if (/\b24\s*h\b|\bday\b|daily/.test(s))
-    return DAY;
-  if (/month/.test(s))
-    return 30 * DAY;
-  return null;
-}
-var WEEK = 7 * DAY;
-
-// src/history/burndown.ts
-var MINUTE = 60000;
-var HOUR2 = 60 * MINUTE;
-var DAY2 = 24 * HOUR2;
-var WEEK2 = 7 * DAY2;
-var BUCKETS = 180;
-var round = (value) => Math.round(value * 10) / 10;
-function accountId(account) {
-  return account ? createHash2("sha256").update(account).digest("hex").slice(0, 10) : undefined;
-}
-function accountNames(report) {
-  const names = new Map;
-  for (const provider of [report?.claude, report?.codex, report?.antigravity, ...report?.others ?? []]) {
-    const id = accountId(provider?.account);
-    if (id)
-      names.set(id, provider.account);
-  }
-  return names;
-}
-function labelAccounts(charts, names) {
-  const accounts = new Map;
-  for (const b of charts) {
-    if (!accounts.has(b.provider))
-      accounts.set(b.provider, new Set);
-    accounts.get(b.provider).add(b.account);
-  }
-  return charts.map((b) => {
-    if ((accounts.get(b.provider)?.size ?? 0) < 2)
-      return b;
-    return { ...b, accountLabel: b.account && names.get(b.account) || "Another account" };
-  });
-}
-function samplesFrom(report) {
-  const samples = [];
-  const add = (p, account, sample) => {
-    const a = accountId(account);
-    samples.push({ p, ...a ? { a } : {}, ...sample });
-  };
-  for (const [id, provider] of [["claude", report.claude], ["codex", report.codex]]) {
-    for (const w of provider?.windows ?? []) {
-      add(id, provider.account, { w: w.label, left: round(100 - w.used_percent), reset: w.resets_at ?? null });
-    }
-  }
-  for (const group of report.antigravity?.groups ?? []) {
-    for (const b of group.buckets ?? []) {
-      add("antigravity", report.antigravity.account, { g: group.name, w: b.label, left: round(b.remaining_percent), reset: b.resets_at ?? null });
-    }
-  }
-  for (const provider of report.others ?? []) {
-    for (const w of provider.windows ?? []) {
-      add(provider.id, provider.account, {
-        ...w.scope ? { g: w.scope } : {},
-        w: w.kind,
-        left: round(100 - w.used_percent),
-        reset: w.resets_at ?? null
-      });
-    }
-  }
-  return samples.filter((s) => Number.isFinite(s.left));
-}
-function recordReport(report, file = historyFile()) {
-  const readAt = report.read_at;
-  if (!readAt)
-    return;
-  const providers = new Map;
-  for (const sample of samplesFrom(report)) {
-    const t = readAt[sample.p];
-    if (typeof t !== "number" || !Number.isFinite(t) || t <= 0)
-      continue;
-    const samples = providers.get(sample.p);
-    if (samples)
-      samples.push(sample);
-    else
-      providers.set(sample.p, [sample]);
-  }
-  if (!providers.size)
-    return;
-  const db = openHistoryDatabase(file);
-  try {
-    const insert = db.query(`
-      INSERT INTO allowance_readings (provider, read_at, samples) VALUES (?, ?, ?)
-      ON CONFLICT (provider, read_at) DO NOTHING
-    `);
-    db.transaction(() => {
-      for (const [provider, samples] of providers) {
-        insert.run(provider, readAt[provider], JSON.stringify(samples));
-      }
-    }).immediate();
-  } finally {
-    db.close();
-  }
-}
-function readHistory(file = historyFile(), since = 0) {
-  if (!existsSync4(file))
-    return [];
-  const db = openHistoryDatabase(file, true);
-  try {
-    if (!db.query("SELECT 1 FROM sqlite_schema WHERE name = 'allowance_readings'").get())
-      return [];
-    const rows = db.query("SELECT read_at AS t, samples FROM allowance_readings WHERE read_at >= ? ORDER BY read_at, rowid").all(since);
-    const entries = [];
-    for (const { t, samples } of rows) {
-      const parsed = JSON.parse(samples);
-      const last = entries.at(-1);
-      if (last?.t === t)
-        last.s.push(...parsed);
-      else
-        entries.push({ t, s: parsed });
-    }
-    return entries;
-  } finally {
-    db.close();
-  }
-}
-var windowOf = (s) => s.p === "antigravity" ? windowLength(s.w) ?? s.w : s.w;
-var limitOf = (s) => `${s.p}\x00${s.g ?? ""}\x00${windowOf(s)}`;
-var ROLLING = MINUTE;
-var CHARTED = new Set([5 * HOUR2, WEEK2]);
-function readBurndowns(file = historyFile(), now = Date.now()) {
-  return burndowns(readHistory(file, now - WEEK2 - DAY2), now);
-}
-function burndowns(entries, now = Date.now()) {
-  const accounts = new Map;
-  for (const entry of entries) {
-    for (const s of entry.s) {
-      if (!s.a)
-        continue;
-      if (!accounts.has(limitOf(s)))
-        accounts.set(limitOf(s), new Set);
-      accounts.get(limitOf(s)).add(s.a);
-    }
-  }
-  const accountOf = (s) => {
-    if (s.a)
-      return s.a;
-    const known = accounts.get(limitOf(s));
-    return known?.size === 1 ? [...known][0] : "";
-  };
-  const series = new Map;
-  for (const entry of entries) {
-    for (const s of entry.s) {
-      const key = `${limitOf(s)}\x00${accountOf(s)}`;
-      if (!series.has(key))
-        series.set(key, []);
-      series.get(key).push({ t: entry.t, s });
-    }
-  }
-  const result = [];
-  const latestRead = new Map;
-  for (const readings of series.values()) {
-    const { t, s } = readings.at(-1);
-    const key = `${s.p}\x00${accountOf(s)}`;
-    latestRead.set(key, Math.max(latestRead.get(key) ?? 0, t));
-  }
-  for (const readings of series.values()) {
-    const latest = readings.at(-1);
-    if (now - latest.t > DAY2)
-      continue;
-    if (latest.t < latestRead.get(`${latest.s.p}\x00${accountOf(latest.s)}`))
-      continue;
-    const length = windowLength(latest.s.w);
-    if (!length || !CHARTED.has(length))
-      continue;
-    const parsed = Date.parse(latest.s.reset ?? "");
-    const quoted = parsed > 0 ? parsed : NaN;
-    const rolling = latest.s.left >= 100 && quoted >= latest.t + length - ROLLING;
-    const reset = rolling ? NaN : quoted;
-    const unstarted = !Number.isFinite(reset) && latest.s.left >= 100;
-    const end = Number.isFinite(reset) ? reset : unstarted ? now + length : now;
-    const start = end - length;
-    const inWindow = unstarted ? [] : readings.filter((r) => r.t >= start && r.t <= end);
-    const account = accountOf(latest.s);
-    result.push({
-      provider: latest.s.p,
-      ...account ? { account } : {},
-      ...latest.s.g ? { group: latest.s.g } : {},
-      label: latest.s.w,
-      length,
-      start,
-      end,
-      left: latest.s.left,
-      reset: Number.isFinite(reset) ? latest.s.reset : null,
-      runs: unstarted ? [[start, start, latest.s.left]] : runs(inWindow.map((r) => [r.t, r.s.left]), length, Math.min(now, end))
-    });
-  }
-  return result;
-}
-function runs(readings, length, until) {
-  const slice = length / BUCKETS;
-  const gap = Math.max(20 * MINUTE, 3 * slice);
-  const thinned = [];
-  for (const reading of readings) {
-    const last = thinned.at(-1);
-    if (last && Math.floor(last[0] / slice) === Math.floor(reading[0] / slice))
-      thinned[thinned.length - 1] = reading;
-    else
-      thinned.push(reading);
-  }
-  const out = [];
-  thinned.forEach(([t, left], i) => {
-    const next = thinned[i + 1]?.[0] ?? until;
-    const to = next - t <= gap ? Math.max(next, t) : t + slice;
-    const prev = out.at(-1);
-    if (prev && prev[1] === t && prev[2] === left)
-      prev[1] = to;
-    else
-      out.push([t, to, left]);
-  });
-  return out;
-}
-
 // src/history/model-usage.ts
-import { createHash as createHash3 } from "crypto";
-import { existsSync as existsSync5 } from "fs";
-import { readdir, stat } from "fs/promises";
-import { homedir as homedir4 } from "os";
-import { basename as basename3, dirname as dirname3, join as join4, resolve } from "path";
 var PARSER_VERSION = 2;
 var DEFAULT_SYNC_BUDGET_MS = 3000;
 var CODEX_TWIN_WINDOW_MS = 5 * 60000;
 var MAX_CODEX_TURNS = 64;
 var MAX_CODEX_RESPONSE_KEYS = 64;
 function localLogs() {
-  const codex = process.env.CODEX_HOME || join4(homedir4(), ".codex");
-  const claude = process.env.CLAUDE_CONFIG_DIR || join4(homedir4(), ".claude");
-  const antigravity = process.env.ANTIGRAVITY_APP_DATA_DIR || join4(homedir4(), ".gemini", "antigravity-cli");
+  const codex = process.env.CODEX_HOME || join3(homedir3(), ".codex");
+  const claude = process.env.CLAUDE_CONFIG_DIR || join3(homedir3(), ".claude");
+  const antigravity = process.env.ANTIGRAVITY_APP_DATA_DIR || join3(homedir3(), ".gemini", "antigravity-cli");
   const roots = [
-    { provider: "codex", path: join4(codex, "sessions") },
-    { provider: "codex", path: join4(codex, "archived_sessions") },
-    { provider: "claude", path: join4(claude, "projects") },
-    { provider: "antigravity", path: join4(antigravity, "brain") }
+    { provider: "codex", path: join3(codex, "sessions") },
+    { provider: "codex", path: join3(codex, "archived_sessions") },
+    { provider: "claude", path: join3(claude, "projects") },
+    { provider: "antigravity", path: join3(antigravity, "brain") }
   ];
   if (!process.env.ANTIGRAVITY_APP_DATA_DIR) {
-    roots.push({ provider: "antigravity", path: join4(homedir4(), ".gemini", "antigravity", "brain") });
+    roots.push({ provider: "antigravity", path: join3(homedir3(), ".gemini", "antigravity", "brain") });
   }
   return roots;
 }
-var hash = (value) => createHash3("sha256").update(value).digest("hex");
+var hash = (value) => createHash2("sha256").update(value).digest("hex");
 var shortHash = (value) => hash(value).slice(0, 16);
 var object = (value) => value !== null && typeof value === "object" && !Array.isArray(value) ? value : undefined;
 var label = (value) => typeof value === "string" && /^[a-z0-9][a-z0-9._:@/+\-]{0,199}$/i.test(value) ? value : null;
@@ -2370,8 +1048,8 @@ function parseClaudeLine(line, cutoff, logId) {
 function antigravityConversationId(filePath, logId) {
   const logsDir = dirname3(filePath);
   const sysDir = dirname3(logsDir);
-  if (basename3(logsDir) === "logs" && basename3(sysDir) === ".system_generated") {
-    const conv = basename3(dirname3(sysDir));
+  if (basename2(logsDir) === "logs" && basename2(sysDir) === ".system_generated") {
+    const conv = basename2(dirname3(sysDir));
     if (conv)
       return conv;
   }
@@ -2762,16 +1440,16 @@ async function logFiles({ provider, path }) {
     const logs = [];
     for (const entry of entries) {
       if (entry.isFile() && entry.name === "transcript.jsonl")
-        logs.push(join4(entry.parentPath, entry.name));
+        logs.push(join3(entry.parentPath, entry.name));
       else if (entry.isDirectory())
-        logs.push(join4(entry.parentPath, entry.name, ".system_generated", "logs", "transcript.jsonl"));
+        logs.push(join3(entry.parentPath, entry.name, ".system_generated", "logs", "transcript.jsonl"));
     }
     return logs;
   }
-  return entries.filter((entry) => entry.isFile() && entry.name.endsWith(".jsonl")).map((entry) => join4(entry.parentPath, entry.name));
+  return entries.filter((entry) => entry.isFile() && entry.name.endsWith(".jsonl")).map((entry) => join3(entry.parentPath, entry.name));
 }
 function readModelUsage(from, through, file = historyFile()) {
-  if (from > through || !existsSync5(file))
+  if (from > through || !existsSync2(file))
     return [];
   const db = openHistoryDatabase(file, true);
   try {
@@ -2783,6 +1461,32 @@ function readModelUsage(from, through, file = historyFile()) {
     `).all(from, through);
   } finally {
     db.close();
+  }
+}
+function latestModelActivity(file = historyFile()) {
+  if (!existsSync2(file))
+    return {};
+  try {
+    const db = openHistoryDatabase(file, true);
+    try {
+      if (!db.query("SELECT 1 FROM sqlite_schema WHERE name = 'model_usage'").get())
+        return {};
+      const rows = db.query(`
+        SELECT provider, MAX(observed_at) AS latest_at FROM model_usage
+        GROUP BY provider
+      `).all();
+      const result = {};
+      for (const row of rows) {
+        if (row.provider && typeof row.latest_at === "number") {
+          result[row.provider] = row.latest_at;
+        }
+      }
+      return result;
+    } finally {
+      db.close();
+    }
+  } catch {
+    return {};
   }
 }
 async function syncModelUsage(file = historyFile(), roots = localLogs(), now = Date.now(), options = {}) {
@@ -2922,6 +1626,1491 @@ async function syncModelUsage(file = historyFile(), roots = localLogs(), now = D
   }
 }
 
+// src/refresh-policy.ts
+var ACTIVE_IDLE_THRESHOLD_MS = 15 * 60000;
+var COOLING_IDLE_THRESHOLD_MS = 2 * 3600000;
+var ACTIVE_POLL_INTERVAL_MS = 3 * 60000;
+var COOLING_POLL_INTERVAL_MS = 15 * 60000;
+var DORMANT_POLL_INTERVAL_MS = 60 * 60000;
+var TOKEN_EXPIRY_SKEW_MS = 60000;
+var validTime = (value) => typeof value === "number" && Number.isFinite(value) && value > 0 ? value : 0;
+function providerTtl(lastActivityAt, now = Date.now()) {
+  const at = validTime(lastActivityAt);
+  if (!at)
+    return COOLING_POLL_INTERVAL_MS;
+  const idleMs = Math.max(0, now - at);
+  if (idleMs < ACTIVE_IDLE_THRESHOLD_MS)
+    return ACTIVE_POLL_INTERVAL_MS;
+  if (idleMs < COOLING_IDLE_THRESHOLD_MS)
+    return COOLING_POLL_INTERVAL_MS;
+  return DORMANT_POLL_INTERVAL_MS;
+}
+function othersTtl(lastGeneralActivityAt, now = Date.now()) {
+  const at = validTime(lastGeneralActivityAt);
+  if (!at)
+    return COOLING_POLL_INTERVAL_MS;
+  const idleMs = Math.max(0, now - at);
+  return idleMs < COOLING_IDLE_THRESHOLD_MS ? COOLING_POLL_INTERVAL_MS : DORMANT_POLL_INTERVAL_MS;
+}
+function hasPassedReset(resetsAt, lastCheckAt, now) {
+  if (!resetsAt?.length || lastCheckAt <= 0)
+    return false;
+  for (const iso of resetsAt) {
+    if (!iso)
+      continue;
+    const t = Date.parse(iso);
+    if (Number.isFinite(t) && t > 0 && t > lastCheckAt && now >= t) {
+      return true;
+    }
+  }
+  return false;
+}
+function isTokenExpired(expiresAt, now = Date.now()) {
+  const exp = validTime(expiresAt);
+  return exp > 0 && exp <= now - TOKEN_EXPIRY_SKEW_MS;
+}
+function shouldRefreshProvider(input) {
+  const now = input.now ?? Date.now();
+  const cooldown = validTime(input.cooldownUntil);
+  if (cooldown > 0 && now < cooldown)
+    return false;
+  if (input.force)
+    return true;
+  const lastCheck = Math.max(validTime(input.lastReadAt), validTime(input.lastAttemptAt));
+  if (lastCheck === 0)
+    return true;
+  if (hasPassedReset(input.resetsAt, lastCheck, now))
+    return true;
+  const ttl = input.ttl ?? providerTtl(input.lastActivityAt, now);
+  return now - lastCheck >= ttl;
+}
+function planProviderRefreshes(report, options) {
+  const now = options.now ?? Date.now();
+  const force = Boolean(options.force);
+  const activity = options.activity;
+  const claudeTtl = providerTtl(activity["claude"], now);
+  const codexTtl = providerTtl(activity["codex"], now);
+  const agyTtl = providerTtl(activity["antigravity"], now);
+  const generalActivity = Object.values(activity).reduce((max, t) => Math.max(max, validTime(t)), 0);
+  const secondaryTtl = othersTtl(generalActivity > 0 ? generalActivity : undefined, now);
+  const claude = shouldRefreshProvider({
+    lastReadAt: report?.read_at?.["claude"],
+    lastAttemptAt: report?.attempted_at?.["claude"],
+    lastActivityAt: activity["claude"],
+    resetsAt: report?.claude?.windows?.map((w) => w.resets_at),
+    cooldownUntil: options.claudeUntil,
+    ttl: claudeTtl,
+    now,
+    force
+  });
+  const codex = shouldRefreshProvider({
+    lastReadAt: report?.read_at?.["codex"],
+    lastAttemptAt: report?.attempted_at?.["codex"],
+    lastActivityAt: activity["codex"],
+    resetsAt: report?.codex?.windows?.map((w) => w.resets_at),
+    ttl: codexTtl,
+    now,
+    force
+  });
+  const antigravity = shouldRefreshProvider({
+    lastReadAt: report?.read_at?.["antigravity"],
+    lastAttemptAt: report?.attempted_at?.["antigravity"],
+    lastActivityAt: activity["antigravity"],
+    resetsAt: report?.antigravity?.groups?.flatMap((g) => g.buckets.map((b) => b.resets_at)),
+    ttl: agyTtl,
+    now,
+    force
+  });
+  const othersLastRead = report?.others?.length ? Math.min(...report.others.map((p) => validTime(report.read_at?.[p.id]))) : undefined;
+  const others = shouldRefreshProvider({
+    lastReadAt: othersLastRead && othersLastRead > 0 ? othersLastRead : undefined,
+    lastAttemptAt: report?.attempted_at?.["others"],
+    resetsAt: report?.others?.flatMap((p) => p.windows.map((w) => w.resets_at)),
+    ttl: secondaryTtl,
+    now,
+    force
+  });
+  const ttls = {
+    claude: claudeTtl,
+    codex: codexTtl,
+    antigravity: agyTtl,
+    others: secondaryTtl
+  };
+  for (const provider of report?.others ?? []) {
+    ttls[provider.id] = secondaryTtl;
+  }
+  return {
+    claude,
+    codex,
+    antigravity,
+    others,
+    any: claude || codex || antigravity || others,
+    ttls
+  };
+}
+
+// src/fetcher.ts
+var CACHE_DIR = process.env["HERDR_USAGE_CACHE_DIR"] ?? (process.env["XDG_CACHE_HOME"] ? join4(process.env["XDG_CACHE_HOME"], "herdr-usage-monitor") : join4(homedir4(), ".cache", "herdr-usage-monitor"));
+async function getRateLimitsAsync(cacheDir = CACHE_DIR) {
+  try {
+    const file = Bun.file(join4(cacheDir, "rate-limits.json"));
+    if (await file.exists()) {
+      return JSON.parse(await file.text());
+    }
+  } catch {}
+  return {};
+}
+function agyReset(value) {
+  if (typeof value !== "string")
+    return null;
+  const time = Date.parse(value);
+  return Number.isFinite(time) && time > 0 ? value : null;
+}
+function money(minor, currency, decimals = 2) {
+  const symbol = currency === "GBP" ? "\xA3" : currency === "EUR" ? "\u20AC" : currency === "USD" ? "$" : `${currency} `;
+  return `${symbol}${(minor / Math.pow(10, decimals)).toFixed(decimals)}`;
+}
+var isoTime2 = (value) => typeof value === "string" && Number.isFinite(Date.parse(value)) ? value : null;
+function claudeLimitResets(body, now = Date.now()) {
+  const grants = Array.isArray(body?.cedar_ember?.grants) ? body.cedar_ember.grants : [];
+  return grants.filter((g) => typeof g?.resets_left === "number" && g.resets_left > 0).map((g) => ({
+    id: String(g.id ?? ""),
+    label: typeof g.label === "string" && g.label.trim() ? g.label.trim() : g.type === "full" ? "Full limit reset" : "Limit reset",
+    left: g.resets_left,
+    total: typeof g.resets_total === "number" ? Math.max(g.resets_total, g.resets_left) : g.resets_left,
+    expires_at: isoTime2(g.ends_at),
+    usable_now: g.usable_now !== false,
+    paused: g.paused === true,
+    needs_limit: g.use_requires_limit === true
+  })).filter((r) => !r.expires_at || Date.parse(r.expires_at) > now).sort((a, b) => (a.expires_at ? Date.parse(a.expires_at) : Infinity) - (b.expires_at ? Date.parse(b.expires_at) : Infinity));
+}
+function claudeCredits(body, now = Date.now()) {
+  if (typeof body?.amount !== "number")
+    return null;
+  const total = body.balance?.money;
+  const currency = total?.currency ?? body.currency ?? "USD";
+  const decimals = typeof total?.exponent === "number" ? total.exponent : 2;
+  const amount = typeof total?.amount_minor === "number" ? total.amount_minor : body.amount;
+  const tranches = [
+    ...Array.isArray(body.tranches) ? body.tranches : [],
+    ...Array.isArray(body.promo_tranches) ? body.promo_tranches : []
+  ];
+  const expiring = tranches.map((t) => ({ t, expires: isoTime2(t?.shown_expires_at) ?? isoTime2(t?.expires_at) })).filter(({ t, expires }) => typeof t?.remaining_amount_minor_units === "number" && t.remaining_amount_minor_units > 0 && expires && Date.parse(expires) > now).sort((a, b) => Date.parse(a.expires) - Date.parse(b.expires)).map(({ t, expires }) => ({
+    amount: money(t.remaining_amount_minor_units, t.currency ?? currency, decimals),
+    expires_at: expires,
+    ...typeof t.name === "string" && t.name.trim() ? { name: t.name.trim() } : {}
+  }));
+  if (amount <= 0 && expiring.length === 0)
+    return null;
+  return { balance: money(amount, currency, decimals), expiring };
+}
+var CREDITS_MAX_AGE_MS = 15 * 60000;
+function recentCredits(previous, account, now = Date.now()) {
+  if (previous?.account !== account || previous.credits === undefined)
+    return;
+  const at = previous.credits_read_at;
+  return typeof at === "number" && now - at < CREDITS_MAX_AGE_MS ? { credits: previous.credits, read_at: at } : undefined;
+}
+function saveRateLimits(state, cacheDir = CACHE_DIR) {
+  try {
+    mkdirSync2(cacheDir, { recursive: true });
+    writeFileSync2(join4(cacheDir, "rate-limits.json"), JSON.stringify(state));
+  } catch {}
+}
+async function readCacheFile(path, maxAgeMs, now = Date.now(), allowLegacyTmp = true) {
+  try {
+    let file = Bun.file(path);
+    if (allowLegacyTmp && !await file.exists()) {
+      const legacyPath = join4("/tmp", basename3(path));
+      const legacyFile = Bun.file(legacyPath);
+      if (await legacyFile.exists()) {
+        file = legacyFile;
+      }
+    }
+    if (await file.exists()) {
+      const data = JSON.parse(await file.text());
+      if (now - (data.timestamp || 0) < maxAgeMs) {
+        return data;
+      }
+    }
+  } catch {}
+  return null;
+}
+async function getCachedReport(maxAgeMs = 300000, options) {
+  const dir = options?.cacheDir ?? CACHE_DIR;
+  const now = options?.now ?? Date.now();
+  const allowLegacyTmp = !options?.cacheDir;
+  const complete = await readCacheFile(join4(dir, "herdr-usage-cache.json"), maxAgeMs, now, allowLegacyTmp);
+  if (!options?.allowPartial) {
+    return complete && !complete.partial ? complete : null;
+  }
+  const partial = await readCacheFile(join4(dir, "herdr-usage-fast-cache.json"), maxAgeMs, now, allowLegacyTmp);
+  if (complete && partial) {
+    return complete.timestamp >= partial.timestamp ? complete : partial;
+  }
+  return complete ?? partial;
+}
+function saveCachedReport(report, cacheDir = CACHE_DIR) {
+  try {
+    mkdirSync2(cacheDir, { recursive: true });
+    writeFileSync2(join4(cacheDir, "herdr-usage-cache.json"), JSON.stringify(report));
+  } catch {}
+}
+async function fetchDetailedReport(options = {}) {
+  const cacheDir = options.cacheDir ?? CACHE_DIR;
+  const clock = () => options.now ?? Date.now();
+  const now = clock();
+  const force = Boolean(options.force);
+  const activity = options.activity ?? latestModelActivity();
+  const fetchFn = options.deps?.fetch ?? fetch;
+  const claudeSignInsFn = options.deps?.getClaudeSignIns ?? getClaudeSignIns;
+  const codexSignInsFn = options.deps?.getCodexSignIns ?? getCodexSignIns;
+  const agySignInsFn = options.deps?.getAntigravitySignIns ?? getAntigravitySignIns;
+  const otherProvidersFn = options.deps?.fetchOtherProviders ?? fetchOtherProviders;
+  const resolveBinaryFn = options.deps?.resolveBinary ?? resolveBinary;
+  const [limits, prevAny, prevComplete] = await Promise.all([
+    getRateLimitsAsync(cacheDir),
+    getCachedReport(24 * 3600000, { allowPartial: true, now, cacheDir }),
+    getCachedReport(24 * 3600000, { now, cacheDir })
+  ]);
+  const plan = planProviderRefreshes(prevAny, {
+    activity,
+    claudeUntil: limits.claudeUntil,
+    now,
+    force
+  });
+  const report = {
+    timestamp: now,
+    others: []
+  };
+  const readAt = {};
+  const attemptedAt = { ...prevComplete?.attempted_at ?? prevAny?.attempted_at };
+  const claudePromise = (async () => {
+    if (!plan.claude)
+      return;
+    attemptedAt.claude = now;
+    const claudeSignIns = await claudeSignInsFn().catch(() => []);
+    const s = claudeSignIns[0];
+    if (!s)
+      return;
+    if (!force && isTokenExpired(s.expiresAt, now))
+      return;
+    const headers = {
+      authorization: `Bearer ${s.token}`,
+      accept: "application/json",
+      "anthropic-beta": "oauth-2025-04-20",
+      "user-agent": `claude-cli/${claudeCodeVersion()} (external, cli)`
+    };
+    const account = s.account?.label ?? "default";
+    const previous = prevAny?.claude;
+    const recent = recentCredits(previous, account, now);
+    const org = s.account?.org;
+    const creditsPromise = recent || !org ? Promise.resolve(recent) : fetchFn(`https://api.anthropic.com/api/oauth/organizations/${encodeURIComponent(org)}/prepaid/credits`, {
+      headers,
+      signal: AbortSignal.timeout(3500)
+    }).then(async (r) => r.ok ? { credits: claudeCredits(await r.json(), clock()), read_at: clock() } : undefined).catch(() => {
+      return;
+    });
+    const res = await fetchFn("https://api.anthropic.com/api/oauth/usage?cedar_ember=1", {
+      headers,
+      signal: AbortSignal.timeout(3500)
+    }).catch(() => null);
+    if (!res)
+      return;
+    if (res.status === 429) {
+      const retryHeader = res.headers.get("retry-after");
+      const retrySec = retryHeader ? parseInt(retryHeader, 10) : NaN;
+      const cooldownMs = Number.isFinite(retrySec) && retrySec > 0 ? retrySec * 1000 : 300000;
+      saveRateLimits({ ...limits, claudeUntil: clock() + cooldownMs }, cacheDir);
+      return;
+    }
+    if (!res.ok)
+      return;
+    if (limits.claudeUntil) {
+      delete limits.claudeUntil;
+      saveRateLimits(limits, cacheDir);
+    }
+    const body = await res.json();
+    const windows = [];
+    if (body.five_hour && body.five_hour.utilization != null) {
+      windows.push({ label: "5h session", used_percent: body.five_hour.utilization, resets_at: body.five_hour.resets_at });
+    }
+    if (body.seven_day && body.seven_day.utilization != null) {
+      windows.push({ label: "7d weekly", used_percent: body.seven_day.utilization, resets_at: body.seven_day.resets_at });
+    }
+    if (body.seven_day_opus && body.seven_day_opus.utilization != null) {
+      windows.push({ label: "7d Opus", used_percent: body.seven_day_opus.utilization, resets_at: body.seven_day_opus.resets_at });
+    }
+    if (body.seven_day_sonnet && body.seven_day_sonnet.utilization != null) {
+      windows.push({ label: "7d Sonnet", used_percent: body.seven_day_sonnet.utilization, resets_at: body.seven_day_sonnet.resets_at });
+    }
+    let extra_usage = null;
+    if (body.extra_usage?.is_enabled || body.spend?.enabled) {
+      const currency = body.extra_usage?.currency ?? body.spend?.used?.currency ?? "USD";
+      const decimals = body.extra_usage?.decimal_places ?? 2;
+      const usedMinor = body.spend?.used?.amount_minor ?? body.extra_usage?.used_credits ?? 0;
+      const limitMinor = body.spend?.limit?.amount_minor ?? body.extra_usage?.monthly_limit ?? 0;
+      const usedPct = body.extra_usage?.utilization ?? body.spend?.percent ?? 0;
+      extra_usage = {
+        used: money(usedMinor, currency, decimals),
+        limit: money(limitMinor, currency, decimals),
+        balance_left: money(Math.max(0, limitMinor - usedMinor), currency, decimals),
+        used_percent: usedPct
+      };
+    }
+    const credits = await creditsPromise;
+    readAt.claude = clock();
+    report.claude = {
+      account,
+      plan: s.plan ?? "pro",
+      windows,
+      extra_usage,
+      limit_resets: claudeLimitResets(body, now),
+      ...credits ? { credits: credits.credits, credits_read_at: credits.read_at } : {}
+    };
+  })().catch(() => {});
+  const codexPromise = (async () => {
+    if (!plan.codex)
+      return;
+    attemptedAt.codex = now;
+    const codexSignIns = await codexSignInsFn().catch(() => []);
+    const s = codexSignIns[0];
+    if (!s)
+      return;
+    if (!force && isTokenExpired(s.expiresAt, now))
+      return;
+    const headers = {
+      authorization: `Bearer ${s.token}`,
+      accept: "application/json",
+      ...s.chatgptAccount ? { "chatgpt-account-id": s.chatgptAccount } : {}
+    };
+    const [usageRes, creditsRes] = await Promise.all([
+      fetchFn("https://chatgpt.com/backend-api/wham/usage", {
+        headers,
+        signal: AbortSignal.timeout(3500)
+      }),
+      fetchFn("https://chatgpt.com/backend-api/wham/rate-limit-reset-credits", {
+        headers,
+        signal: AbortSignal.timeout(3500)
+      }).catch(() => null)
+    ]);
+    if (!usageRes.ok)
+      return;
+    const body = await usageRes.json();
+    const creditsBody = creditsRes && creditsRes.ok ? await creditsRes.json() : null;
+    const rate = body.rate_limit ?? {};
+    const windows = [];
+    if (rate.primary_window && rate.primary_window.used_percent != null) {
+      const resetIso = rate.primary_window.reset_at ? new Date(rate.primary_window.reset_at * 1000).toISOString() : null;
+      windows.push({ label: "5h session", used_percent: rate.primary_window.used_percent, resets_at: resetIso });
+    }
+    if (rate.secondary_window && rate.secondary_window.used_percent != null) {
+      const resetIso = rate.secondary_window.reset_at ? new Date(rate.secondary_window.reset_at * 1000).toISOString() : null;
+      windows.push({ label: "Weekly", used_percent: rate.secondary_window.used_percent, resets_at: resetIso });
+    }
+    const availableResets = body.rate_limit_reset_credits?.available_count ?? 0;
+    const rawCredits = Array.isArray(creditsBody?.credits) ? creditsBody.credits : [];
+    const items = rawCredits.filter((c) => c.status === "available").map((c) => ({
+      id: c.id,
+      title: c.title ?? "Rate limit reset",
+      status: c.status,
+      granted_at: c.granted_at,
+      expires_at: c.expires_at,
+      description: c.description
+    })).sort((a, b) => Date.parse(a.expires_at) - Date.parse(b.expires_at));
+    readAt.codex = clock();
+    report.codex = {
+      account: s.account?.label ?? body.email ?? "default",
+      plan: s.plan ?? body.plan_type ?? "plus",
+      windows,
+      resets: {
+        available: availableResets,
+        items
+      }
+    };
+  })().catch(() => {});
+  const agyPromise = (async () => {
+    if (!plan.antigravity)
+      return;
+    attemptedAt.antigravity = now;
+    let agyData = null;
+    let agyReadAt = clock();
+    const agyCacheFile = join4(cacheDir, "herdr-agy-usage.json");
+    try {
+      let agyPath = agyCacheFile;
+      if (!options.cacheDir && !existsSync3(agyPath) && existsSync3("/tmp/herdr-agy-usage.json")) {
+        agyPath = "/tmp/herdr-agy-usage.json";
+      }
+      if (existsSync3(agyPath)) {
+        const stat = await Bun.file(agyPath).stat();
+        if (clock() - stat.mtimeMs < 120000) {
+          agyData = JSON.parse(await Bun.file(agyPath).text());
+          agyReadAt = stat.mtimeMs;
+        }
+      }
+    } catch {}
+    const agySignIns = await agySignInsFn().catch(() => []);
+    const s = agySignIns[0];
+    const account = s?.account?.label ?? "default";
+    if (!agyData) {
+      const agyBin = resolveBinaryFn("agy");
+      if (agyBin) {
+        try {
+          const child = Bun.spawn([agyBin, "-p", "/usage", "--output-format", "json"], {
+            stdout: "pipe",
+            stderr: "ignore"
+          });
+          const timer = setTimeout(() => {
+            try {
+              child.kill();
+            } catch {}
+          }, 4500);
+          const text = await new Response(child.stdout).text();
+          clearTimeout(timer);
+          if (await child.exited === 0 && text) {
+            const parsed = JSON.parse(text);
+            if (parsed.command?.data?.groups) {
+              agyData = parsed.command.data;
+              try {
+                mkdirSync2(cacheDir, { recursive: true });
+                writeFileSync2(agyCacheFile, JSON.stringify(agyData));
+              } catch {}
+            }
+          }
+        } catch {}
+      }
+    }
+    if (agyData?.groups) {
+      const groups = agyData.groups.map((g) => {
+        const models = g.description?.startsWith("Models within this group:") ? g.description.replace(/^Models within this group:\s*/i, "") : undefined;
+        const buckets = (g.buckets ?? []).map((b) => {
+          const remFraction = b.remaining_fraction ?? b.remainingFraction ?? 0;
+          return {
+            label: b.name ?? (b.window === "5h" ? "5h limit" : b.window === "weekly" ? "Weekly limit" : "Limit"),
+            remaining_percent: Math.round(remFraction * 100),
+            resets_at: agyReset(b.reset_time ?? b.resetTime),
+            description: b.description
+          };
+        });
+        return {
+          name: g.name,
+          models,
+          buckets
+        };
+      });
+      readAt.antigravity = agyReadAt;
+      report.antigravity = {
+        account,
+        groups
+      };
+      return;
+    }
+    if (!s || !force && isTokenExpired(s.expiresAt, now))
+      return;
+    const headers = {
+      authorization: `Bearer ${s.token}`,
+      accept: "application/json",
+      "content-type": "application/json",
+      "user-agent": "antigravity"
+    };
+    let res = await fetchFn("https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary", {
+      method: "POST",
+      headers,
+      body: "{}",
+      signal: AbortSignal.timeout(3000)
+    }).catch(() => null);
+    if (!res || !res.ok) {
+      res = await fetchFn("https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary", {
+        method: "POST",
+        headers,
+        body: "{}",
+        signal: AbortSignal.timeout(3000)
+      }).catch(() => null);
+    }
+    if (!res || !res.ok)
+      return;
+    const body = await res.json();
+    const rawGroups = body.groups ?? body.response?.groups;
+    const groupsRaw = Array.isArray(rawGroups) ? rawGroups : [];
+    const groups = groupsRaw.map((g) => ({
+      name: g.displayName ?? g.name ?? "Model group",
+      models: g.description?.replace(/^Models within this group:\s*/i, "") ?? "",
+      buckets: (g.buckets ?? []).map((b) => {
+        const bucketId = String(b.bucketId ?? "");
+        const is5h = b.window === "5h" || bucketId.endsWith("-5h");
+        const isWeekly = b.window === "weekly" || bucketId.endsWith("-weekly");
+        return {
+          label: is5h ? "5h limit" : isWeekly ? "Weekly limit" : b.displayName ?? b.name ?? "Limit",
+          remaining_percent: Math.round((b.remainingFraction ?? 0) * 100),
+          resets_at: agyReset(b.resetTime)
+        };
+      })
+    }));
+    if (groups.length > 0) {
+      readAt.antigravity = clock();
+      report.antigravity = {
+        account,
+        groups
+      };
+    }
+  })().catch(() => {});
+  const othersPromise = (async () => {
+    if (!plan.others)
+      return;
+    attemptedAt.others = now;
+    const others = await otherProvidersFn();
+    report.others = others;
+    const fetchNow = clock();
+    for (const p of others)
+      readAt[p.id] = fetchNow;
+  })().catch(() => {});
+  await Promise.allSettled([claudePromise, codexPromise, agyPromise, othersPromise]);
+  try {
+    const carry = (id, from) => {
+      const t = from?.read_at?.[id];
+      if (t)
+        readAt[id] = t;
+    };
+    if (!report.claude) {
+      const from = prevAny?.claude ? prevAny : prevComplete;
+      report.claude = from?.claude;
+      carry("claude", from);
+    }
+    const prevClaude = prevAny?.claude ?? prevComplete?.claude;
+    if (report.claude && report.claude.credits === undefined && prevClaude?.account === report.claude.account) {
+      report.claude.credits = prevClaude.credits;
+      report.claude.credits_read_at = prevClaude.credits_read_at;
+    }
+    if (!report.codex) {
+      const from = prevComplete?.codex ? prevComplete : prevAny;
+      report.codex = from?.codex;
+      carry("codex", from);
+    }
+    if (!report.antigravity) {
+      const from = prevComplete?.antigravity ? prevComplete : prevAny;
+      report.antigravity = from?.antigravity;
+      carry("antigravity", from);
+    }
+    if (report.others.length === 0) {
+      const from = prevComplete?.others?.length ? prevComplete : prevAny?.others?.length ? prevAny : null;
+      if (from) {
+        report.others = from.others;
+        for (const p of from.others)
+          carry(p.id, from);
+      }
+    }
+    if (report.codex && report.codex.resets.available > 0 && report.codex.resets.items.length === 0 && prevComplete?.codex?.account === report.codex.account && prevComplete.codex.resets.items.length > 0) {
+      const checkNow = clock();
+      report.codex.resets.items = prevComplete.codex.resets.items.filter((item) => {
+        const exp = Date.parse(item.expires_at);
+        return !Number.isFinite(exp) || exp > checkNow;
+      }).slice(0, report.codex.resets.available);
+    }
+  } catch {}
+  report.read_at = readAt;
+  report.attempted_at = attemptedAt;
+  const ttls = { ...plan.ttls };
+  for (const p of report.others)
+    ttls[p.id] = plan.ttls.others;
+  report.ttl = ttls;
+  saveCachedReport(report, cacheDir);
+  return report;
+}
+
+// src/history/historical.ts
+import { existsSync as existsSync4 } from "fs";
+var MONTHS_SHORT = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+var MONTHS_LONG = [
+  "January",
+  "February",
+  "March",
+  "April",
+  "May",
+  "June",
+  "July",
+  "August",
+  "September",
+  "October",
+  "November",
+  "December"
+];
+var WEEKDAYS_SHORT = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+var PROVIDER_NAMES = {
+  claude: "Claude Code",
+  codex: "Codex",
+  antigravity: "Antigravity",
+  opencode: "OpenCode",
+  pi: "Pi"
+};
+var TOP_SERIES_LIMIT = 7;
+var LEADERBOARD_LIMIT = 10;
+var FACET_MODEL_LIMIT = 250;
+var round1 = (value) => Math.round(value * 10) / 10;
+function providerDisplay(id) {
+  return PROVIDER_NAMES[id] ?? id;
+}
+function cleanFilter(value) {
+  const trimmed = String(value ?? "").trim();
+  if (!trimmed || trimmed.toLowerCase() === "all" || trimmed === "*")
+    return "all";
+  return trimmed;
+}
+function parseHorizon(value) {
+  const v = String(value ?? "").toLowerCase();
+  return v === "d" || v === "w" || v === "m" || v === "y" ? v : "m";
+}
+function formatHourShort(hour) {
+  if (hour === 0)
+    return "12a";
+  if (hour < 12)
+    return `${hour}a`;
+  if (hour === 12)
+    return "12p";
+  return `${hour - 12}p`;
+}
+function formatHourClock(hour) {
+  const h = (hour % 24 + 24) % 24;
+  return `${h % 12 || 12}:00 ${h < 12 ? "AM" : "PM"}`;
+}
+function formatShortDate(date, includeYear = false) {
+  const base = `${MONTHS_SHORT[date.getMonth()]} ${date.getDate()}`;
+  return includeYear ? `${base}, ${date.getFullYear()}` : base;
+}
+function daysInMonth(year, monthIndex) {
+  return new Date(year, monthIndex + 1, 0).getDate();
+}
+function buildHorizonWindow(horizon, offset, now) {
+  const safeOffset = Number.isFinite(offset) ? Math.min(0, Math.trunc(offset)) : 0;
+  const current = new Date(now);
+  const curY = current.getFullYear();
+  const curM = current.getMonth();
+  const curD = current.getDate();
+  if (horizon === "d") {
+    const target = new Date(curY, curM, curD + safeOffset, 0, 0, 0, 0);
+    const tY = target.getFullYear();
+    const tM = target.getMonth();
+    const tD = target.getDate();
+    const startMs = target.getTime();
+    const endMs = new Date(tY, tM, tD + 1, 0, 0, 0, 0).getTime();
+    const prevStart = new Date(tY, tM, tD - 1, 0, 0, 0, 0);
+    const prevStartMs = prevStart.getTime();
+    const prevEndMs = safeOffset === 0 ? Math.min(startMs, prevStartMs + Math.max(0, now - startMs)) : startMs;
+    const dateTag = formatShortDate(target, tY !== curY);
+    const label = safeOffset === 0 ? `Today \xB7 ${dateTag}` : safeOffset === -1 ? `Yesterday \xB7 ${dateTag}` : `${WEEKDAYS_SHORT[target.getDay()]}, ${formatShortDate(target, true)}`;
+    const buckets = [];
+    for (let h = 0;h < 24; h += 1) {
+      const bStart = new Date(tY, tM, tD, h, 0, 0, 0).getTime();
+      const bEnd = h === 23 ? endMs : new Date(tY, tM, tD, h + 1, 0, 0, 0).getTime();
+      buckets.push({
+        startMs: bStart,
+        endMs: bEnd,
+        label: `${dateTag} \xB7 ${formatHourClock(h)}\u2013${formatHourClock(h + 1)}`,
+        axisLabel: h % 4 === 0 ? formatHourShort(h) : ""
+      });
+    }
+    return { startMs, endMs, prevStartMs, prevEndMs, label, unitSummary: "24 hours", buckets };
+  }
+  if (horizon === "w") {
+    const dow = (current.getDay() + 6) % 7;
+    const monday = new Date(curY, curM, curD - dow + safeOffset * 7, 0, 0, 0, 0);
+    const mY = monday.getFullYear();
+    const mM = monday.getMonth();
+    const mD = monday.getDate();
+    const startMs = monday.getTime();
+    const endMs = new Date(mY, mM, mD + 7, 0, 0, 0, 0).getTime();
+    const sunday = new Date(mY, mM, mD + 6, 0, 0, 0, 0);
+    const prevStartMs = new Date(mY, mM, mD - 7, 0, 0, 0, 0).getTime();
+    const prevEndMs = safeOffset === 0 ? Math.min(startMs, prevStartMs + Math.max(0, now - startMs)) : startMs;
+    const crossYear = monday.getFullYear() !== sunday.getFullYear();
+    const showYear = monday.getFullYear() !== curY || crossYear;
+    const span = `${formatShortDate(monday, crossYear)} \u2013 ${formatShortDate(sunday, showYear)}`;
+    const label = safeOffset === 0 ? `This week \xB7 ${span}` : span;
+    const buckets = [];
+    for (let i = 0;i < 7; i += 1) {
+      const day = new Date(mY, mM, mD + i, 0, 0, 0, 0);
+      const bStart = day.getTime();
+      const bEnd = new Date(mY, mM, mD + i + 1, 0, 0, 0, 0).getTime();
+      buckets.push({
+        startMs: bStart,
+        endMs: bEnd,
+        label: `${WEEKDAYS_SHORT[day.getDay()]}, ${formatShortDate(day, day.getFullYear() !== curY)}`,
+        axisLabel: `${WEEKDAYS_SHORT[day.getDay()]} ${day.getDate()}`
+      });
+    }
+    return { startMs, endMs, prevStartMs, prevEndMs, label, unitSummary: "7 days", buckets };
+  }
+  if (horizon === "m") {
+    const first = new Date(curY, curM + safeOffset, 1, 0, 0, 0, 0);
+    const fY = first.getFullYear();
+    const fM = first.getMonth();
+    const count = daysInMonth(fY, fM);
+    const startMs = first.getTime();
+    const endMs = new Date(fY, fM + 1, 1, 0, 0, 0, 0).getTime();
+    const prevFirst = new Date(fY, fM - 1, 1, 0, 0, 0, 0);
+    const prevStartMs = prevFirst.getTime();
+    let prevEndMs = startMs;
+    if (safeOffset === 0) {
+      const prevDays = daysInMonth(prevFirst.getFullYear(), prevFirst.getMonth());
+      const clampedDay = Math.min(curD, prevDays);
+      const prevSameMoment = new Date(prevFirst.getFullYear(), prevFirst.getMonth(), clampedDay, current.getHours(), current.getMinutes(), current.getSeconds(), current.getMilliseconds()).getTime();
+      prevEndMs = Math.min(startMs, prevSameMoment);
+    }
+    const label = `${MONTHS_LONG[fM]} ${fY}`;
+    const buckets = [];
+    for (let d = 1;d <= count; d += 1) {
+      const day = new Date(fY, fM, d, 0, 0, 0, 0);
+      const bStart = day.getTime();
+      const bEnd = new Date(fY, fM, d + 1, 0, 0, 0, 0).getTime();
+      const showTick = d === 1 || d % 5 === 1 && count - d >= 2;
+      buckets.push({
+        startMs: bStart,
+        endMs: bEnd,
+        label: `${WEEKDAYS_SHORT[day.getDay()]}, ${formatShortDate(day, fY !== curY)}`,
+        axisLabel: showTick ? `${MONTHS_SHORT[fM]} ${d}` : ""
+      });
+    }
+    return { startMs, endMs, prevStartMs, prevEndMs, label, unitSummary: `${count} days`, buckets };
+  }
+  const targetYear = curY + safeOffset;
+  const startMs = new Date(targetYear, 0, 1, 0, 0, 0, 0).getTime();
+  const endMs = new Date(targetYear + 1, 0, 1, 0, 0, 0, 0).getTime();
+  const prevStartMs = new Date(targetYear - 1, 0, 1, 0, 0, 0, 0).getTime();
+  let prevEndMs = startMs;
+  if (safeOffset === 0) {
+    const clampedDay = Math.min(curD, daysInMonth(targetYear - 1, curM));
+    const prevSameMoment = new Date(targetYear - 1, curM, clampedDay, current.getHours(), current.getMinutes(), current.getSeconds(), current.getMilliseconds()).getTime();
+    prevEndMs = Math.min(startMs, prevSameMoment);
+  }
+  const buckets = [];
+  let lastLabeledMonth = -1;
+  for (let w = 0;w < 52; w += 1) {
+    const bStartDate = new Date(targetYear, 0, 1 + w * 7, 0, 0, 0, 0);
+    const bEndDate = w === 51 ? new Date(targetYear + 1, 0, 1, 0, 0, 0, 0) : new Date(targetYear, 0, 1 + (w + 1) * 7, 0, 0, 0, 0);
+    const lastDay = new Date(bEndDate.getTime() - 1);
+    const month = bStartDate.getMonth();
+    const axisLabel = month !== lastLabeledMonth ? MONTHS_SHORT[month] : "";
+    lastLabeledMonth = month;
+    buckets.push({
+      startMs: bStartDate.getTime(),
+      endMs: bEndDate.getTime(),
+      label: `${formatShortDate(bStartDate)} \u2013 ${formatShortDate(lastDay, true)}`,
+      axisLabel
+    });
+  }
+  return {
+    startMs,
+    endMs,
+    prevStartMs,
+    prevEndMs,
+    label: String(targetYear),
+    unitSummary: "52 weeks",
+    buckets
+  };
+}
+function compareChange(current, previous) {
+  if (previous === null)
+    return { deltaPct: null, deltaKind: "none" };
+  if (previous === 0) {
+    if (current === 0)
+      return { deltaPct: 0, deltaKind: "flat" };
+    return { deltaPct: null, deltaKind: "new" };
+  }
+  const pct = round1((current - previous) / previous * 100);
+  if (pct === 0)
+    return { deltaPct: 0, deltaKind: "flat" };
+  return { deltaPct: pct, deltaKind: pct > 0 ? "up" : "down" };
+}
+function tokenSum(row, includeCache) {
+  return row.input_tokens + row.output_tokens + (includeCache ? row.cache_read_tokens + row.cache_write_tokens : 0);
+}
+function bucketIndexFor(buckets, timestamp) {
+  let lo = 0;
+  let hi = buckets.length - 1;
+  while (lo <= hi) {
+    const mid = lo + hi >> 1;
+    const b = buckets[mid];
+    if (timestamp < b.startMs)
+      hi = mid - 1;
+    else if (timestamp >= b.endMs)
+      lo = mid + 1;
+    else
+      return mid;
+  }
+  return -1;
+}
+function emptyPayload(horizon, offset, includeCache, filters, win, now, backfill = { pendingFiles: 0, totalFiles: 0 }) {
+  return {
+    version: 1,
+    horizon,
+    offset,
+    includeCache,
+    filters,
+    latestActivityMs: null,
+    range: {
+      startMs: win.startMs,
+      endMs: win.endMs,
+      elapsedEndMs: Math.min(now, win.endMs),
+      label: win.label,
+      subtitle: `${win.unitSummary} \xB7 ${includeCache ? "cache included" : "cache excluded"}`,
+      hasNext: offset < 0
+    },
+    summary: {
+      totalTokens: 0,
+      prevTotalTokens: null,
+      deltaPct: null,
+      deltaKind: "none",
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      reasoningTokens: 0,
+      cacheHitRate: null,
+      sessions: 0,
+      events: 0,
+      unmeasuredEvents: 0,
+      topModel: null,
+      peakBucket: null
+    },
+    series: {
+      models: [],
+      maxBucketTotal: 0,
+      maxModelBucket: 0,
+      maxCumulativeTotal: 0,
+      maxModelCumulative: 0,
+      buckets: win.buckets.map((spec) => ({
+        startMs: spec.startMs,
+        endMs: spec.endMs,
+        label: spec.label,
+        axisLabel: spec.axisLabel,
+        future: spec.startMs > now,
+        total: 0,
+        cumulativeTotal: 0,
+        input: 0,
+        output: 0,
+        cacheRead: 0,
+        cacheWrite: 0,
+        events: 0,
+        byModel: {},
+        cumulativeByModel: {}
+      }))
+    },
+    leaderboard: { totalModels: 0, entries: [] },
+    facets: { providers: [], models: [] },
+    backfill
+  };
+}
+function readHistorical(options = {}, file = historyFile(), backfill = { pendingFiles: 0, totalFiles: 0 }) {
+  const now = options.now ?? Date.now();
+  const horizon = parseHorizon(options.horizon);
+  const offset = Number.isFinite(options.offset) ? Math.min(0, Math.trunc(options.offset)) : 0;
+  const includeCache = options.includeCache !== false;
+  const providerFilter = cleanFilter(options.provider);
+  const modelFilter = cleanFilter(options.model);
+  const filters = { provider: providerFilter, model: modelFilter };
+  const win = buildHorizonWindow(horizon, offset, now);
+  if (!existsSync4(file)) {
+    return emptyPayload(horizon, offset, includeCache, filters, win, now, backfill);
+  }
+  const db = openHistoryDatabase(file, true);
+  try {
+    if (!db.query("SELECT 1 FROM sqlite_schema WHERE name = 'model_usage'").get()) {
+      return emptyPayload(horizon, offset, includeCache, filters, win, now, backfill);
+    }
+    const cols = new Set(db.query("PRAGMA table_info(model_usage)").all().map((c) => c.name));
+    if (!cols.has("input_tokens")) {
+      const legacyCount = db.query("SELECT COUNT(*) AS c FROM model_usage WHERE observed_at >= ? AND observed_at < ?").get(win.startMs, win.endMs)?.c ?? 0;
+      const result = emptyPayload(horizon, offset, includeCache, filters, win, now, backfill);
+      result.summary.unmeasuredEvents = legacyCount;
+      return result;
+    }
+    const whereParts = ["observed_at >= ?", "observed_at < ?"];
+    const params = [win.startMs, win.endMs];
+    if (providerFilter !== "all") {
+      whereParts.push("provider = ?");
+      params.push(providerFilter);
+    }
+    if (modelFilter !== "all") {
+      whereParts.push("model = ?");
+      params.push(modelFilter);
+    }
+    const rows = db.query(`
+      SELECT provider, observed_at, model, effort, session_id, source_kind,
+             input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, reasoning_tokens
+      FROM model_usage
+      WHERE ${whereParts.join(" AND ")}
+      ORDER BY observed_at
+    `).all(...params);
+    const prevWhereParts = ["observed_at >= ?", "observed_at < ?", "input_tokens IS NOT NULL"];
+    const prevParams = [win.prevStartMs, win.prevEndMs];
+    if (providerFilter !== "all") {
+      prevWhereParts.push("provider = ?");
+      prevParams.push(providerFilter);
+    }
+    if (modelFilter !== "all") {
+      prevWhereParts.push("model = ?");
+      prevParams.push(modelFilter);
+    }
+    const prevRows = db.query(`
+      SELECT model,
+             SUM(COALESCE(input_tokens, 0)) AS input_tokens,
+             SUM(COALESCE(output_tokens, 0)) AS output_tokens,
+             SUM(COALESCE(cache_read_tokens, 0)) AS cache_read_tokens,
+             SUM(COALESCE(cache_write_tokens, 0)) AS cache_write_tokens
+      FROM model_usage
+      WHERE ${prevWhereParts.join(" AND ")}
+      GROUP BY model
+    `).all(...prevParams);
+    const prevByModel = new Map;
+    let prevTotalTokens = 0;
+    for (const row of prevRows) {
+      const sum = tokenSum(row, includeCache);
+      prevByModel.set(row.model, sum);
+      prevTotalTokens += sum;
+    }
+    const earliestMeasured = db.query("SELECT MIN(observed_at) AS earliest, MAX(observed_at) AS latest FROM model_usage WHERE input_tokens IS NOT NULL").get();
+    const hasPrevHistory = earliestMeasured?.earliest != null && earliestMeasured.earliest < win.prevEndMs;
+    const latestActivityMs = earliestMeasured?.latest ?? null;
+    const allKnownProviders = db.query("SELECT DISTINCT provider FROM model_usage WHERE input_tokens IS NOT NULL ORDER BY provider").all().map((r) => r.provider);
+    const windowFacetRows = db.query(`
+      SELECT provider, model,
+             SUM(COALESCE(input_tokens, 0)) AS input_tokens,
+             SUM(COALESCE(output_tokens, 0)) AS output_tokens,
+             SUM(COALESCE(cache_read_tokens, 0)) AS cache_read_tokens,
+             SUM(COALESCE(cache_write_tokens, 0)) AS cache_write_tokens,
+             COUNT(DISTINCT session_id) AS sessions
+      FROM model_usage
+      WHERE observed_at >= ? AND observed_at < ? AND input_tokens IS NOT NULL
+      GROUP BY provider, model
+    `).all(win.startMs, win.endMs);
+    const providerFacetMap = new Map;
+    for (const p of allKnownProviders)
+      providerFacetMap.set(p, { tokens: 0, sessions: 0 });
+    const modelFacetMap = new Map;
+    for (const r of windowFacetRows) {
+      const tokens = tokenSum(r, includeCache);
+      if (modelFilter === "all" || r.model === modelFilter) {
+        const entry = providerFacetMap.get(r.provider) ?? { tokens: 0, sessions: 0 };
+        entry.tokens += tokens;
+        entry.sessions += r.sessions;
+        providerFacetMap.set(r.provider, entry);
+      }
+      if (providerFilter === "all" || r.provider === providerFilter) {
+        const entry = modelFacetMap.get(r.model) ?? { tokens: 0, sessions: 0 };
+        entry.tokens += tokens;
+        entry.sessions += r.sessions;
+        modelFacetMap.set(r.model, entry);
+      }
+    }
+    if (providerFilter !== "all" && !providerFacetMap.has(providerFilter)) {
+      providerFacetMap.set(providerFilter, { tokens: 0, sessions: 0 });
+    }
+    if (modelFilter !== "all" && !modelFacetMap.has(modelFilter)) {
+      modelFacetMap.set(modelFilter, { tokens: 0, sessions: 0 });
+    }
+    const providerFacets = [...providerFacetMap.entries()].map(([value, stat]) => ({ value, label: providerDisplay(value), tokens: stat.tokens, sessions: stat.sessions })).sort((a, b) => b.tokens - a.tokens || a.label.localeCompare(b.label));
+    const allModelFacets = [...modelFacetMap.entries()].map(([value, stat]) => ({ value, tokens: stat.tokens, sessions: stat.sessions })).sort((a, b) => b.tokens - a.tokens || a.value.localeCompare(b.value));
+    const modelFacets = allModelFacets.slice(0, FACET_MODEL_LIMIT);
+    if (modelFilter !== "all" && !modelFacets.some((m) => m.value === modelFilter)) {
+      const selected = allModelFacets.find((m) => m.value === modelFilter);
+      if (selected) {
+        if (modelFacets.length >= FACET_MODEL_LIMIT)
+          modelFacets.pop();
+        modelFacets.push(selected);
+      }
+    }
+    const bucketAccum = win.buckets.map((spec) => ({
+      spec,
+      total: 0,
+      input: 0,
+      output: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+      events: 0,
+      byModel: new Map
+    }));
+    const modelGroups = new Map;
+    const allSessions = new Set;
+    let totalTokens = 0;
+    let inputTokens = 0;
+    let outputTokens = 0;
+    let cacheReadTokens = 0;
+    let cacheWriteTokens = 0;
+    let reasoningTokens = 0;
+    let events = 0;
+    let unmeasuredEvents = 0;
+    for (const row of rows) {
+      if (row.input_tokens === null) {
+        if (row.source_kind === null)
+          unmeasuredEvents += 1;
+        continue;
+      }
+      const input = row.input_tokens ?? 0;
+      const output = row.output_tokens ?? 0;
+      const cacheRead = row.cache_read_tokens ?? 0;
+      const cacheWrite = row.cache_write_tokens ?? 0;
+      const reasoning = row.reasoning_tokens ?? 0;
+      const tokens = input + output + (includeCache ? cacheRead + cacheWrite : 0);
+      totalTokens += tokens;
+      inputTokens += input;
+      outputTokens += output;
+      cacheReadTokens += cacheRead;
+      cacheWriteTokens += cacheWrite;
+      reasoningTokens += reasoning;
+      events += 1;
+      if (row.session_id)
+        allSessions.add(row.session_id);
+      let group = modelGroups.get(row.model);
+      if (!group) {
+        group = {
+          model: row.model,
+          tokens: 0,
+          input: 0,
+          output: 0,
+          cacheRead: 0,
+          cacheWrite: 0,
+          reasoning: 0,
+          events: 0,
+          sessions: new Set,
+          providers: new Map,
+          efforts: new Map
+        };
+        modelGroups.set(row.model, group);
+      }
+      group.tokens += tokens;
+      group.input += input;
+      group.output += output;
+      group.cacheRead += cacheRead;
+      group.cacheWrite += cacheWrite;
+      group.reasoning += reasoning;
+      group.events += 1;
+      if (row.session_id)
+        group.sessions.add(row.session_id);
+      group.providers.set(row.provider, (group.providers.get(row.provider) ?? 0) + Math.max(tokens, 1));
+      if (row.effort) {
+        group.efforts.set(row.effort, (group.efforts.get(row.effort) ?? 0) + Math.max(tokens, 1));
+      }
+      const idx = bucketIndexFor(win.buckets, row.observed_at);
+      if (idx >= 0) {
+        const b = bucketAccum[idx];
+        b.total += tokens;
+        b.input += input;
+        b.output += output;
+        b.cacheRead += cacheRead;
+        b.cacheWrite += cacheWrite;
+        b.events += 1;
+        if (tokens > 0) {
+          b.byModel.set(row.model, (b.byModel.get(row.model) ?? 0) + tokens);
+        }
+      }
+    }
+    const sortedGroups = [...modelGroups.values()].sort((a, b) => b.tokens - a.tokens || b.events - a.events || a.model.localeCompare(b.model));
+    const topModels = sortedGroups.filter((g) => g.tokens > 0).slice(0, TOP_SERIES_LIMIT).map((g) => g.model);
+    const keepSet = new Set(topModels);
+    let hasOther = false;
+    for (const b of bucketAccum) {
+      for (const [m, t] of b.byModel) {
+        if (t > 0 && !keepSet.has(m)) {
+          hasOther = true;
+          break;
+        }
+      }
+      if (hasOther)
+        break;
+    }
+    const seriesModels = hasOther ? [...topModels, "Other"] : topModels;
+    let runningTotal = 0;
+    const runningByModel = new Map;
+    let maxBucketTotal = 0;
+    let maxModelBucket = 0;
+    let maxCumulativeTotal = 0;
+    let maxModelCumulative = 0;
+    let peakBucket = null;
+    const buckets = bucketAccum.map((b) => {
+      const future = b.spec.startMs > now;
+      const byModel = {};
+      let other = 0;
+      for (const name of topModels) {
+        const val = b.byModel.get(name) ?? 0;
+        if (val > 0) {
+          byModel[name] = val;
+          if (val > maxModelBucket)
+            maxModelBucket = val;
+        }
+      }
+      for (const [name, val] of b.byModel) {
+        if (!keepSet.has(name))
+          other += val;
+      }
+      if (other > 0) {
+        byModel.Other = other;
+        if (other > maxModelBucket)
+          maxModelBucket = other;
+      }
+      if (!future) {
+        runningTotal += b.total;
+        if (runningTotal > maxCumulativeTotal)
+          maxCumulativeTotal = runningTotal;
+        for (const name of seriesModels) {
+          const next = (runningByModel.get(name) ?? 0) + (byModel[name] ?? 0);
+          runningByModel.set(name, next);
+          if (next > maxModelCumulative)
+            maxModelCumulative = next;
+        }
+      }
+      const cumulativeByModel = {};
+      if (!future) {
+        for (const name of seriesModels) {
+          const val = runningByModel.get(name) ?? 0;
+          if (val > 0)
+            cumulativeByModel[name] = val;
+        }
+      }
+      if (b.total > maxBucketTotal)
+        maxBucketTotal = b.total;
+      if (b.total > 0 && (!peakBucket || b.total > peakBucket.tokens)) {
+        peakBucket = { label: b.spec.label, tokens: b.total };
+      }
+      return {
+        startMs: b.spec.startMs,
+        endMs: b.spec.endMs,
+        label: b.spec.label,
+        axisLabel: b.spec.axisLabel,
+        future,
+        total: b.total,
+        cumulativeTotal: future ? 0 : runningTotal,
+        input: b.input,
+        output: b.output,
+        cacheRead: b.cacheRead,
+        cacheWrite: b.cacheWrite,
+        events: b.events,
+        byModel,
+        cumulativeByModel
+      };
+    });
+    const leaderboardEntries = sortedGroups.slice(0, LEADERBOARD_LIMIT).map((g, i) => {
+      const providersSorted = [...g.providers.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+      const primaryProvider = providersSorted[0]?.[0] ?? "unknown";
+      const prevTokens = hasPrevHistory ? prevByModel.get(g.model) ?? 0 : null;
+      const change = compareChange(g.tokens, prevTokens);
+      const effortSum = [...g.efforts.values()].reduce((acc, v) => acc + v, 0);
+      const efforts = effortSum > 0 ? [...g.efforts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([effort, weight]) => ({ effort, sharePct: round1(weight / effortSum * 100) })) : [];
+      return {
+        rank: i + 1,
+        model: g.model,
+        provider: primaryProvider,
+        providers: providersSorted.map(([p]) => p),
+        tokens: g.tokens,
+        input: g.input,
+        output: g.output,
+        cacheRead: g.cacheRead,
+        cacheWrite: g.cacheWrite,
+        reasoning: g.reasoning,
+        sessions: g.sessions.size,
+        events: g.events,
+        sharePct: totalTokens > 0 ? round1(g.tokens / totalTokens * 100) : 0,
+        prevTokens,
+        deltaPct: change.deltaPct,
+        deltaKind: change.deltaKind,
+        efforts
+      };
+    });
+    const summaryPrev = hasPrevHistory ? prevTotalTokens : null;
+    const summaryChange = compareChange(totalTokens, summaryPrev);
+    const inputSide = inputTokens + cacheReadTokens + cacheWriteTokens;
+    const cacheHitRate = inputSide > 0 ? round1(cacheReadTokens / inputSide * 100) : null;
+    const topEntry = leaderboardEntries[0] ?? null;
+    return {
+      version: 1,
+      horizon,
+      offset,
+      includeCache,
+      filters,
+      latestActivityMs,
+      range: {
+        startMs: win.startMs,
+        endMs: win.endMs,
+        elapsedEndMs: Math.min(now, win.endMs),
+        label: win.label,
+        subtitle: `${win.unitSummary} \xB7 ${includeCache ? "cache included" : "cache excluded"}`,
+        hasNext: offset < 0
+      },
+      summary: {
+        totalTokens,
+        prevTotalTokens: summaryPrev,
+        deltaPct: summaryChange.deltaPct,
+        deltaKind: summaryChange.deltaKind,
+        inputTokens,
+        outputTokens,
+        cacheReadTokens,
+        cacheWriteTokens,
+        reasoningTokens,
+        cacheHitRate,
+        sessions: allSessions.size,
+        events,
+        unmeasuredEvents,
+        topModel: topEntry ? { model: topEntry.model, provider: topEntry.provider, tokens: topEntry.tokens, sharePct: topEntry.sharePct } : null,
+        peakBucket
+      },
+      series: {
+        models: seriesModels,
+        maxBucketTotal,
+        maxModelBucket,
+        maxCumulativeTotal,
+        maxModelCumulative,
+        buckets
+      },
+      leaderboard: {
+        totalModels: sortedGroups.length,
+        entries: leaderboardEntries
+      },
+      facets: {
+        providers: providerFacets,
+        models: modelFacets
+      },
+      backfill
+    };
+  } finally {
+    db.close();
+  }
+}
+
+// src/history/burndown.ts
+import { existsSync as existsSync5 } from "fs";
+import { createHash as createHash3 } from "crypto";
+
+// herdr-app/mods/usage-monitor/time.js
+var STALE_MS = 5 * 60000;
+var STALE_GRACE_MS = 2 * 60000;
+
+// herdr-app/mods/usage-monitor/pace.js
+var HOUR = 3600000;
+var DAY = 24 * HOUR;
+var CREDIT_SOON = 3 * DAY;
+function windowLength(text) {
+  const s = String(text ?? "").toLowerCase();
+  if (/\b5\s*h\b|five[\s-]hour/.test(s))
+    return 5 * HOUR;
+  if (/\b7\s*d\b|week/.test(s))
+    return 7 * DAY;
+  if (/\b24\s*h\b|\bday\b|daily/.test(s))
+    return DAY;
+  if (/month/.test(s))
+    return 30 * DAY;
+  return null;
+}
+var WEEK = 7 * DAY;
+
+// src/history/burndown.ts
+var MINUTE = 60000;
+var HOUR2 = 60 * MINUTE;
+var DAY2 = 24 * HOUR2;
+var WEEK2 = 7 * DAY2;
+var BUCKETS = 180;
+var round = (value) => Math.round(value * 10) / 10;
+function accountId(account) {
+  return account ? createHash3("sha256").update(account).digest("hex").slice(0, 10) : undefined;
+}
+function accountNames(report) {
+  const names = new Map;
+  for (const provider of [report?.claude, report?.codex, report?.antigravity, ...report?.others ?? []]) {
+    const id = accountId(provider?.account);
+    if (id)
+      names.set(id, provider.account);
+  }
+  return names;
+}
+function labelAccounts(charts, names) {
+  const accounts = new Map;
+  for (const b of charts) {
+    if (!accounts.has(b.provider))
+      accounts.set(b.provider, new Set);
+    accounts.get(b.provider).add(b.account);
+  }
+  return charts.map((b) => {
+    if ((accounts.get(b.provider)?.size ?? 0) < 2)
+      return b;
+    return { ...b, accountLabel: b.account && names.get(b.account) || "Another account" };
+  });
+}
+function samplesFrom(report) {
+  const samples = [];
+  const add = (p, account, sample) => {
+    const a = accountId(account);
+    samples.push({ p, ...a ? { a } : {}, ...sample });
+  };
+  for (const [id, provider] of [["claude", report.claude], ["codex", report.codex]]) {
+    for (const w of provider?.windows ?? []) {
+      add(id, provider.account, { w: w.label, left: round(100 - w.used_percent), reset: w.resets_at ?? null });
+    }
+  }
+  for (const group of report.antigravity?.groups ?? []) {
+    for (const b of group.buckets ?? []) {
+      add("antigravity", report.antigravity.account, { g: group.name, w: b.label, left: round(b.remaining_percent), reset: b.resets_at ?? null });
+    }
+  }
+  for (const provider of report.others ?? []) {
+    for (const w of provider.windows ?? []) {
+      add(provider.id, provider.account, {
+        ...w.scope ? { g: w.scope } : {},
+        w: w.kind,
+        left: round(100 - w.used_percent),
+        reset: w.resets_at ?? null
+      });
+    }
+  }
+  return samples.filter((s) => Number.isFinite(s.left));
+}
+function recordReport(report, file = historyFile()) {
+  const readAt = report.read_at;
+  if (!readAt)
+    return;
+  const providers = new Map;
+  for (const sample of samplesFrom(report)) {
+    const t = readAt[sample.p];
+    if (typeof t !== "number" || !Number.isFinite(t) || t <= 0)
+      continue;
+    const samples = providers.get(sample.p);
+    if (samples)
+      samples.push(sample);
+    else
+      providers.set(sample.p, [sample]);
+  }
+  if (!providers.size)
+    return;
+  const db = openHistoryDatabase(file);
+  try {
+    const insert = db.query(`
+      INSERT INTO allowance_readings (provider, read_at, samples) VALUES (?, ?, ?)
+      ON CONFLICT (provider, read_at) DO NOTHING
+    `);
+    db.transaction(() => {
+      for (const [provider, samples] of providers) {
+        insert.run(provider, readAt[provider], JSON.stringify(samples));
+      }
+    }).immediate();
+  } finally {
+    db.close();
+  }
+}
+function readHistory(file = historyFile(), since = 0) {
+  if (!existsSync5(file))
+    return [];
+  const db = openHistoryDatabase(file, true);
+  try {
+    if (!db.query("SELECT 1 FROM sqlite_schema WHERE name = 'allowance_readings'").get())
+      return [];
+    const rows = db.query("SELECT read_at AS t, samples FROM allowance_readings WHERE read_at >= ? ORDER BY read_at, rowid").all(since);
+    const entries = [];
+    for (const { t, samples } of rows) {
+      const parsed = JSON.parse(samples);
+      const last = entries.at(-1);
+      if (last?.t === t)
+        last.s.push(...parsed);
+      else
+        entries.push({ t, s: parsed });
+    }
+    return entries;
+  } finally {
+    db.close();
+  }
+}
+var windowOf = (s) => s.p === "antigravity" ? windowLength(s.w) ?? s.w : s.w;
+var limitOf = (s) => `${s.p}\x00${s.g ?? ""}\x00${windowOf(s)}`;
+var ROLLING = MINUTE;
+var CHARTED = new Set([5 * HOUR2, WEEK2]);
+function readBurndowns(file = historyFile(), now = Date.now()) {
+  return burndowns(readHistory(file, now - WEEK2 - DAY2), now);
+}
+function burndowns(entries, now = Date.now()) {
+  const accounts = new Map;
+  for (const entry of entries) {
+    for (const s of entry.s) {
+      if (!s.a)
+        continue;
+      if (!accounts.has(limitOf(s)))
+        accounts.set(limitOf(s), new Set);
+      accounts.get(limitOf(s)).add(s.a);
+    }
+  }
+  const accountOf = (s) => {
+    if (s.a)
+      return s.a;
+    const known = accounts.get(limitOf(s));
+    return known?.size === 1 ? [...known][0] : "";
+  };
+  const series = new Map;
+  for (const entry of entries) {
+    for (const s of entry.s) {
+      const key = `${limitOf(s)}\x00${accountOf(s)}`;
+      if (!series.has(key))
+        series.set(key, []);
+      series.get(key).push({ t: entry.t, s });
+    }
+  }
+  const result = [];
+  const latestRead = new Map;
+  for (const readings of series.values()) {
+    const { t, s } = readings.at(-1);
+    const key = `${s.p}\x00${accountOf(s)}`;
+    latestRead.set(key, Math.max(latestRead.get(key) ?? 0, t));
+  }
+  for (const readings of series.values()) {
+    const latest = readings.at(-1);
+    if (now - latest.t > DAY2)
+      continue;
+    if (latest.t < latestRead.get(`${latest.s.p}\x00${accountOf(latest.s)}`))
+      continue;
+    const length = windowLength(latest.s.w);
+    if (!length || !CHARTED.has(length))
+      continue;
+    const parsed = Date.parse(latest.s.reset ?? "");
+    const quoted = parsed > 0 ? parsed : NaN;
+    const rolling = latest.s.left >= 100 && quoted >= latest.t + length - ROLLING;
+    const reset = rolling ? NaN : quoted;
+    const unstarted = !Number.isFinite(reset) && latest.s.left >= 100;
+    const end = Number.isFinite(reset) ? reset : unstarted ? now + length : now;
+    const start = end - length;
+    const inWindow = unstarted ? [] : readings.filter((r) => r.t >= start && r.t <= end);
+    const account = accountOf(latest.s);
+    result.push({
+      provider: latest.s.p,
+      ...account ? { account } : {},
+      ...latest.s.g ? { group: latest.s.g } : {},
+      label: latest.s.w,
+      length,
+      start,
+      end,
+      left: latest.s.left,
+      reset: Number.isFinite(reset) ? latest.s.reset : null,
+      runs: unstarted ? [[start, start, latest.s.left]] : runs(inWindow.map((r) => [r.t, r.s.left]), length, Math.min(now, end))
+    });
+  }
+  return result;
+}
+function runs(readings, length, until) {
+  const slice = length / BUCKETS;
+  const gap = Math.max(20 * MINUTE, 3 * slice);
+  const thinned = [];
+  for (const reading of readings) {
+    const last = thinned.at(-1);
+    if (last && Math.floor(last[0] / slice) === Math.floor(reading[0] / slice))
+      thinned[thinned.length - 1] = reading;
+    else
+      thinned.push(reading);
+  }
+  const out = [];
+  thinned.forEach(([t, left], i) => {
+    const next = thinned[i + 1]?.[0] ?? until;
+    const to = next - t <= gap ? Math.max(next, t) : t + slice;
+    const prev = out.at(-1);
+    if (prev && prev[1] === t && prev[2] === left)
+      prev[1] = to;
+    else
+      out.push([t, to, left]);
+  });
+  return out;
+}
+
 // src/usage-summary.ts
 var SHORT_NAMES = {
   claude: "Claude",
@@ -3024,21 +3213,35 @@ if (mode === "--historical") {
   console.log(JSON.stringify(payload));
   process.exit(0);
 }
+if (mode !== "--cached") {
+  await syncModelUsage().catch((error) => {
+    console.warn("Couldn't sync model usage:", error instanceof Error ? error.message : error);
+  });
+}
+var force = mode === "--refresh";
+var now = Date.now();
+var activity = latestModelActivity();
 var recent = async () => {
-  const cached = await getCachedReport(180000);
-  return cached?.read_at && Object.keys(cached.read_at).length ? cached : null;
+  const cached = await getCachedReport(DAY_MS, { allowPartial: true, now });
+  if (!cached?.read_at || Object.keys(cached.read_at).length === 0)
+    return null;
+  const limits = await getRateLimitsAsync();
+  const plan = planProviderRefreshes(cached, {
+    activity,
+    claudeUntil: limits.claudeUntil,
+    now,
+    force: false
+  });
+  if (plan.any)
+    return null;
+  return { ...cached, ttl: plan.ttls };
 };
-var report = mode === "--cached" ? await getCachedReport(DAY_MS) ?? await getCachedReport(DAY_MS, { allowPartial: true }) : (mode === "--refresh" ? null : await recent()) ?? await fetchDetailedReport();
+var report = mode === "--cached" ? await getCachedReport(DAY_MS) ?? await getCachedReport(DAY_MS, { allowPartial: true }) : (force ? null : await recent()) ?? await fetchDetailedReport({ force, activity, now });
 try {
   if (report)
     recordReport(report);
 } catch (error) {
   console.warn("Couldn't record allowance history:", error instanceof Error ? error.message : error);
-}
-if (mode !== "--cached") {
-  await syncModelUsage().catch((error) => {
-    console.warn("Couldn't sync model usage:", error instanceof Error ? error.message : error);
-  });
 }
 var parts = report ? summaryParts(report) : [];
 console.log(JSON.stringify({
