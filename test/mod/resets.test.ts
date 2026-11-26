@@ -358,4 +358,36 @@ test("providerSuggestion implements the three guiding rules across coding agents
     level: "reset",
     text: "Last chance: use a reset before weekly refreshes (expires in 2d 0h)",
   });
+
+  // Earliest-expiry ordering: an earlier-expiring gated reset is picked ahead of a later-expiring urgent reset
+  const earliestExpiryReport = {
+    claude: {
+      windows: [{ label: "7d weekly", used_percent: 85, resets_at: at(4 * DAY) }],
+      limit_resets: [
+        claudeReset(12 * HOUR, { id: "gated", needs_limit: true, usable_now: false }),
+        claudeReset(3 * DAY, { id: "usable", needs_limit: false, usable_now: true }),
+      ],
+    },
+  };
+  expect(providerSuggestion(earliestExpiryReport, "claude", now)).toEqual({
+    kind: "reset",
+    level: "reset",
+    text: "Use up remaining weekly (15% left), then use a reset (expires in 12h 0m)",
+  });
+
+  // Surplus-reset override: 2 resets expiring in 48h with only 1 weekly refresh (at 36h) before expiry
+  const surplusResetsReport = {
+    claude: {
+      windows: [{ label: "7d weekly", used_percent: 100, resets_at: at(36 * HOUR) }],
+      limit_resets: [
+        claudeReset(48 * HOUR, { id: "r1" }),
+        claudeReset(48 * HOUR, { id: "r2" }),
+      ],
+    },
+  };
+  expect(providerSuggestion(surplusResetsReport, "claude", now)).toEqual({
+    kind: "reset",
+    level: "reset",
+    text: "Use a reset before it expires in 2d 0h",
+  });
 });

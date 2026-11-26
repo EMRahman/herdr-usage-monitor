@@ -214,11 +214,31 @@ function providerKey(provider) {
 }
 
 // Resets that count toward planning: currently usable ones, plus non-paused resets that require
-// hitting a limit before they unlock.
+// hitting a limit before they unlock, ordered strictly by soonest expiry first.
 function planResetsFor(report, provider, now = Date.now()) {
   const id = providerKey(provider);
+  const expiry = (entry) => entry.msLeft ?? Infinity;
   return heldResets(report, now)
-    .filter((entry) => entry.provider === id && !entry.paused && (entry.usable || entry.needsLimit));
+    .filter((entry) => entry.provider === id && !entry.paused && (entry.usable || entry.needsLimit))
+    .sort((a, b) => expiry(a) - expiry(b));
+}
+
+// When more than one reset is held and fewer weekly refreshes remain before they expire than
+// resets expiring by that time, returns the earliest-expiring reset in the surplus batch.
+function surplusExpiring(planResets, weekly) {
+  if (!weekly || !Number.isFinite(weekly.msLeft) || weekly.msLeft <= 0) return null;
+  const total = planResets.reduce((sum, entry) => sum + entry.count, 0);
+  if (total <= 1) return null;
+  let cumulative = 0;
+  for (const entry of planResets) {
+    if (entry.msLeft === null) continue;
+    cumulative += entry.count;
+    const refreshes = entry.msLeft < weekly.msLeft ? 0 : 1 + Math.floor((entry.msLeft - weekly.msLeft) / WEEK);
+    if (cumulative > 1 && cumulative > refreshes) {
+      return planResets.find((r) => r.msLeft !== null) ?? entry;
+    }
+  }
+  return null;
 }
 
 export function usableResetsFor(report, provider, now = Date.now()) {
@@ -263,9 +283,10 @@ export function adviseUntapped(spares, report, now = Date.now()) {
     const planResets = planResetsFor(report, spare.provider, now);
     const resets = planResets.reduce((sum, entry) => sum + entry.count, 0);
     const expiresBeforeWeekly = planResets.some((entry) => entry.msLeft !== null && entry.msLeft <= weekly.msLeft);
+    const surplus = Boolean(surplusExpiring(planResets, weekly));
     const lastChanceGated = planResets.some((entry) => entry.needsLimit && entry.usable
       && entry.msLeft !== null && entry.msLeft > weekly.msLeft && entry.msLeft - weekly.msLeft < WAIT_SOON);
-    if (resets > 0 && (expiresBeforeWeekly || lastChanceGated)) {
+    if (resets > 0 && (expiresBeforeWeekly || surplus || lastChanceGated)) {
       return { ...spare, kind: "reset", weeklyMsLeft: weekly.msLeft, weeklyRemaining: weekly.remaining, resets };
     }
     if (weekly.msLeft < WAIT_SOON || (weekly.msLeft < CREDIT_SOON && resets <= 1)) {
@@ -284,9 +305,10 @@ function weeklyScopeLabel(weekly) {
   return label;
 }
 
-function suggestionForSessionLock(session, planResets) {
+function suggestionForSessionLock(session, planResets, weekly = null) {
   const resets = planResets.reduce((sum, entry) => sum + entry.count, 0);
-  const expiring = planResets.find((entry) => entry.msLeft !== null && entry.msLeft <= session.msLeft);
+  const expiring = planResets.find((entry) => entry.msLeft !== null && entry.msLeft <= session.msLeft)
+    ?? surplusExpiring(planResets, weekly);
   if (expiring) {
     return {
       kind: "reset",
@@ -315,7 +337,8 @@ function suggestionForSessionLock(session, planResets) {
 function suggestionForWeekly(weekly, session, planResets, resetNoun) {
   const resets = planResets.reduce((sum, entry) => sum + entry.count, 0);
   const scope = weeklyScopeLabel(weekly);
-  const expiring = planResets.find((entry) => entry.msLeft !== null && entry.msLeft <= weekly.msLeft);
+  const expiring = planResets.find((entry) => entry.msLeft !== null && entry.msLeft <= weekly.msLeft)
+    ?? surplusExpiring(planResets, weekly);
   const lastChance = planResets.find((entry) => entry.needsLimit && entry.usable
     && entry.msLeft !== null && entry.msLeft > weekly.msLeft && entry.msLeft - weekly.msLeft < WAIT_SOON);
   if (isWeeklyLow(weekly)) {
@@ -360,7 +383,7 @@ function suggestionForWeekly(weekly, session, planResets, resetNoun) {
     };
   }
   if (session && Number.isFinite(session.msLeft) && session.msLeft > 0 && session.remaining <= 10) {
-    return suggestionForSessionLock(session, planResets);
+    return suggestionForSessionLock(session, planResets, weekly);
   }
   if (resets > 0) {
     return {
