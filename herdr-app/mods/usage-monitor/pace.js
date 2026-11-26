@@ -122,17 +122,20 @@ function pressing(provider, windows, entries, now) {
   const limits = (windows ?? []).map((entry) => {
     const length = entry.length ?? windowLength(entry.label);
     return { label: entry.label, resetsAt: entry.resets_at, length,
+      remaining: 100 - Math.round(entry.used_percent),
       ...light({ remaining: 100 - Math.round(entry.used_percent), resetsAt: entry.resets_at, length, now }) };
   });
   const tight = limits.find((limit) => limit.level === "tight");
   const weekly = limits.find((limit) => limit.length === WEEK && Date.parse(limit.resetsAt ?? "") > now);
   const weekEnds = weekly ? Date.parse(weekly.resetsAt) : null;
+  const lowWeekly = weekly && (weekly.level === "tight" || weekly.remaining <= 30) && weekly.msLeft >= CREDIT_SOON;
   return entries.map((entry) => {
     const expiry = Date.parse(entry.expiresAt ?? "");
     const msLeft = Number.isFinite(expiry) ? expiry - now : null;
     const usable = entry.usable ?? true;
     const urgent = !usable ? null
       : tight ? "tight"
+      : lowWeekly ? "lowWeekly"
       : msLeft !== null && msLeft <= CREDIT_SOON ? "expiring"
       : msLeft !== null && weekEnds !== null && expiry < weekEnds ? "lastWeek" : null;
     return {
@@ -140,6 +143,49 @@ function pressing(provider, windows, entries, now) {
       ...entry, usable, msLeft, urgent, tightLimit: urgent === "tight" ? tight.label : null,
     };
   }).filter((entry) => entry.msLeft === null || entry.msLeft > 0);
+}
+
+function weeklyFor(report, provider, group, now) {
+  const fromWindows = (entries) => {
+    for (const entry of entries ?? []) {
+      const length = windowLength(entry.label ?? entry.kind);
+      if (length !== WEEK) continue;
+      const remaining = Number.isFinite(entry.remaining_percent)
+        ? entry.remaining_percent
+        : 100 - Math.round(entry.used_percent);
+      return { remaining, ...light({ remaining, resetsAt: entry.resets_at, length, now }) };
+    }
+    return null;
+  };
+  if (provider === "Claude") return fromWindows(report?.claude?.windows);
+  if (provider === "Codex") return fromWindows(report?.codex?.windows);
+  if (provider === "Antigravity") {
+    const match = (report?.antigravity?.groups ?? []).find((entry) => entry.name === group);
+    return fromWindows(match?.buckets);
+  }
+  const other = (report?.others ?? []).find((entry) => entry.id === provider || entry.name === provider);
+  return fromWindows(other?.windows);
+}
+
+/**
+ * Turns raw untapped windows into actionable advice:
+ * - "use": lots of weekly left (or no weekly limit) -> use this allowance.
+ * - "wait": 5h is untapped, weekly is low, and reset is soon (< 3d) -> wait for weekly reset.
+ * - "reset": 5h is untapped, weekly is low, and 3+ days remain -> look towards using a reset.
+ */
+export function adviseUntapped(spares, report, now = Date.now()) {
+  const rank = { use: 0, reset: 1, wait: 2 };
+  return spares.map((spare) => {
+    if (spare.credit || spare.length !== 5 * HOUR) return { ...spare, kind: "use" };
+    const weekly = weeklyFor(report, spare.provider, spare.group, now);
+    if (!weekly || (weekly.level !== "tight" && weekly.remaining > 30)) {
+      return { ...spare, kind: "use" };
+    }
+    if (Number.isFinite(weekly.msLeft) && weekly.msLeft > 0 && weekly.msLeft < CREDIT_SOON) {
+      return { ...spare, kind: "wait", weeklyMsLeft: weekly.msLeft, weeklyRemaining: weekly.remaining };
+    }
+    return { ...spare, kind: "reset", weeklyMsLeft: weekly.msLeft, weeklyRemaining: weekly.remaining };
+  }).sort((a, b) => rank[a.kind] - rank[b.kind] || (a.msLeft ?? Infinity) - (b.msLeft ?? Infinity));
 }
 
 /**
@@ -174,6 +220,7 @@ export function providerDetail(report, id, name, now = Date.now()) {
 export function resetNote(entry) {
   const why = entry.status
     ?? (entry.urgent === "tight" ? `${entry.tightLimit} is tight`
+      : entry.urgent === "lowWeekly" ? "Weekly is low · consider using a reset"
       : entry.urgent === "expiring" ? "Use it or lose it"
       : entry.urgent === "lastWeek" ? "Last week to use it"
       : entry.needsLimit ? "Use it at a limit" : "");
