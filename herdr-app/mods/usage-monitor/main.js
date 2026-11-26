@@ -411,12 +411,13 @@ export default class UsageMonitor extends View {
       try {
         const result = await runBridge([
           "--prompts", `--view=${query.mode}`, `--from=${query.from}`, `--to=${query.to}`,
+          `--provider=${query.provider}`, `--group=${query.group ?? ""}`, `--bucket=${query.bucket ?? ""}`,
           `--model=${query.model ?? "all"}`, `--cache=${query.includeCache === false ? "0" : "1"}`,
         ]);
-        if (result.code !== 0) throw new Error("Couldn’t read the local Codex logs.");
+        if (result.code !== 0) throw new Error("Couldn’t read the local session logs.");
         selection.result = JSON.parse(result.stdout);
       } catch {
-        selection.error = "Couldn’t read the local Codex logs.";
+        selection.error = "Couldn’t read the local session logs.";
       } finally {
         selection.pending = false;
         if (this.promptDetails === selection) cx.notify();

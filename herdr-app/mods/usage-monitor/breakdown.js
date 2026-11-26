@@ -4,6 +4,7 @@ import { LIGHT_LABEL, RESET_COLOR, WINDOW_NAMES, adviseUntapped, creditLight, he
   providerSuggestion, resetNote, windowLength } from "./pace.js";
 import { burndownCards } from "./burndown.js";
 import { historicalView } from "./historical.js";
+import { PROMPT_PROVIDERS } from "./prompt-providers.js";
 import { duration, formatInt, localTime, refreshDuration, sampleStatus, timed } from "./time.js";
 
 const PROVIDERS = { copilot: "GitHub Copilot", cursor: "Cursor", grok: "Grok", opencode: "OpenCode" };
@@ -366,22 +367,37 @@ function burndownView(t, report, state) {
 }
 
 function promptDetail(t, selection, close) {
-  const { label, pending, error, result } = selection;
+  const { label, provider, pending, error, result } = selection;
+  const providerName = PROMPT_PROVIDERS[provider];
+  const heading = providerName ? `${providerName} prompts` : "Prompts";
   const prompts = result?.prompts ?? [];
-  const rows = prompts.map(({ at, preview, tokens }) => {
+  const rows = prompts.map(({ provider, at, preview, tokens, models = [] }) => {
+    const agent = providerName ? "" : `${PROMPT_PROVIDERS[provider]} · `;
     const usage = tokens === undefined ? "" : ` · ${formatInt(tokens)} tokens`;
+    const timing = `${agent}${localTime(at)}`;
+    const primary = models[0];
+    const effort = primary?.effort ? `${primary.effort} effort` : "Effort unavailable";
+    const model = primary?.model ?? "Model unavailable";
+    const details = models.map(({ model, effort }) => `${model} · ${effort ? `${effort} effort` : "Effort unavailable"}`).join("\n");
     return h_flex().gap(8).items_center().min_w(0)
-      .child(div().flex_none().text_color(t.muted).child(`${localTime(at)}${usage}`))
-      .child(div().min_w(0).truncate().tooltip(preview).child(preview));
+      .child(div().flex_none().text_size(10.5).text_color(t.muted).child(timing))
+      .child(h_flex().min_w(0).gap(5).items_center()
+        .tooltip(details || `${model} · ${effort}`)
+        .child(div().max_w(180).truncate().font_medium().child(model))
+        .child(div().flex_none().text_color(t.muted).text_size(10.5).child(effort))
+        .when(models.length > 1, (el) => el.child(div().flex_none().text_color(t.muted)
+          .text_size(10.5).child(`+${models.length - 1}`))))
+      .child(div().flex_1().min_w(0).truncate().tooltip(preview).child(preview))
+      .when(Boolean(usage), (el) => el.child(div().flex_none().text_size(10.5).text_color(t.muted).child(usage.slice(3))));
   });
-  const status = error || (pending ? "Looking up local Codex logs…"
+  const status = error || (pending ? "Looking up local session logs…"
     : result?.partial ? "Search reached its time limit. Results may be incomplete."
-    : prompts.length === 0 ? "No matching prompts found in the available Codex logs."
+    : prompts.length === 0 ? "No matching prompts found in the available logs."
     : result.total > prompts.length ? `Showing the ${prompts.length} most recent of ${result.total} prompts.` : "");
   return v_flex().flex_none().px(16).py(8).gap(5).border_t(1).border_color(t.border)
     .child(h_flex().justify_between().items_center().gap(8)
-      .child(div().min_w(0).truncate().font_semibold().child(`Codex prompts · ${label}`))
-      .child(button(t, "close-codex-prompts", "Close prompts", close)))
+      .child(div().min_w(0).truncate().font_semibold().child(`${heading} · ${label}`))
+      .child(button(t, "close-prompts", "Close prompts", close)))
     .children(rows)
     .when(Boolean(status), (el) => el.child(div().text_size(11).text_color(t.muted).child(status)));
 }

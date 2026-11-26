@@ -2,7 +2,7 @@
 import { fetchDetailedReport, getCachedReport, getRateLimitsAsync } from "../src/fetcher.ts";
 import { readHistorical, type Horizon } from "../src/history/historical.ts";
 import { accountId, accountNames, labelAccounts, readBurndowns, recordReport } from "../src/history/burndown.ts";
-import { latestModelActivity, readCodexPrompts, readModelUsage, syncModelUsage } from "../src/history/model-usage.ts";
+import { latestModelActivity, readPrompts, readModelUsage, syncModelUsage } from "../src/history/model-usage.ts";
 import { planProviderRefreshes } from "../src/refresh-policy.ts";
 import { formatSummary, summaryParts } from "../src/usage-summary.ts";
 
@@ -16,10 +16,13 @@ function flagValue(name: string): string | undefined {
 }
 
 if (mode === "--prompts") {
-  const payload = await readCodexPrompts({
+  const payload = await readPrompts({
     from: Number(flagValue("from")),
     to: Number(flagValue("to")),
     mode: flagValue("view") === "burndown" ? "burndown" : "usage",
+    provider: flagValue("provider"),
+    group: flagValue("group"),
+    bucket: flagValue("bucket"),
     model: flagValue("model"),
     includeCache: flagValue("cache") !== "0",
   });

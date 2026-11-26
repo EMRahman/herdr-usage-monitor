@@ -8,6 +8,7 @@
 import { div, svg } from "gpui-kit";
 import { h_flex, HoverCard, v_flex } from "gpui-base";
 import { MARGIN, RESET_COLOR, light, lightColor } from "./pace.js";
+import { quotaModelFilter, supportsPromptPreviews } from "./prompt-providers.js";
 import { duration, localTime, timed } from "./time.js";
 
 export const PROVIDER_NAMES = {
@@ -110,9 +111,10 @@ function hoverColumns(t, b, activity, id, now, selectPrompts) {
     }
     const trigger = div().w_full().h(PLOT);
     if (selectPrompts) {
-      tip.child(div().text_color(t.muted).child("Click for Codex prompts in this interval"));
+      tip.child(div().text_color(t.muted).child("Click for prompts in this interval"));
       trigger.id(`${id}-prompts-${i}`).cursor_pointer().on_click((_event, cx) => selectPrompts({
         mode: "burndown", from, to, label: `${localTime(from)} – ${localTime(to)}`,
+        provider: b.provider, group: b.group, bucket: b.label,
       }, cx));
     }
     return div().absolute().top(0).h(PLOT)
@@ -220,22 +222,8 @@ export function burndownChart(t, b, activity, id, now, compact = false, selectPr
 }
 
 function activityForChart(b, activity) {
-  if (b.provider !== "antigravity" || !b.group) return activity;
-
-  const words = (name) => name.toLowerCase().match(/[a-z0-9]+/g) ?? [];
-  const group = words(b.group);
-  if (group[0] === "gemini" && /^\d/.test(group[1] ?? "")) {
-    // A quota can cover a single Gemini model, including variants with a suffix in the log.
-    const modelName = `-${group.join("-")}-`;
-    return activity.filter(({ model }) => `-${words(model).join("-")}-`.includes(modelName));
-  }
-
-  const families = group.filter((word) => word === "gemini" || word === "claude" || word === "gpt");
-  if (!families.length) return activity;
-  return activity.filter(({ model }) => {
-    const modelWords = words(model);
-    return families.some((family) => modelWords.includes(family));
-  });
+  const matchesModel = quotaModelFilter(b.provider, b.group, b.label);
+  return matchesModel ? activity.filter(({ model }) => matchesModel(model)) : activity;
 }
 
 /** Cards for the breakdown's columns: one per provider, a chart per 5-hour and weekly limit. */
@@ -265,7 +253,7 @@ export function burndownCards(t, burndowns, modelUsage = [], now = Date.now(), h
   return [...byProvider].map(([provider, list]) => {
     const activity = activityByProvider.get(provider) ?? [];
     const charts = list.map((b, i) => burndownChart(t, b, activity, `burndown-${provider}-${i}`, now, false,
-      provider === "codex" ? selectPrompts : undefined));
+      supportsPromptPreviews(provider) ? selectPrompts : undefined));
     const resets = resetRows(t, held, provider);
     return {
       provider,

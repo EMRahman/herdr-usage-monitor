@@ -45,7 +45,7 @@ const BLOCK: LayoutNode = { id: MOD, type: "block", size: { px: 36 }, content: {
 const TAB_BLOCK: LayoutNode = { id: TAB, type: "block", size: { px: 80 }, content: { mod: MOD, props: { mode: "tab-button" } } };
 
 // Everything the mod needs. bridge.js is the provider code, prebuilt by build.ts.
-const FILES = ["mod.json", "main.js", "breakdown.js", "burndown.js", "panel.js", "historical.js", "pace.js", "time.js", "gauge.svg", "refresh.svg", "refresh-spinner.svg", "reset.svg", "bridge.js"];
+const FILES = ["mod.json", "main.js", "breakdown.js", "burndown.js", "panel.js", "historical.js", "pace.js", "time.js", "prompt-providers.js", "gauge.svg", "refresh.svg", "refresh-spinner.svg", "reset.svg", "bridge.js"];
 
 // Optional: the mod also works without it, finding Bun on the PATH.
 interface Config {
