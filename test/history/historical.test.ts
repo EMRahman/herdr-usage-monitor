@@ -366,12 +366,18 @@ describe("historical.js UI rendering", () => {
         const trigger = card.triggerEl as Element;
         const choose = trigger.calls.find(([method]) => method === "on_click")![1] as typeof click;
         choose({}, {});
-        expect(hoverLabels(withPrompts, id)).toContain("Click for Codex prompts in this interval");
+        expect(hoverLabels(withPrompts, id)).toContain("Click for prompts in this interval");
       }
       expect(selectPrompts.mock.calls.map(([query]) => query)).toEqual(Array(2).fill({
         mode: "usage", from: filtered.series.buckets[1]!.startMs, to: filtered.series.buckets[1]!.endMs,
         label: "Tue, Nov 24", horizon: "w", offset: 0, provider: "all", model: "gpt-6.2-sol", includeCache: false,
       }));
+      const claudeData = readHistorical({ horizon: "w", provider: "claude", now }, file);
+      const claudeChart = historicalView(t, { ...state, historical: claudeData, selectPrompts });
+      const claudeCard = findById(claudeChart, "hist-bar-w-0-0")!;
+      const claudeClick = (claudeCard.triggerEl as Element).calls.find(([method]) => method === "on_click")![1] as typeof click;
+      claudeClick({}, {});
+      expect(selectPrompts.mock.calls[2]?.[0]).toMatchObject({ mode: "usage", provider: "claude" });
 
       // Hourly D horizon and 52-week Y horizon + stepping backward work cleanly.
       const dayData = readHistorical({ horizon: "d", offset: -1, now }, file);

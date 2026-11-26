@@ -775,6 +775,30 @@ import { readdir, stat } from "fs/promises";
 import { homedir as homedir3 } from "os";
 import { basename as basename2, dirname as dirname3, join as join3, resolve } from "path";
 
+// herdr-app/mods/usage-monitor/prompt-providers.js
+var words = (name) => name.toLowerCase().match(/[a-z0-9]+/g) ?? [];
+function quotaModelFilter(provider, group, bucket) {
+  if (provider === "claude" && typeof bucket === "string") {
+    const family = words(bucket).find((word) => word === "opus" || word === "sonnet");
+    if (family)
+      return (model) => words(model).includes(family);
+  }
+  if (provider !== "antigravity" || !group)
+    return null;
+  const groupWords = words(group);
+  if (groupWords[0] === "gemini" && /^\d/.test(groupWords[1] ?? "")) {
+    const modelName = `-${groupWords.join("-")}-`;
+    return (model) => `-${words(model).join("-")}-`.includes(modelName);
+  }
+  const families = groupWords.filter((word) => word === "gemini" || word === "claude" || word === "gpt");
+  if (!families.length)
+    return null;
+  return (model) => {
+    const modelWords = words(model);
+    return families.some((family) => modelWords.includes(family));
+  };
+}
+
 // src/history/db.ts
 import { Database as Database2 } from "bun:sqlite";
 import { closeSync as closeSync2, mkdirSync, openSync as openSync2 } from "fs";
@@ -1453,6 +1477,34 @@ async function logFiles({ provider, path }) {
   }
   return entries.filter((entry) => entry.isFile() && entry.name.endsWith(".jsonl")).map((entry) => join3(entry.parentPath, entry.name));
 }
+function parsePromptEvent(line) {
+  try {
+    return object(JSON.parse(line));
+  } catch {
+    return;
+  }
+}
+function extendPrompt(prompt, at) {
+  if (prompt && Number.isFinite(at))
+    prompt.through = Math.max(prompt.through, at);
+}
+function recordPromptModel(prompt, { model, effort }, at) {
+  if (model === "unknown")
+    return;
+  const key = `${model}\x00${effort ?? ""}`;
+  const previous = prompt.models.get(key);
+  if (!previous || at > previous.at)
+    prompt.models.set(key, { model, effort, at });
+}
+function promptModels(prompt, from) {
+  const models = [...prompt.models.values()].sort((a, b) => b.at - a.at);
+  const inInterval = models.filter(({ at }) => at >= from);
+  const relevant = inInterval.length ? inInterval : models;
+  if (!relevant.length)
+    return prompt.context ? [prompt.context] : [];
+  const recordedEffort = new Set(relevant.filter(({ effort }) => effort).map(({ model }) => model));
+  return relevant.filter(({ model, effort }) => effort || !recordedEffort.has(model)).map(({ model, effort }) => ({ model, effort }));
+}
 function codexPromptText(payload) {
   if (payload.type === "user_message")
     return nonEmptyString(payload.message);
@@ -1478,10 +1530,130 @@ function promptPreview(text) {
   const prefix = Array.from(clean.slice(0, 361)).slice(0, 180).join("");
   return clean.length > prefix.length ? `${prefix}\u2026` : prefix;
 }
-async function readCodexPrompts({ from, to, mode, model = "all", includeCache = true }, file = historyFile(), roots = localLogs()) {
+function codexPromptObserver(state, logId, record) {
+  const turns = new Map;
+  let activeTurn = "";
+  let previous;
+  return (line, entry) => {
+    if (state.forkReplay)
+      return;
+    if (entry?.tokens)
+      return turns.get(entry.promptTurnId || activeTurn);
+    if (!/"type"\s*:\s*"(turn_context|task_started|task_complete|turn_aborted|user_message|response_item)"/.test(line))
+      return;
+    if (/"type"\s*:\s*"response_item"/.test(line) && !/"role"\s*:\s*"user"/.test(line))
+      return;
+    const event = parsePromptEvent(line);
+    const payload = object(event?.payload);
+    const at = typeof event?.timestamp === "string" ? Date.parse(event.timestamp) : NaN;
+    if (!payload || !Number.isFinite(at))
+      return;
+    const eventType = event?.type === "event_msg" ? payload.type : event?.type;
+    const turn = nonEmptyString(payload.root_turn_id ?? payload.turn_id);
+    if ((eventType === "task_started" || eventType === "turn_context") && turn) {
+      activeTurn = turn;
+      const prompt = turns.get(turn);
+      if (prompt && !prompt.context)
+        prompt.context = state.turns?.[turn];
+    } else if (eventType === "task_complete" || eventType === "turn_aborted") {
+      extendPrompt(turns.get(turn || activeTurn), at);
+      if (!turn || activeTurn === turn)
+        activeTurn = "";
+    } else if (eventType === "user_message" || eventType === "response_item") {
+      const text = codexPromptText(payload);
+      const metadata = object(payload.internal_chat_message_metadata_passthrough);
+      const promptTurn = turn || nonEmptyString(metadata?.turn_id) || activeTurn;
+      if (!text || !promptTurn)
+        return;
+      const digest = hash(text);
+      if (previous?.turn === promptTurn && previous.digest === digest && previous.source !== eventType) {
+        previous = undefined;
+        return;
+      }
+      previous = { turn: promptTurn, digest, source: eventType };
+      extendPrompt(turns.get(promptTurn), at);
+      const prompt = record(`${state.sessionHash ?? logId}:${promptTurn}:${at}:${digest}`, at, text);
+      if (prompt) {
+        prompt.context = state.turns?.[promptTurn];
+        turns.set(promptTurn, prompt);
+      } else
+        turns.delete(promptTurn);
+    }
+  };
+}
+function claudePromptObserver(logId, record) {
+  const ancestry = new Map;
+  let active;
+  return (line) => {
+    if (!/"type"\s*:\s*"(user|assistant|attachment|system)"/.test(line))
+      return;
+    const event = parsePromptEvent(line);
+    if (!event || event.isSidechain)
+      return;
+    const { type, uuid } = event;
+    if (type !== "user" && type !== "assistant" && type !== "attachment" && type !== "system")
+      return;
+    const at = typeof event.timestamp === "string" ? Date.parse(event.timestamp) : NaN;
+    const parent = nonEmptyString(event.parentUuid);
+    let prompt = parent ? ancestry.get(parent) : event.parentUuid === null ? undefined : active;
+    const message = object(event.message);
+    if (type === "user" && message?.role === "user" && !event.isMeta && !event.isCompactSummary && !Object.hasOwn(event, "toolUseResult") && !event.sourceToolAssistantUUID) {
+      const content = message.content;
+      const toolResult = Array.isArray(content) && content.some((item) => object(item)?.type === "tool_result");
+      const text = Array.isArray(content) ? content.flatMap((item) => {
+        const part = object(item);
+        return part?.type === "text" ? [nonEmptyString(part.text)] : [];
+      }).join(`
+`).trim() : nonEmptyString(content);
+      const injected = /^(?:<(?:local-command-|command-|task-notification\b|system-reminder\b)|\[Request interrupted\b)/i.test(text);
+      const origin = object(event.origin)?.kind;
+      if (!toolResult && !injected && event.rowSource !== "local" && event.rowSource !== "harness") {
+        const human = (!origin || origin === "human") && (!event.turnOrigin || event.turnOrigin === "human") && event.promptSource !== "system";
+        const session = nonEmptyString(event.sessionId ?? event.session_id) || logId;
+        const key = nonEmptyString(uuid) || `${at}:${hash(text)}`;
+        prompt = human ? record(`${session}:${key}`, at, text) : undefined;
+        active = prompt;
+      } else if (event.promptSource === "system" || event.turnOrigin === "task_notification") {
+        prompt = undefined;
+        active = undefined;
+      }
+    }
+    if (typeof uuid === "string")
+      ancestry.set(uuid, prompt);
+    if (type === "system" && event.subtype === "turn_duration")
+      extendPrompt(prompt, at);
+    return prompt;
+  };
+}
+function antigravityPromptObserver(conversationId, record) {
+  let active;
+  return (line, entry) => {
+    if (entry)
+      return active;
+    if (!/"type"\s*:\s*"USER_INPUT"/.test(line))
+      return;
+    const event = parsePromptEvent(line);
+    if (event?.type !== "USER_INPUT")
+      return;
+    active = undefined;
+    if (event.source && event.source !== "USER_EXPLICIT")
+      return;
+    const text = nonEmptyString(event.content);
+    const wrapped = /^<USER_REQUEST>\s*([\s\S]*?)\s*<\/USER_REQUEST>/.exec(text);
+    if (!wrapped && /^<(?:USER_REQUEST|ADDITIONAL_METADATA|USER_SETTINGS_CHANGE)\b/.test(text))
+      return;
+    const rawAt = event.created_at ?? event.timestamp;
+    const at = typeof rawAt === "string" ? Date.parse(rawAt) : NaN;
+    active = record(`${conversationId}:${at}:${event.step_index ?? ""}`, at, wrapped?.[1] ?? text);
+  };
+}
+async function readPrompts({ from, to, mode, provider: providerFilter = "all", group, bucket, model = "all", includeCache = true }, file = historyFile(), roots = localLogs()) {
   const matches = new Map;
   const result = (partial = false) => ({
-    prompts: [...matches.values()].sort((a, b) => b.at - a.at).slice(0, 5).map(({ at, preview, tokens }) => ({ at, preview, ...mode === "usage" ? { tokens } : {} })),
+    prompts: [...matches.values()].sort((a, b) => b.at - a.at).slice(0, 5).map((prompt) => {
+      const { provider, at, preview, tokens } = prompt;
+      return { provider, at, preview, models: promptModels(prompt, from), ...mode === "usage" ? { tokens } : {} };
+    }),
     total: matches.size,
     partial
   });
@@ -1493,108 +1665,103 @@ async function readCodexPrompts({ from, to, mode, model = "all", includeCache = 
     if (mode === "usage" && !hasTokens)
       return result();
     const usage = database?.query(`
-      SELECT input_tokens + coalesce(output_tokens, 0)
+      SELECT model, effort, observed_at AS at, input_tokens + coalesce(output_tokens, 0)
         + ? * (coalesce(cache_read_tokens, 0) + coalesce(cache_write_tokens, 0)) AS tokens
       FROM model_usage
-      WHERE provider = 'codex' AND event_id = ? AND observed_at >= ? AND observed_at < ?
+      WHERE provider = ? AND event_id = ? AND observed_at >= ? AND observed_at < ?
         AND (? = 'all' OR model = ?) AND input_tokens IS NOT NULL
     `);
     const seenEvents = new Set;
     const deadline = Date.now() + 2000;
-    const paths = new Set((await Promise.all(roots.filter(({ provider }) => provider === "codex").map(logFiles))).flat());
+    const paths = new Map;
+    const selectedRoots = roots.filter(({ provider }) => providerFilter === "all" || provider === providerFilter);
+    for (const { provider, files } of await Promise.all(selectedRoots.map(async (root) => ({
+      provider: root.provider,
+      files: await logFiles(root)
+    })))) {
+      for (const path of files)
+        paths.set(path, provider);
+    }
     const candidates = [];
-    for (const path of paths) {
+    for (const [path, provider] of paths) {
       if (Date.now() >= deadline)
         return result(true);
       try {
         const info = await stat(path);
         if (info.isFile() && info.mtimeMs >= from)
-          candidates.push({ path, info });
+          candidates.push({ provider, path, info });
       } catch (error) {
         if (!unavailable(error))
           throw error;
       }
     }
     candidates.sort((a, b) => b.info.mtimeMs - a.info.mtimeMs);
-    for (const { path, info } of candidates) {
+    for (const { provider, path, info } of candidates) {
       if (Date.now() >= deadline)
         return result(true);
-      const id = hash(`codex:${path}:${info.dev}:${info.ino}:${info.birthtimeMs}`);
+      const id = hash(`${provider}:${path}:${info.dev}:${info.ino}:${info.birthtimeMs}`);
       const state = {};
-      const prompts = [];
-      const turns = new Map;
-      let activeTurn = "";
-      let previous;
-      const extend = (turn, at) => {
-        const prompt = turns.get(turn);
-        if (prompt && Number.isFinite(at))
-          prompt.through = Math.max(prompt.through, at);
+      const prompts = new Map;
+      const quotaFilter = mode === "burndown" ? quotaModelFilter(provider, group, bucket) : null;
+      const record = (key, at, text) => {
+        if (!text || !Number.isFinite(at) || at >= to)
+          return;
+        const preview = promptPreview(text);
+        if (!preview)
+          return;
+        const existing = prompts.get(key);
+        if (existing)
+          return existing;
+        const prompt = {
+          provider,
+          at,
+          through: at,
+          preview,
+          tokens: 0,
+          matchesQuota: !quotaFilter,
+          models: new Map
+        };
+        prompts.set(key, prompt);
+        return prompt;
       };
+      const observe = provider === "codex" ? codexPromptObserver(state, id, record) : provider === "claude" ? claudePromptObserver(id, record) : antigravityPromptObserver(antigravityConversationId(path, id), record);
       try {
-        const { interrupted } = await readLog(path, 0, info.size, "codex", from, id, state, (line, entry) => {
+        const cutoff = mode === "burndown" ? -Infinity : from;
+        const { interrupted } = await readLog(path, 0, info.size, provider, cutoff, id, state, (line, entry) => {
           if (Date.now() >= deadline)
             return false;
-          if (state.forkReplay)
+          const prompt = observe(line, entry);
+          if (!prompt || !entry)
             return true;
-          if (entry?.tokens) {
-            const turn = entry.promptTurnId || activeTurn;
-            extend(turn, entry.at);
-            const prompt = turns.get(turn);
-            if (prompt && usage && !seenEvents.has(entry.id)) {
-              const row = usage.get(Number(includeCache), entry.id, from, to, model, model);
-              if (row) {
-                prompt.tokens += row.tokens;
-                seenEvents.add(entry.id);
-              }
-            }
+          extendPrompt(prompt, entry.at);
+          if (mode === "burndown" && entry.at >= from && entry.at < to && (!quotaFilter || quotaFilter(entry.model))) {
+            prompt.matchesQuota = true;
+            recordPromptModel(prompt, entry, entry.at);
           }
-          if (!/"type"\s*:\s*"(turn_context|task_started|task_complete|turn_aborted|user_message|response_item)"/.test(line))
-            return true;
-          if (/"type"\s*:\s*"response_item"/.test(line) && !/"role"\s*:\s*"user"/.test(line))
-            return true;
-          let event;
-          try {
-            event = object(JSON.parse(line));
-          } catch {
-            return true;
-          }
-          const payload = object(event?.payload);
-          const at = typeof event?.timestamp === "string" ? Date.parse(event.timestamp) : NaN;
-          if (!payload || !Number.isFinite(at))
-            return true;
-          const eventType = event?.type === "event_msg" ? payload.type : event?.type;
-          const turn = nonEmptyString(payload.root_turn_id ?? payload.turn_id);
-          if ((eventType === "task_started" || eventType === "turn_context") && turn) {
-            activeTurn = turn;
-          } else if (eventType === "task_complete" || eventType === "turn_aborted") {
-            extend(turn || activeTurn, at);
-            if (!turn || activeTurn === turn)
-              activeTurn = "";
-          } else if (eventType === "user_message" || eventType === "response_item") {
-            const text = codexPromptText(payload);
-            const metadata = object(payload.internal_chat_message_metadata_passthrough);
-            const promptTurn = turn || nonEmptyString(metadata?.turn_id) || activeTurn;
-            if (!text || !promptTurn || at >= to)
-              return true;
-            const digest = hash(text);
-            if (previous?.turn === promptTurn && previous.digest === digest && previous.source !== eventType) {
-              previous = undefined;
-              return true;
+          const eventKey = `${provider}:${entry.id}`;
+          if (usage && entry.tokens && !seenEvents.has(eventKey)) {
+            const row = usage.get(Number(includeCache), provider, entry.id, from, to, model, model);
+            if (row) {
+              prompt.tokens += row.tokens;
+              if (row.tokens > 0)
+                recordPromptModel(prompt, row, row.at);
+              seenEvents.add(eventKey);
             }
-            previous = { turn: promptTurn, digest, source: eventType };
-            extend(promptTurn, at);
-            const activity = { at, through: at, preview: promptPreview(text), tokens: 0 };
-            if (!activity.preview)
-              return true;
-            turns.set(promptTurn, activity);
-            prompts.push({ key: `${state.sessionHash ?? id}:${promptTurn}:${at}:${digest}`, activity });
           }
           return true;
         });
-        for (const { key, activity } of prompts) {
-          if (mode === "usage" ? activity.tokens > 0 : activity.through >= from) {
-            matches.set(key, activity);
-          }
+        for (const [key, prompt] of prompts) {
+          if (!(mode === "usage" ? prompt.tokens > 0 : prompt.matchesQuota && prompt.through >= from))
+            continue;
+          const matchKey = `${provider}:${key}`;
+          const existing = matches.get(matchKey);
+          if (existing) {
+            existing.tokens += prompt.tokens;
+            existing.context ??= prompt.context;
+            for (const pair of prompt.models.values())
+              recordPromptModel(existing, pair, pair.at);
+          } else
+            matches.set(matchKey, prompt);
         }
         if (interrupted)
           return result(true);
@@ -3116,6 +3283,7 @@ var STALE_GRACE_MS = 2 * 60000;
 // herdr-app/mods/usage-monitor/pace.js
 var HOUR = 3600000;
 var DAY = 24 * HOUR;
+var WAIT_SOON = 2 * DAY;
 var CREDIT_SOON = 3 * DAY;
 function windowLength(text) {
   const s = String(text ?? "").toLowerCase();
@@ -3408,10 +3576,13 @@ function flagValue(name) {
   return found ? found.slice(prefix.length) : undefined;
 }
 if (mode === "--prompts") {
-  const payload = await readCodexPrompts({
+  const payload = await readPrompts({
     from: Number(flagValue("from")),
     to: Number(flagValue("to")),
     mode: flagValue("view") === "burndown" ? "burndown" : "usage",
+    provider: flagValue("provider"),
+    group: flagValue("group"),
+    bucket: flagValue("bucket"),
     model: flagValue("model"),
     includeCache: flagValue("cache") !== "0"
   });

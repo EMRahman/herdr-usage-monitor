@@ -2,6 +2,7 @@
 // a stacked bar chart and a native GPUI PathBuilder line graph over time.
 import { Background, PathBuilder, div } from "gpui-kit";
 import { Button, HoverCard, Popover, h_flex, v_flex } from "gpui-base";
+import { PROMPT_PROVIDERS, supportsPromptPreviews } from "./prompt-providers.js";
 import { formatCompact, formatInt } from "./time.js";
 
 // Oceanic Steel categorical model palette: cool blues/teals with muted warm accents,
@@ -21,9 +22,7 @@ const TREND_UP = "#2fbf71";
 const TREND_DOWN = "#e5534b";
 
 const PROVIDER_NAMES = {
-  claude: "Claude Code",
-  codex: "Codex",
-  antigravity: "Antigravity",
+  ...PROMPT_PROVIDERS,
   opencode: "OpenCode",
   pi: "Pi",
 };
@@ -456,7 +455,7 @@ function gridLines(t, plotH) {
 
 function promptSelection(data, bucket, state) {
   const { provider, model } = data.filters;
-  if (!state.selectPrompts || bucket.future || !bucket.total || (provider !== "all" && provider !== "codex")) return null;
+  if (!state.selectPrompts || bucket.future || !bucket.total || (provider !== "all" && !supportsPromptPreviews(provider))) return null;
   return (_event, cx) => state.selectPrompts({
     mode: "usage", from: bucket.startMs, to: bucket.endMs, label: bucket.label,
     horizon: data.horizon, offset: data.offset, provider, model, includeCache: data.includeCache,
@@ -500,7 +499,7 @@ function bucketTooltip(t, bucket, { names, colors, byType }, includeCache, cumul
         .child(div().flex_none().text_color(t.muted).child(`${byType ? formatInt(entry.tokens) : formatCompact(entry.tokens)} (${share}%)`)));
     }
   }
-  if (showPromptHint) rows.push(div().text_color(t.muted).child("Click for Codex prompts in this interval"));
+  if (showPromptHint) rows.push(div().text_color(t.muted).child("Click for prompts in this interval"));
   return v_flex().gap(3).min_w(210).max_w(320).px(9).py(7).rounded(6)
     .border(1).border_color(t.border).bg(t.popover).shadow_sm()
     .text_size(11).children(rows);

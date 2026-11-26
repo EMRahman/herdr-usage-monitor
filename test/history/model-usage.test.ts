@@ -4,7 +4,7 @@ import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "n
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openHistoryDatabase, SCHEMA_VERSION } from "../../src/history/db.ts";
-import { PARSER_VERSION, readCodexPrompts, syncModelUsage } from "../../src/history/model-usage.ts";
+import { PARSER_VERSION, readPrompts, syncModelUsage } from "../../src/history/model-usage.ts";
 
 test("resolves Codex chart prompts from the log and looks up tokens for the selected interval", async () => {
   const root = mkdtempSync(join(tmpdir(), "model-prompts-"));
@@ -25,7 +25,7 @@ test("resolves Codex chart prompts from the log and looks up tokens for the sele
     writeFileSync(log, [
       event(0, "session_meta", { id: "session-1" }),
       event(1, "event_msg", { type: "task_started", turn_id: "turn-1" }),
-      event(2, "turn_context", { turn_id: "turn-1", model: "gpt-6.2-sol" }),
+      event(2, "turn_context", { turn_id: "turn-1", model: "gpt-6.2-sol", effort: "high" }),
       user(3, "Injected context", "agents_md.instructions"),
       user(4, "Review the patch", "user.text"),
       event(5, "event_msg", { type: "user_message", message: "Review the patch" }),
@@ -38,6 +38,7 @@ test("resolves Codex chart prompts from the log and looks up tokens for the sele
       event(9, "event_msg", { type: "task_complete", turn_id: "turn-1" }),
       event(10, "event_msg", { type: "task_started", turn_id: "turn-2" }),
       event(11, "event_msg", { type: "user_message", message: "A prompt with no tokens yet" }),
+      event(11.5, "turn_context", { turn_id: "turn-2", model: "gpt-6.1-sol", effort: "low" }),
       "",
     ].join("\n"));
     await syncModelUsage(file, roots);
@@ -45,22 +46,113 @@ test("resolves Codex chart prompts from the log and looks up tokens for the sele
     expect(Buffer.from(await Bun.file(file).arrayBuffer()).includes("Review the patch")).toBe(false);
 
     const query = { from: start + 6_000, to: start + 8_000, mode: "usage" as const, model: "gpt-6.2-sol" };
-    expect((await readCodexPrompts(query, file, roots)).prompts).toEqual([
-      { at: start + 4_000, preview: "Review the patch", tokens: 23 },
+    expect((await readPrompts(query, file, roots)).prompts).toEqual([
+      { at: start + 4_000, provider: "codex", preview: "Review the patch", tokens: 23,
+        models: [{ model: "gpt-6.2-sol", effort: "high" }] },
     ]);
-    expect((await readCodexPrompts({ ...query, includeCache: false, to: start + 9_000 }, file, roots)).prompts).toEqual([
-      { at: start + 7_000, preview: "Focus on the tests", tokens: 5 },
-      { at: start + 4_000, preview: "Review the patch", tokens: 11 },
+    expect((await readPrompts({ ...query, includeCache: false, to: start + 9_000 }, file, roots)).prompts).toEqual([
+      { at: start + 7_000, provider: "codex", preview: "Focus on the tests", tokens: 5,
+        models: [{ model: "gpt-6.2-sol", effort: "high" }] },
+      { at: start + 4_000, provider: "codex", preview: "Review the patch", tokens: 11,
+        models: [{ model: "gpt-6.2-sol", effort: "high" }] },
     ]);
-    expect((await readCodexPrompts({ ...query, model: "another-model" }, file, roots)).total).toBe(0);
+    expect((await readPrompts({ ...query, model: "another-model" }, file, roots)).total).toBe(0);
 
-    expect((await readCodexPrompts({
+    expect((await readPrompts({
       from: start + 8_000, to: start + 12_000, mode: "burndown",
-    }, file, roots)).prompts.map(({ preview }) => preview)).toEqual([
-      "A prompt with no tokens yet", "Focus on the tests",
+    }, file, roots)).prompts.map(({ preview, models }) => [preview, models])).toEqual([
+      ["A prompt with no tokens yet", [{ model: "gpt-6.1-sol", effort: "low" }]],
+      ["Focus on the tests", [{ model: "gpt-6.2-sol", effort: "high" }]],
     ]);
     rmSync(log);
-    expect((await readCodexPrompts(query, file, roots)).total).toBe(0);
+    expect((await readPrompts(query, file, roots)).total).toBe(0);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("matches Claude Code and Antigravity usage to user prompts and scopes quota charts", async () => {
+  const root = mkdtempSync(join(tmpdir(), "model-prompts-"));
+  try {
+    const file = join(root, "history.sqlite");
+    const claude = join(root, "projects");
+    const antigravity = join(root, "brain");
+    mkdirSync(claude);
+    mkdirSync(antigravity);
+    const roots = [{ provider: "claude", path: claude }, { provider: "antigravity", path: antigravity }] as const;
+    const start = Date.now() - 60_000;
+    const time = (sec: number) => new Date(start + sec * 1_000).toISOString();
+    const save = (log: string, events: object[]) => writeFileSync(log, events.map((e) => JSON.stringify(e)).join("\n") + "\n");
+    const user = (sec: number, uuid: string, parentUuid: string | null, content: unknown, extra = {}) => ({
+      type: "user", uuid, parentUuid, timestamp: time(sec), message: { role: "user", content }, ...extra,
+    });
+    const assistant = (sec: number, uuid: string, parentUuid: string, model: string, usage: object, id = uuid) => ({
+      type: "assistant", uuid, parentUuid, timestamp: time(sec), message: { id, model, usage },
+    });
+    save(join(claude, "session.jsonl"), [
+      user(1, "u1", null, "First request"),
+      { type: "attachment", uuid: "a1", parentUuid: "u1" },
+      assistant(2, "r1", "a1", "claude-opus", { input_tokens: 3, output_tokens: 1, cache_read_input_tokens: 50 }),
+      user(3, "tool", "r1", [{ type: "tool_result", content: "Private tool output" }]),
+      user(4, "u2", "r1", [{ type: "text", text: "Second request" }]),
+      { ...assistant(4.5, "preview", "u2", "claude-sonnet-4", { input_tokens: 2 }), effort: "low" },
+      assistant(5, "r2a", "tool", "claude-opus", { input_tokens: 4, output_tokens: 1 }, "r2"),
+      assistant(6, "r2b", "r2a", "claude-opus", { input_tokens: 4, output_tokens: 3 }, "r2"),
+      user(7, "system", "u2", "<task-notification>Generated text</task-notification>", { promptSource: "system" }),
+      assistant(8, "r3", "system", "claude-sonnet", { input_tokens: 100 }),
+      { ...assistant(9, "r4", "u2", "claude-sonnet", { input_tokens: 7, output_tokens: 1 }), perTurnEffort: "high" },
+      { type: "system", subtype: "turn_duration", uuid: "done", parentUuid: "r4", timestamp: time(12) },
+    ]);
+    save(join(antigravity, "transcript.jsonl"), [
+      { type: "USER_INPUT", source: "USER_EXPLICIT", step_index: 1, created_at: time(3),
+        content: "<USER_REQUEST>Gemini request</USER_REQUEST>\n<ADDITIONAL_METADATA>Private editor context</ADDITIONAL_METADATA>" },
+      { type: "SYSTEM_MESSAGE", content: "Injected text", created_at: time(4), step_index: 2 },
+      { type: "PLANNER_RESPONSE", step_index: 3, created_at: time(6), model: "claude-sonnet",
+        input_tokens: 10, output_tokens: 2, cache_read_tokens: 5 },
+      { type: "USER_INPUT", source: "USER_EXPLICIT", content: "Claude request via Antigravity", created_at: time(7), step_index: 4 },
+      { type: "PLANNER_RESPONSE", created_at: time(10), step_index: 5, model: "claude-sonnet",
+        input_tokens: 100, output_tokens: 1 },
+      { type: "USER_INPUT", source: "USER_EXPLICIT", content: "Later request", created_at: time(15), step_index: 6 },
+      { type: "PLANNER_RESPONSE", created_at: time(20), step_index: 7, model: "gemini-4-argon",
+        input_tokens: 100, output_tokens: 1 },
+    ]);
+    await syncModelUsage(file, [...roots]);
+    const query = { from: start + 5_000, to: start + 11_000, mode: "usage" as const, includeCache: false };
+    const summarize = (found: Awaited<ReturnType<typeof readPrompts>>) =>
+      found.prompts.map(({ provider, preview, tokens }) => [provider, preview, tokens]);
+    const all = await readPrompts(query, file, [...roots]);
+    expect(summarize(all)).toEqual([
+      ["antigravity", "Claude request via Antigravity", 101],
+      ["claude", "Second request", 8],
+      ["antigravity", "Gemini request", 12],
+      ["claude", "First request", 7],
+    ]);
+    expect(all.prompts.map(({ models }) => models)).toEqual([
+      [{ model: "claude-sonnet", effort: null }],
+      [{ model: "claude-sonnet", effort: "high" }],
+      [{ model: "claude-sonnet", effort: null }],
+      [{ model: "claude-opus", effort: null }],
+    ]);
+    const samePrompt = await readPrompts({ ...query, provider: "claude", from: start + 1_000 }, file, [...roots]);
+    expect(samePrompt.prompts.find(({ preview }) => preview === "Second request")?.models).toEqual([
+      { model: "claude-sonnet", effort: "high" }, { model: "claude-sonnet-4", effort: "low" },
+    ]);
+    expect(summarize(await readPrompts({ ...query, provider: "antigravity", model: "claude-sonnet", includeCache: true },
+      file, [...roots]))).toEqual([
+      ["antigravity", "Claude request via Antigravity", 101], ["antigravity", "Gemini request", 17],
+    ]);
+    const burndown = { ...query, mode: "burndown" as const };
+    expect(summarize(await readPrompts({ ...burndown, provider: "antigravity", group: "Gemini 4 Argon" }, file, [...roots])))
+      .toEqual([]);
+    expect((await readPrompts({
+      ...burndown, provider: "antigravity", group: "Gemini 4 Argon",
+      from: start + 2_000, to: start + 8_000,
+    }, file, [...roots])).prompts).toEqual([]);
+    expect(summarize(await readPrompts({ ...burndown, provider: "claude", bucket: "7d Opus" }, file, [...roots])))
+      .toEqual([["claude", "First request", undefined]]);
+    expect(summarize(await readPrompts({ ...burndown, provider: "claude", from: start + 11_000, to: start + 13_000 },
+      file, [...roots]))).toEqual([["claude", "Second request", undefined]]);
+    expect(Buffer.from(await Bun.file(file).arrayBuffer()).includes("Gemini request")).toBe(false);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

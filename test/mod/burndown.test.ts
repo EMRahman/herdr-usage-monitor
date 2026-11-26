@@ -91,7 +91,7 @@ test("hover opens immediately and lists provider activity through the current pa
   expect(last).toContain("Local activity");
   expect(last.match(/model-a · high effort/g)).toHaveLength(1);
   expect(last).toContain("model-b · effort unavailable");
-  expect(last).toContain("Click for Codex prompts in this interval");
+  expect(last).toContain("Click for prompts in this interval");
   expect(tips.join("\n")).not.toMatch(/outside|other-provider|future/);
   const trigger = style(cards[1]!, "trigger") as Element;
   const click = style(trigger, "on_click") as (event: object, cx: object) => void;
@@ -99,7 +99,7 @@ test("hover opens immediately and lists provider activity through the current pa
   expect(selectPrompts.mock.calls[0]?.[0]).toMatchObject({ mode: "burndown", from: start + 60_000, to: now });
 });
 
-test("Antigravity hovers show activity from their quota group and subscription", () => {
+test("Antigravity chart hovers and prompt lookups use their quota group and subscription", () => {
   const start = Date.parse("2026-11-23T12:00:00Z");
   const now = start + 60_000;
   const hour = 3_600_000;
@@ -115,15 +115,16 @@ test("Antigravity hovers show activity from their quota group and subscription",
     { provider: "claude", model: "claude-sonnet-5-5", effort: "high" },
     { provider: "codex", model: "gpt-6.2-sol", effort: "high" },
   ].map((event) => ({ ...event, at: now }));
+  const selectPrompts = mock();
   const [card] = burndownCards({}, [
     series("Gemini Models", 5 * hour, "5h limit"),
     series("Claude and GPT models", 5 * hour, "5h limit"),
     series("Claude and GPT models", 168 * hour, "Weekly limit"),
     series("Gemini 4 Argon", 168 * hour, "Weekly limit"),
-  ], activity, now);
+  ], activity, now, [], selectPrompts);
 
-  const tips = card!.rows.map((row) => labels(hoverCards(row)[0]!.cardContent));
-  const modelLabels = tips.map((tip) => tip.slice(2));
+  const hovers = card!.rows.map((row) => hoverCards(row)[0]!);
+  const modelLabels = hovers.map((hover) => labels(hover.cardContent).slice(2, -1));
   const sharedModels = ["claude-opus-5-5 · medium effort", "gpt-oss-120b · effort unavailable"];
   expect(modelLabels).toEqual([
     ["gemini-4-hydrogen · high effort", "gemini-4-argon-tiered · high effort"],
@@ -131,6 +132,12 @@ test("Antigravity hovers show activity from their quota group and subscription",
     sharedModels,
     ["gemini-4-argon-tiered · high effort"],
   ]);
+  const trigger = style(hovers[3]!, "trigger") as Element;
+  const click = style(trigger, "on_click") as (event: object, cx: object) => void;
+  click({}, {});
+  expect(selectPrompts.mock.calls[0]?.[0]).toMatchObject({
+    mode: "burndown", provider: "antigravity", group: "Gemini 4 Argon",
+  });
 });
 
 test("labels an unstarted 100% window with Now on the left", () => {
