@@ -178,10 +178,11 @@ export function adviseUntapped(spares, report, now = Date.now()) {
   return spares.map((spare) => {
     if (spare.credit || spare.length !== 5 * HOUR) return { ...spare, kind: "use" };
     const weekly = weeklyFor(report, spare.provider, spare.group, now);
-    if (!weekly || (weekly.level !== "tight" && weekly.remaining > 30)) {
+    if (!weekly || !Number.isFinite(weekly.msLeft) || weekly.msLeft <= 0
+      || (weekly.level !== "tight" && weekly.remaining > 30)) {
       return { ...spare, kind: "use" };
     }
-    if (Number.isFinite(weekly.msLeft) && weekly.msLeft > 0 && weekly.msLeft < CREDIT_SOON) {
+    if (weekly.msLeft < CREDIT_SOON) {
       return { ...spare, kind: "wait", weeklyMsLeft: weekly.msLeft, weeklyRemaining: weekly.remaining };
     }
     return { ...spare, kind: "reset", weeklyMsLeft: weekly.msLeft, weeklyRemaining: weekly.remaining };

@@ -178,3 +178,16 @@ test("smart untapped and heldResets advise looking towards a reset when weekly i
   expect(held.urgent).toBe("lowWeekly");
   expect(resetNote(held)).toContain("Weekly is low · consider using a reset");
 });
+
+test("smart untapped ignores expired weekly windows so stale cached resets do not trigger reset advice", () => {
+  const report = {
+    claude: { windows: [
+      { label: "5h session", used_percent: 10, resets_at: at(4 * HOUR) },
+      { label: "7d weekly", used_percent: 90, resets_at: at(-60_000) },
+    ] },
+  };
+  const [advice] = adviseUntapped([
+    { provider: "Claude", label: "5h session", group: null, length: 5 * HOUR, remaining: 90, msLeft: 4 * HOUR, spare: 10 },
+  ], report, now);
+  expect(advice).toMatchObject({ provider: "Claude", kind: "use" });
+});
