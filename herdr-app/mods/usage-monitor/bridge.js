@@ -2905,6 +2905,7 @@ var MINUTE = 60000;
 var HOUR2 = 60 * MINUTE;
 var DAY2 = 24 * HOUR2;
 var WEEK2 = 7 * DAY2;
+var DORMANT_GAP_MS = DORMANT_POLL_INTERVAL_MS + 15 * MINUTE;
 var BUCKETS = 180;
 var round = (value) => Math.round(value * 10) / 10;
 function accountId(account) {
@@ -3089,7 +3090,7 @@ function burndowns(entries, now = Date.now()) {
 }
 function runs(readings, length, until) {
   const slice = length / BUCKETS;
-  const gap = Math.max(20 * MINUTE, 3 * slice);
+  const gap = Math.max(DORMANT_GAP_MS, 3 * slice);
   const thinned = [];
   for (const reading of readings) {
     const last = thinned.at(-1);
