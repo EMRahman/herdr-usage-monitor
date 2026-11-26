@@ -303,3 +303,38 @@ test("the right panel shows only the selected provider's allowances and freshnes
   expect(render("antigravity")).toContain("Gemini models");
   expect(render("cursor")).toContain("Sign-in expired");
 });
+
+test("burndown cards list held resets beneath the charts with expiry and no border", () => {
+  const start = Date.parse("2026-11-23T12:00:00Z");
+  const end = start + 5 * 3_600_000;
+  const now = start + 3_600_000;
+  const expiresAt = new Date(now + 2 * 24 * 3_600_000).toISOString();
+  const series = {
+    provider: "claude", label: "5h session", length: end - start, start, end,
+    left: 40, reset: new Date(end).toISOString(), runs: [[start, now, 40]],
+  };
+  const held = [{
+    provider: "claude", label: "Full limit reset", count: 2, total: 3, usable: true,
+    expiresAt, msLeft: 2 * 24 * 3_600_000, command: "/limit-reset", urgent: "expiring",
+  }];
+  const [card] = burndownCards({}, [series], [], now, held);
+  expect(card!.rows).toHaveLength(3);
+  expect(labels(card!.rows[0])).toContain("40% left");
+  expect(labels(card!.rows[1]).join(" ")).toBe("Limit resets · 2 available");
+  const resetRow = labels(card!.rows[2]).join(" ");
+  expect(resetRow).toContain("Full limit reset");
+  expect(resetRow).toContain("2 of 3 left");
+  expect(resetRow).toContain("Expires in 2d");
+  expect(resetRow).toContain("Run /limit-reset to use it");
+  expect(elements(card!.rows[2]).some((el) => style(el, "border_color") === "#3b82f6")).toBe(false);
+
+  const [plain] = burndownCards({}, [series], [], now, [{ ...held[0], provider: "codex" }]);
+  expect(plain!.rows).toHaveLength(1);
+});
+
+test("Antigravity buckets list the 5-hour window above the weekly one", async () => {
+  const { byWindow } = await import("../../herdr-app/mods/usage-monitor/breakdown.js");
+  const order = byWindow([{ label: "Weekly limit" }, { label: "Other" }, { label: "5h limit" }]).map((b: { label: string }) => b.label);
+  expect(order).toEqual(["5h limit", "Weekly limit", "Other"]);
+  expect(byWindow([{ label: "Weekly Limit Remaining" }, { label: "Five Hour Limit Remaining" }])[0].label).toBe("Five Hour Limit Remaining");
+});

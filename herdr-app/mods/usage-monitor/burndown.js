@@ -5,9 +5,9 @@
 // between the two that shades how far ahead or behind that pace each reading was, a faint tint
 // over the time already gone, and a row of invisible columns that show the reading and model
 // activity under the pointer.
-import { div } from "gpui-kit";
+import { div, svg } from "gpui-kit";
 import { h_flex, HoverCard, v_flex } from "gpui-base";
-import { MARGIN, light, lightColor } from "./pace.js";
+import { MARGIN, RESET_COLOR, light, lightColor } from "./pace.js";
 import { duration, localTime, timed } from "./time.js";
 
 export const PROVIDER_NAMES = {
@@ -26,6 +26,43 @@ const MIN_RUN = 0.4;
 const BAND_OPACITY = 0.22;
 
 const clamp = (value, lo, hi) => Math.max(lo, Math.min(hi, value));
+
+function resetMark(t, dim = false, size = 10) {
+  return svg("mods/usage-monitor/reset.svg").size(size).flex_none().text_color(dim ? t.muted : RESET_COLOR);
+}
+
+// Held resets beneath a provider's charts, styled like the rows beneath the bars in Allowances.
+export function resetRows(t, held, provider, compact = false) {
+  const mine = (held ?? []).filter((entry) => entry.provider === provider);
+  if (!mine.length) return [];
+  const available = mine.reduce((sum, entry) => sum + (entry.count ?? 1), 0);
+  const heading = provider === "claude" ? `Limit resets · ${available} available`
+    : `Reset credits · ${available} available`;
+  const expiryText = (entry) => Number.isFinite(entry.msLeft)
+    ? `Expires in ${duration(entry.msLeft)}${entry.expiresAt ? ` · ${localTime(entry.expiresAt)}` : ""}`
+    : timed("Expires", entry.expiresAt);
+  const itemRow = (entry) => {
+    const use = provider === "claude"
+      ? (entry.status ?? (entry.needsLimit ? "Run /limit-reset at a limit to use it" : "Run /limit-reset to use it"))
+      : (entry.status ?? "");
+    const caption = [expiryText(entry), use].filter(Boolean).join(" · ");
+    const amount = entry.total > 1 ? `${entry.count} of ${entry.total} left` : "";
+    const color = entry.urgent ? RESET_COLOR : t.foreground;
+    return v_flex().gap(compact ? 2 : 5).py(compact ? 3 : 5)
+      .child(h_flex().justify_between().gap(12)
+        .child(h_flex().min_w(0).gap(6).items_center()
+          .child(resetMark(t, !entry.usable))
+          .child(div().min_w(0).text_color(t.foreground)
+            .when(compact, (el) => el.truncate().tooltip(entry.label)).child(entry.label)))
+        .when(Boolean(amount), (el) => el.child(div().flex_none().font_semibold().text_color(color).child(amount))))
+      .when(Boolean(caption), (el) => el.child(div().min_w(0).text_size(11).text_color(t.muted)
+        .when(compact, (c) => c.truncate().tooltip(caption)).child(caption)));
+  };
+  return [
+    div().mt(4).font_semibold().child(heading),
+    ...mine.map(itemRow),
+  ];
+}
 
 function scale(b) {
   const span = b.end - b.start;
@@ -195,7 +232,7 @@ function activityForChart(b, activity) {
 }
 
 /** Cards for the breakdown's columns: one per provider, a chart per 5-hour and weekly limit. */
-export function burndownCards(t, burndowns, modelUsage = [], now = Date.now()) {
+export function burndownCards(t, burndowns, modelUsage = [], now = Date.now(), held = []) {
   // The Allowances view's order: Claude, Codex, Antigravity, then the rest; within a provider,
   // each account and model group together, 5-hour before weekly.
   const first = (list, key) => {
@@ -220,10 +257,12 @@ export function burndownCards(t, burndowns, modelUsage = [], now = Date.now()) {
   }
   return [...byProvider].map(([provider, list]) => {
     const activity = activityByProvider.get(provider) ?? [];
+    const charts = list.map((b, i) => burndownChart(t, b, activity, `burndown-${provider}-${i}`, now));
+    const resets = resetRows(t, held, provider);
     return {
       title: PROVIDER_NAMES[provider] ?? provider,
-      rows: list.map((b, i) => burndownChart(t, b, activity, `burndown-${provider}-${i}`, now)),
-      weight: list.length * 6,
+      rows: [...charts, ...resets],
+      weight: list.length * 6 + resets.length,
     };
   });
 }

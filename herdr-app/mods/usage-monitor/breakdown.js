@@ -100,6 +100,13 @@ function windows(row, spares, name, provider) {
   });
 }
 
+// Shortest window first (5-hour above weekly), whatever order the provider lists them in; a
+// bucket whose label names no window keeps its place after the known ones.
+const WINDOW_RANK = (label) => windowLength(label) ?? Number.MAX_SAFE_INTEGER;
+export function byWindow(buckets) {
+  return [...buckets].sort((a, b) => WINDOW_RANK(a.label) - WINDOW_RANK(b.label));
+}
+
 function providerCards(t, report, spares, compact = false) {
   const cards = [];
   const row = (label, value, caption, pace, amount) => metric(t, label, value, caption, pace, amount, compact);
@@ -156,7 +163,7 @@ function providerCards(t, report, spares, compact = false) {
       .child(div().font_semibold()
         .when(compact && Boolean(group.models), (el) => el.tooltip(group.models)).child(group.name))
       .when(Boolean(group.models) && !compact, (el) => el.child(div().text_size(11).text_color(t.muted).child(group.models)))
-      .children((group.buckets ?? []).map((entry) => row(
+      .children(byWindow(group.buckets ?? []).map((entry) => row(
         entry.label, entry.remaining_percent,
         [timed("Resets", entry.resets_at) || NOT_STARTED, entry.description].filter(Boolean).join(" · "),
         lit(spares, "Antigravity", `${group.name} · ${entry.label}`, entry.remaining_percent,
@@ -317,8 +324,8 @@ function views(t, current, choose) {
   return h_flex().gap(6).items_center().child(pill).child(keyHint(t, "Space"));
 }
 
-function burndownView(t, state) {
-  const cards = burndownCards(t, state.history?.burndowns, state.history?.modelUsage)
+function burndownView(t, report, state) {
+  const cards = burndownCards(t, state.history?.burndowns, state.history?.modelUsage, Date.now(), heldResets(report))
     .map((c) => card(t, c.title, "", c.rows, c.weight));
   const intro = div().text_size(11).text_color(t.muted)
     .child("The dot marks the latest allowance reading. The faint background tint shows elapsed time. "
@@ -357,7 +364,7 @@ export function breakdown(t, report, state) {
         .child(button(t, "close-usage", "Close", state.close))))
     .child(v_flex().id("usage-scroll").flex_1().min_h(0).overflow_y_scrollbar().p(16).gap(8)
       .when(historical, (el) => el.child(historicalView(t, state)))
-      .when(burndown, (el) => el.child(burndownView(t, state)))
+      .when(burndown, (el) => el.child(burndownView(t, report, state)))
       .when(!burndown && !historical && cards.length > 0, (el) => el.child(untapped(t, spares, heldResets(report), report))
         .child(columns(cards, state.width ?? 0)))
       .when(!burndown && !historical && cards.length === 0, (el) => el.child(div().text_color(t.muted)
