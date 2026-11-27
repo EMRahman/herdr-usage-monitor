@@ -126,6 +126,17 @@ history across models.
   the readout and breakdown share recent results.
 - On start, the readout shows the last cached report (up to a day old) at once,
   then refreshes.
+- **Published readings.** After every read, the mod publishes each pool's windows
+  as `shared("usage-monitor.windows")` (`contract.js`) for other mods, such as
+  Usage Queue: `{ version: 1, readAt, checkedAt, pools: [{ id, provider,
+  account, plan, readAt, ttlMs, name?, models?, windows: [{ kind, label,
+  leftPct, resetsAt, lengthMs, light }], heldResets? }] }`. Pools are `claude`,
+  `codex`, `antigravity/<group>` and the other providers' ids. Raw figures:
+  `light` is for display. `checkedAt` is the last read, changed or not, so a
+  consumer can tell whether anyone is publishing.
+- **Consumers.** A mod that needs current readings writes its id and the time
+  into `shared("usage-monitor.consumers")` every minute. While any did in the
+  last 3 minutes, the readout keeps polling even when it's hidden.
 - **History.** Fresh readings go into `allowance_readings` in
   `~/.local/share/herdr-usage-monitor/history.sqlite` (under `$XDG_DATA_HOME`
   when set). Each row holds a provider, its read time in milliseconds, and
@@ -164,6 +175,7 @@ history across models.
     so every copy redraws. Uses `exec`, `readTextFile`, `appHome`, `home`,
     `layout` (to tell the rail), `run("mod.open")`, `closeOverlay`, `setShared`,
     `theme`, `checking`, `cx.timer.every`, `.on_size_change`.
+  - `contract.js`: the published readings and the consumer check-in.
   - `breakdown.js`: the dialog. `burndown.js`: the burndown charts. `panel.js`:
     the compact right-hand view and provider selection. `historical.js`:
     the Historical panel (stacked bars, `PathBuilder` line graph, KPIs, filters,

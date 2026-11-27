@@ -121,7 +121,7 @@ Providers you aren't signed in to are left out.
 
 **Updating.** Like other Herdr mods, this one doesn't update itself. Run the installer again after `git pull` or a Herdr update. It only writes what changed. It rebuilds `herdr-with-usage` from Herdr's current main layout unless you've edited that layout, and it keeps other mods' blocks in place.
 
-**Refresh timing.** While the readout or the right-hand panel shows, the mod checks the cache every minute and asks the providers when the cache is 3 minutes old. The breakdown shows sample age in minutes or hours. If providers differ, it shows the oldest known sample. Hover for individual times. The refresh button shows elapsed time in tenths of a second. After a manual refresh, the result shows the total time to the same precision.
+**Refresh timing.** While the readout or the right-hand panel shows, or another mod such as [Usage Queue](https://github.com/EMRahman/herdr-usage-queue) asks for readings, the mod checks the cache every minute and asks the providers when the cache is 3 minutes old. Other mods read the allowances from `shared("usage-monitor.windows")`, described in [`herdr-app/RECIPE.md`](herdr-app/RECIPE.md). The breakdown shows sample age in minutes or hours. If providers differ, it shows the oldest known sample. Hover for individual times. The refresh button shows elapsed time in tenths of a second. After a manual refresh, the result shows the total time to the same precision.
 </details>
 
 <details>
