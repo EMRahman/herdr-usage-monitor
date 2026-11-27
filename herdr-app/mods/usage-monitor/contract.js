@@ -84,7 +84,10 @@ function codexResets(codex) {
 export function windowsContract(report, now = Date.now(), checkedAt = now) {
   const pools = [];
   if (report && typeof report === "object") {
-    const readAt = (key) => finite(report.read_at?.[key]) ?? finite(report.timestamp);
+    // A provider missing from read_at was carried over from an older report: its age is unknown,
+    // and report.timestamp (which every refresh advances) would make it look fresh. Only a report
+    // with no read_at at all falls back to when it was saved.
+    const readAt = (key) => (report.read_at ? finite(report.read_at[key]) : finite(report.timestamp));
     const ttlMs = (key) => finite(report.ttl?.[key]) ?? finite(report.ttl?.others);
     const common = (key, p) => ({
       provider: key, account: p.account || null, plan: p.plan || null, readAt: readAt(key), ttlMs: ttlMs(key),

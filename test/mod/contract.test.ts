@@ -83,7 +83,8 @@ describe("windowsContract", () => {
     expect(pool("cursor").windows[0]).toMatchObject({ kind: "monthly", label: "month · Auto", leftPct: 70, lengthMs: 30 * DAY });
     expect(pool("cursor").windows).toHaveLength(1);
     expect(pool("cursor").ttlMs).toBe(900_000);
-    expect(pool("cursor").readAt).toBe(now);
+    // Not in read_at: carried over from an older report, so its age is unknown.
+    expect(pool("cursor").readAt).toBeNull();
     expect(pool("copilot").windows).toEqual([]);
   });
 
@@ -95,6 +96,13 @@ describe("windowsContract", () => {
       { id: "c1", label: "Reset credit", count: 1, expiresAt: at(9 * DAY), usableNow: true },
       { id: "credits", label: "Reset credit", count: 1, expiresAt: null, usableNow: true },
     ]);
+  });
+
+  test("a report without read_at falls back to when it was saved", () => {
+    const { read_at: _, ...legacy } = REPORT;
+    expect(pool("claude").readAt).toBe(now - 60_000);
+    expect(windowsContract({ ...legacy, timestamp: now - HOUR }, now).pools.map((p: { readAt: number }) => p.readAt))
+      .toEqual([now - HOUR, now - HOUR, now - HOUR, now - HOUR, now - HOUR]);
   });
 
   test("no report: no pools", () => {

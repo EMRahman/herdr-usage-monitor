@@ -132,8 +132,9 @@ history across models.
   account, plan, readAt, ttlMs, name?, models?, windows: [{ kind, label,
   leftPct, resetsAt, lengthMs, light }], heldResets? }] }`. Pools are `claude`,
   `codex`, `antigravity/<group>` and the other providers' ids. Raw figures:
-  `light` is for display. `checkedAt` is the last read, changed or not, so a
-  consumer can tell whether anyone is publishing.
+  `light` is for display. A pool's `readAt` is null when its age is unknown
+  (carried over from an older report); treat it as stale. `checkedAt` is the
+  last read, changed or not, so a consumer can tell whether anyone is publishing.
 - **Consumers.** A mod that needs current readings writes its id and the time
   into `shared("usage-monitor.consumers")` every minute. While any did in the
   last 3 minutes, the readout keeps polling even when it's hidden.
