@@ -3,6 +3,7 @@ import { h_flex, v_flex } from "gpui-base";
 import { appHome, checking, closeOverlay, exec, focused, home, layout, nextCommand, openOverlay, props,
   readTextFile, run, setShared, shared, terminals, theme } from "herdr";
 import { breakdown, resetIcon } from "./breakdown.js";
+import { CONSUMERS_KEY, hasConsumers, WINDOWS_KEY, windowsContract } from "./contract.js";
 import { PROVIDER_NAMES } from "./burndown.js";
 import { normalizeChartPrefs, offsetForTimestamp } from "./historical.js";
 import { heldResets, providerDetail, RESET_COLOR, resetNote } from "./pace.js";
@@ -77,6 +78,20 @@ function apply(next) {
   const changed = Boolean(error) || previous?.timestamp !== snapshot?.report?.timestamp;
   error = "";
   if (changed) setShared(REVISION, Date.now());
+  publish();
+}
+
+// Other mods read the readings from shared state (contract.js). Published after every read,
+// changed or not: checkedAt tells them someone is still reading.
+function publish() {
+  if (!snapshot?.report) return;
+  try { setShared(WINDOWS_KEY, windowsContract(snapshot.report)); } catch {}
+}
+
+// Another mod (Usage Queue) checked in lately, so readings must keep coming while the readout
+// is hidden.
+function consumersWaiting() {
+  try { return hasConsumers(shared(CONSUMERS_KEY)); } catch { return false; }
 }
 
 function fail(failure) {
@@ -153,7 +168,7 @@ export default class UsageMonitor extends View {
     if (this.view === "burndown") cx.spawn((cx) => this.readHistory(cx));
     else if (this.view === "historical") cx.spawn((cx) => this.readHistorical(cx, { sync: true }));
     cx.timer.every(POLL_MS, (cx) => {
-      if (this.handle || readoutIsVisible(layout())) cx.spawn((cx) => this.read(cx, []));
+      if (this.handle || readoutIsVisible(layout()) || consumersWaiting()) cx.spawn((cx) => this.read(cx, []));
     });
   }
 
